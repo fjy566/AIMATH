@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from app.services.grading import grade_question
+from app.services.learner import forecast_score, mastery_by_concept, progress_summary
+from app.services.llm import _api_root
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_questions() -> list[dict]:
+    return json.loads((ROOT / "data" / "processed" / "questions.json").read_text(encoding="utf-8"))
+
+
+def test_imported_dataset_is_real_and_complete() -> None:
+    questions = load_questions()
+    assert len(questions) >= 700
+    assert {question["year"] for question in questions} == set(range(1987, 2027))
+    assert all(question["question_markdown"].strip() for question in questions)
+    assert all(question["raw_markdown"].strip() for question in questions)
+    assert all(question["source_path"].endswith(".md") for question in questions)
+    assert all(len(question["content_sha256"]) == 64 for question in questions)
+
+
+def test_math2_catalog_excludes_other_paper_topics_but_keeps_display_metadata() -> None:
+    from app.services.concepts import CONCEPT_META, OUT_OF_SYLLABUS_CONCEPT_IDS, concept_descriptor
+
+    assert "series" not in CONCEPT_META
+    assert "probability" not in CONCEPT_META
+    assert "vector-calculus" not in CONCEPT_META
+    assert "vector-space" in CONCEPT_META
+    assert {"series", "probability", "vector-calculus"}.issubset(OUT_OF_SYLLABUS_CONCEPT_IDS)
+    assert concept_descriptor("series")["scope"] == "out-of-syllabus"
+    assert concept_descriptor("series")["name"] == "无穷级数"
+
+
+def test_modern_paper_has_real_150_point_total() -> None:
+    questions = [question for question in load_questions() if question["year"] == 2025]
+    assert len(questions) == 22
+    assert sum(question["points"] for question in questions) == 150
+    assert questions[-1]["points"] == 12
+
+
+def test_objective_and_manual_grading_are_honest() -> None:
+    choice = next(question for question in load_questions() if question["question_type"] == "choice" and question["has_answer"])
+    choice_result = grade_question(choice, choice["answer_markdown"])
+    assert choice_result["status"] == "correct"
+    assert choice_result["score"] == choice["points"]
+
+    solution = next(question for question in load_questions() if question["question_type"] == "solution")
+    manual_result = grade_question(solution, "")
+    assert manual_result["status"] == "manual"
+    assert manual_result["correct"] is None
+
+    self_grade_result = grade_question(solution, "我的步骤", self_grade=0.7)
+    assert self_grade_result["status"] == "partial"
+    assert self_grade_result["score"] == solution["points"] * 0.7
+
+
+def test_learning_state_updates_and_forecast_inputs_are_interpretable() -> None:
+    attempts = [
+        {"concepts": ["limit-continuity"], "status": "incorrect", "correct": 0, "duration_seconds": 60},
+        {"concepts": ["limit-continuity"], "status": "correct", "correct": 1, "duration_seconds": 55},
+    ]
+    mastery = mastery_by_concept(attempts)
+    assert 0.02 <= mastery["limit-continuity"] <= 0.98
+    summary = progress_summary(attempts, load_questions())
+    row = next(item for item in summary["concepts"] if item["id"] == "limit-continuity")
+    assert row["attempts"] == 2
+    assert row["correct"] == 1
+    assert summary["accuracy"] == 50.0
+
+
+def test_initial_forecast_is_zero_until_real_attempts_exist() -> None:
+    forecast = forecast_score(load_questions(), [], exam_type="数学二")
+    assert forecast["available"] is True
+    assert forecast["attempts_used"] == 0
+    assert forecast["p10"] == 0
+    assert forecast["p50"] == 0
+    assert forecast["p90"] == 0
+
+
+def test_openai_compatible_url_normalization() -> None:
+    assert _api_root("http://127.0.0.1:11434") == "http://127.0.0.1:11434/v1"
+    assert _api_root("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
+    assert _api_root("http://127.0.0.1:11434/v1/models") == "http://127.0.0.1:11434/v1"
+
+
+def test_model_settings_preserve_and_mask_local_key(tmp_path: Path) -> None:
+    import app.database as database
+    from app.services.llm import public_settings, save_settings
+
+    original_db_path = database.DB_PATH
+    database.DB_PATH = tmp_path / "settings.sqlite3"
+    try:
+        database.init_db()
+        saved = save_settings("http://127.0.0.1:1234/v1", "local-model", "secret-key-1234")
+        assert saved["api_key_set"] is True
+        assert saved["api_key_masked"].endswith("1234")
+        assert "secret-key" not in str(saved)
+        preserved = save_settings("http://127.0.0.1:1234/v1", "local-model-2", None)
+        assert preserved["api_key_set"] is True
+        assert public_settings()["model"] == "local-model-2"
+    finally:
+        database.DB_PATH = original_db_path
+
+
+def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    import app.main as main_module
+    from app.main import app
+
+    original_db_path = database.DB_PATH
+    original_database_root = database.ROOT_DIR
+    original_uploads_dir = database.UPLOADS_DIR
+    original_main_root = main_module.ROOT_DIR
+    original_main_uploads = main_module.UPLOADS_DIR
+    database.DB_PATH = tmp_path / "api.sqlite3"
+    database.ROOT_DIR = tmp_path
+    database.UPLOADS_DIR = tmp_path / "data" / "uploads"
+    main_module.ROOT_DIR = tmp_path
+    main_module.UPLOADS_DIR = tmp_path / "data" / "uploads"
+    try:
+        with TestClient(app) as client:
+            health = client.get("/api/health")
+            stats = client.get("/api/stats")
+            paper = client.get("/api/questions", params={"exam_type": "数学二", "year": 2025, "limit": 30})
+            choice = next(question for question in load_questions() if question["question_type"] == "choice" and question["has_answer"])
+            upload = client.post(
+                "/api/uploads/answer-image",
+                data={"user_id": "local-user", "question_id": choice["id"]},
+                files={"file": ("answer.png", b"\x89PNG\r\n\x1a\nreal-test-image", "image/png")},
+            )
+            attempt = client.post(
+                f"/api/questions/{choice['id']}/attempts",
+                json={"answer": choice["answer_markdown"], "mode": "practice", "attachment_ids": [upload.json()["attachment_id"]]},
+            )
+            progress = client.get("/api/progress")
+            simulation = client.post("/api/simulations", json={"exam_type": "数学二", "year": 2025, "duration_minutes": 180})
+        assert health.status_code == 200
+        assert health.json()["question_count"] == 792
+        assert stats.json()["total_questions"] == 792
+        assert paper.status_code == 200
+        assert paper.json()["total"] == 22
+        assert sum(item["points"] for item in paper.json()["items"]) == 150
+        concepts = client.get("/api/concepts")
+        assert concepts.status_code == 200
+        assert all(item["scope"] == "math2" for item in concepts.json())
+        assert "series" not in {item["id"] for item in concepts.json()}
+        assert all(item["concept_labels"] for item in paper.json()["items"])
+        assert upload.status_code == 200
+        assert attempt.status_code == 200
+        assert attempt.json()["result"]["status"] == "correct"
+        assert len(attempt.json()["attachments"]) == 1
+        assert client.get(attempt.json()["attachments"][0]["url"]).status_code == 200
+        assert progress.status_code == 200
+        assert progress.json()["attempts"] == 1
+        assert simulation.status_code == 200
+        assert len(simulation.json()["questions"]) == 22
+        assert simulation.json()["max_score"] == 150
+        simulation_question = simulation.json()["questions"][0]
+        simulation_upload = client.post(
+            "/api/uploads/answer-image",
+            data={"user_id": "local-user", "question_id": simulation_question["id"]},
+            files={"file": ("simulation-answer.png", b"\x89PNG\r\n\x1a\nsimulation-test-image", "image/png")},
+        )
+        simulation_submit = client.post(
+            f"/api/simulations/{simulation.json()['id']}/submit",
+            json={
+                "user_id": "local-user",
+                "answers": {},
+                "attachment_ids": {simulation_question["id"]: [simulation_upload.json()["attachment_id"]]},
+            },
+        )
+        assert simulation_upload.status_code == 200
+        assert simulation_submit.status_code == 200
+        submitted_question = next(item for item in simulation_submit.json()["questions"] if item["id"] == simulation_question["id"])
+        assert len(submitted_question["attempt"]["attachments"]) == 1
+    finally:
+        database.DB_PATH = original_db_path
+        database.ROOT_DIR = original_database_root
+        database.UPLOADS_DIR = original_uploads_dir
+        main_module.ROOT_DIR = original_main_root
+        main_module.UPLOADS_DIR = original_main_uploads
+
+
+def test_fine_grained_practice_session_can_save_and_submit(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    from app.main import app
+
+    original_db_path = database.DB_PATH
+    database.DB_PATH = tmp_path / "practice.sqlite3"
+    try:
+        with TestClient(app) as client:
+            blocks = client.get("/api/study/blocks", params={"user_id": "local-user", "limit": 12})
+            assert blocks.status_code == 200
+            target_block = next(
+                block for block in blocks.json()["blocks"]
+                if any(item["question_count"] >= 15 for item in block["question_types"])
+            )
+            target_type = next(item for item in target_block["question_types"] if item["question_count"] >= 15)
+            session = client.post(
+                "/api/practice/sessions",
+                json={
+                    "user_id": "local-user",
+                    "exam_type": "数学二",
+                    "concept_id": target_block["concept"]["id"],
+                    "question_type": target_type["question_type"],
+                    "count": 15,
+                },
+            )
+            assert session.status_code == 200
+            session_json = session.json()
+            questions = session_json["questions"]
+            assert len(questions) == 15
+            assert len({question["id"] for question in questions}) == 15
+            assert all(question["question_type"] == target_type["question_type"] for question in questions)
+            assert all(target_block["concept"]["id"] in question["concept_ids"] for question in questions)
+
+            first_id = questions[0]["id"]
+            saved = client.put(
+                f"/api/practice/sessions/{session_json['id']}",
+                json={"answers": {first_id: "$x^2$"}},
+            )
+            assert saved.status_code == 200
+            saved_first = next(item for item in saved.json()["questions"] if item["id"] == first_id)
+            assert saved_first["answer_state"]["answer"] == "$x^2$"
+            assert saved.json()["status"] == "active"
+
+            submitted = client.post(
+                f"/api/practice/sessions/{session_json['id']}/submit",
+                json={"answers": {first_id: "$x^2$"}},
+            )
+            assert submitted.status_code == 200
+            submitted_json = submitted.json()
+            assert submitted_json["status"] == "finished"
+            assert submitted_json["question_count"] == 15
+            submitted_first = next(item for item in submitted_json["questions"] if item["id"] == first_id)
+            assert submitted_first["answer_state"]["result"] is not None
+            assert submitted_first["answer_state"]["attempt_id"] is not None
+    finally:
+        database.DB_PATH = original_db_path

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#12243a" />
+    <title>砺数 · 考研数学学练系统</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-lockup">
+          <div class="brand-mark">∑</div>
+          <div>
+            <div class="brand-name">砺数</div>
+            <div class="brand-subtitle">AI MATH / 2026</div>
+          </div>
+        </div>
+
+        <div class="sidebar-rule"></div>
+        <div class="nav-caption">WORKBENCH</div>
+        <nav class="main-nav" aria-label="主导航">
+          <button class="nav-item active" data-view="overview"><span class="nav-index">01</span><span>今日总览</span></button>
+          <button class="nav-item" data-view="library"><span class="nav-index">02</span><span>真题库</span></button>
+          <button class="nav-item" data-view="blocks"><span class="nav-index">03</span><span>分块训练</span></button>
+          <button class="nav-item" data-view="simulation"><span class="nav-index">04</span><span>模拟考</span></button>
+          <button class="nav-item settings-nav" data-view="settings"><span class="nav-index">05</span><span>模型设置</span><span class="status-dot" id="model-status-dot"></span></button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div class="local-note">
+            <span class="eyebrow">LOCAL-FIRST</span>
+            <p>数据和学习记录保存在本机。模型服务可接入云端或本地 OpenAI-compatible 接口。</p>
+          </div>
+          <div class="build-stamp">BUILD 1.0 · STUDY WITH EVIDENCE</div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <div class="topbar-kicker" id="view-kicker">STUDY DESK / OVERVIEW</div>
+            <h1 id="view-title">今天，把薄弱处练成得分点</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="user-chip"><span class="user-avatar">L</span><span>本地学习者</span></div>
+            <button class="quiet-button" id="refresh-button" title="刷新当前数据">↻ 刷新</button>
+          </div>
+        </header>
+
+        <div id="app-notice" class="app-notice" role="status"></div>
+
+        <section class="view active" id="view-overview">
+          <div class="hero-grid">
+            <div class="hero-panel paper-panel">
+              <div class="panel-label">TODAY'S BRIEF / <span id="today-date"></span></div>
+              <div class="hero-copy">
+                <h2>先修最薄弱的一块，<br /><em>再把正确率推上去。</em></h2>
+                <p>系统根据你的作答轨迹计算掌握度，把整套真题拆成今天真正需要的几步。</p>
+              </div>
+              <div class="hero-actions">
+                <button class="primary-button" id="start-recommended">开始推荐训练 <span>→</span></button>
+                <button class="text-button" data-view-target="blocks">查看训练分块 <span>↗</span></button>
+              </div>
+              <div class="hero-annotation">NOTE 01 · 不是刷得越多越好，是下一题更有针对性。</div>
+            </div>
+            <div class="forecast-card dark-panel">
+              <div class="panel-label light">ESTIMATED SCORE / 数学二</div>
+              <div class="forecast-score" id="forecast-p50">—<span> / 150</span></div>
+              <div class="forecast-caption">中位预估分</div>
+              <div class="forecast-range"><span id="forecast-p10">—</span><i></i><span id="forecast-p90">—</span></div>
+              <div class="forecast-range-label"><span>保守区间</span><span>乐观区间</span></div>
+              <div class="forecast-meta" id="forecast-meta">正在计算掌握度……</div>
+              <div class="forecast-footnote" id="forecast-note"></div>
+            </div>
+          </div>
+
+          <div class="metric-grid" id="overview-metrics">
+            <div class="metric-card"><span class="metric-label">题库规模</span><strong id="metric-questions">—</strong><small>道完整真题</small></div>
+            <div class="metric-card"><span class="metric-label">已完成</span><strong id="metric-attempts">—</strong><small>次有效作答</small></div>
+            <div class="metric-card"><span class="metric-label">当前掌握度</span><strong id="metric-mastery">—</strong><small>跨知识块加权</small></div>
+            <div class="metric-card accent-metric"><span class="metric-label">建议专注</span><strong id="metric-focus">—</strong><small>优先处理的知识块</small></div>
+          </div>
+
+          <div class="section-heading"><div><span class="section-number">A</span><h2>今天的训练处方</h2></div><button class="text-button" data-view-target="blocks">全部分块 <span>→</span></button></div>
+          <div class="block-preview-grid" id="overview-blocks"><div class="loading-card">正在读取你的训练分块……</div></div>
+
+          <div class="section-heading compact-heading"><div><span class="section-number">B</span><h2>下一组推荐题</h2></div><button class="text-button" data-view-target="library">打开题库 <span>→</span></button></div>
+          <div class="question-strip" id="overview-questions"><div class="loading-card">正在挑选题目……</div></div>
+        </section>
+
+        <section class="view" id="view-library">
+          <div class="view-intro"><div><span class="eyebrow">ARCHIVE / REAL QUESTIONS</span><h2>真题库</h2><p>来自原始 Markdown/LaTeX 文件的完整题目。知识块按数学二大纲组织；非数学二范围的原题仍保留并单独标记。</p></div><div class="archive-count" id="archive-count">—</div></div>
+          <div class="filter-bar">
+            <label>科目<select id="filter-exam"><option value="数学二">数学二</option></select></label>
+            <label>年份<select id="filter-year"><option value="">全部年份</option></select></label>
+            <label>题型<select id="filter-type"><option value="">全部题型</option><option value="choice">选择题</option><option value="fill">填空题</option><option value="solution">解答题</option></select></label>
+            <label class="wide-filter">知识块<select id="filter-concept"><option value="">全部知识块</option></select></label>
+            <label>范围<select id="filter-scope"><option value="">全部题目</option><option value="math2">数学二大纲内</option><option value="out-of-syllabus">含非数学二范围知识点</option></select></label>
+            <button class="primary-button small-button" id="apply-filters">筛选题目</button>
+          </div>
+          <div class="library-layout">
+            <div class="question-list" id="question-list"><div class="loading-card">正在加载真题……</div></div>
+            <div class="library-aside">
+              <div class="aside-card">
+                <span class="eyebrow">SOURCE NOTE</span>
+                <h3>一题一档</h3>
+                <p>每道题保留原始题面、LaTeX、来源文件和内容校验摘要。答案型题目自动判定，解答题由你自评或交给已配置的模型复核；筛选“非数学二范围”可查看被保留的相关原题。</p>
+              </div>
+              <div class="aside-card lined-card"><span class="eyebrow">SCORING</span><h3>不猜分</h3><p>没有来源标准答案的解答题不会被系统伪造判对；提交后会明确标记为“待自评”。</p></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-blocks">
+          <div class="view-intro"><div><span class="eyebrow">ADAPTIVE PRACTICE / BLOC TRAINING</span><h2>分块训练</h2><p>按知识块和题型细分训练。点击开始随机抽取 15 道真实题，支持 LaTeX 作答、保存草稿和统一提交。</p></div><button class="quiet-button" id="reload-blocks">重新分析</button></div>
+          <div class="blocks-layout" id="blocks-container"><div class="loading-card">正在分析作答记录……</div></div>
+        </section>
+
+        <section class="view" id="view-simulation">
+          <div class="view-intro simulation-intro"><div><span class="eyebrow">FULL PAPER / TIMED PRACTICE</span><h2>模拟考</h2><p>按真实年份整卷生成。题目顺序、分值来自题库，不使用占位题。</p></div><div class="simulation-controls"><label>试卷年份<select id="simulation-year"></select></label><label>时长<select id="simulation-duration"><option value="180">180 分钟</option><option value="150">150 分钟</option><option value="120">120 分钟</option></select></label><button class="primary-button" id="create-simulation">生成整卷</button></div></div>
+          <div id="simulation-container"><div class="empty-state"><div class="empty-mark">⌁</div><h3>还没有进行中的模拟考</h3><p>选择年份并生成一套完整试卷，提交后结果会回流到你的掌握度和分数预估。</p></div></div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="view-intro"><div><span class="eyebrow">MODEL GATEWAY / OPENAI COMPATIBLE</span><h2>模型设置</h2><p>只需配置一个兼容 OpenAI 接口的服务。密钥只保存在本机 SQLite，不会展示完整内容。</p></div><div class="connection-badge" id="connection-badge"><span></span>未配置</div></div>
+          <div class="settings-layout">
+            <form class="settings-card paper-panel" id="model-settings-form">
+              <div class="settings-card-head"><div><span class="eyebrow">ONE API ENTRY</span><h3>连接模型服务</h3></div><span class="settings-lock">⌁ LOCAL</span></div>
+              <label class="field-label">Base URL <span>例如 http://127.0.0.1:11434/v1</span><input id="base-url" type="url" placeholder="https://api.example.com/v1" autocomplete="url" /></label>
+              <label class="field-label">API Key <span>本地模型可留空；留空保存时会保留已存密钥</span><input id="api-key" type="password" placeholder="sk-... 或本地服务无需填写" autocomplete="off" /></label>
+              <div class="model-fetch-row"><button type="button" class="secondary-button" id="fetch-models">拉取模型列表</button><span id="fetch-model-status">支持 /v1/models</span></div>
+              <label class="field-label">选择模型 <span>先拉取列表，也可以手动输入模型 ID</span><select id="model-select"><option value="">请先拉取或输入模型</option></select><input id="model-manual" class="manual-model" type="text" placeholder="手动输入模型 ID（可选）" /></label>
+              <div class="settings-actions"><button type="submit" class="primary-button">保存配置</button><button type="button" class="text-button" id="clear-key">清除本机密钥</button></div>
+              <div class="form-status" id="settings-status"></div>
+            </form>
+            <div class="settings-help">
+              <div class="aside-card"><span class="eyebrow">COMPATIBLE SERVICES</span><h3>云端或本地都可以</h3><ul class="service-list"><li><b>OpenAI-compatible 云服务</b><span>填写服务商 Base URL、API Key，拉取 /v1/models。</span></li><li><b>Ollama</b><span>先开启兼容端点，常见地址为 http://127.0.0.1:11434/v1。</span></li><li><b>LM Studio / vLLM</b><span>填写本机服务的 /v1 地址，API Key 按服务要求填写或留空。</span></li></ul></div>
+              <div class="aside-card warning-card"><span class="eyebrow">BOUNDARY</span><h3>模型只做分析辅助</h3><p>题目和来源解析优先来自本地真题库。模型请求会携带当前题面、你的作答以及来源解析；若来源没有解析，模型必须明确说明，不应凭空补答案。</p></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="question-modal" aria-hidden="true">
+      <div class="question-modal" role="dialog" aria-modal="true" aria-labelledby="question-modal-title">
+        <button class="modal-close" id="close-question-modal" aria-label="关闭">×</button>
+        <div class="modal-topline"><span id="modal-question-ref">—</span><span id="modal-question-type">—</span></div>
+        <h2 id="question-modal-title">题目</h2>
+        <div class="tag-row" id="modal-question-tags"></div>
+        <div class="question-body markdown-body" id="modal-question-body"></div>
+        <div class="answer-box">
+          <div class="answer-box-head"><label for="answer-input">我的作答</label><span id="answer-hint">请写出答案或关键步骤</span></div>
+          <textarea id="answer-input" rows="5" placeholder="在这里输入你的答案……"></textarea>
+          <div class="answer-upload-row"><label class="upload-button" for="answer-image-input">＋ 上传手写过程图</label><input id="answer-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /><span id="answer-image-status">支持 PNG/JPG/WebP/GIF，单张不超过 8 MB</span></div>
+          <div class="image-preview" id="answer-image-preview" hidden></div>
+          <div class="answer-controls"><label id="self-grade-wrap">解答题自评<select id="self-grade"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></label><label>用时（分钟）<input id="answer-duration" type="number" min="0" max="1440" value="0" /></label><button class="primary-button" id="submit-answer">提交作答</button></div>
+        </div>
+        <div class="result-box" id="question-result" hidden></div>
+        <div class="tutor-box" id="tutor-box" hidden><div class="tutor-head"><span class="eyebrow">AI REVIEW</span><button class="text-button" id="ask-tutor">重新分析</button></div><div class="tutor-content" id="tutor-content"></div></div>
+        <div class="modal-source" id="modal-source"></div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="alert"></div>
+    <script src="/static/vendor/katex/katex.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

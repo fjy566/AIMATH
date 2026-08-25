@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/ai_math.sqlite3
+data/ai_math.sqlite3-shm
+data/ai_math.sqlite3-wal
+data/uploads/
+.env
+work/
