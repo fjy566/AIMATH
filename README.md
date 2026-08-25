@@ -16,10 +16,11 @@
 
 ## 启动
 
-在 PowerShell 中执行：
+在 PowerShell 中执行。以下命令默认从项目根目录运行；如果尚未获取项目，可以先克隆：
 
 ```powershell
-cd "F:\source\AI MATH"
+git clone https://github.com/fjy566/AIMATH.git
+cd AIMATH
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
