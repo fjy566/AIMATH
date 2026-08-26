@@ -136,6 +136,77 @@ def init_db() -> None:
                 FOREIGN KEY(session_id) REFERENCES practice_sessions(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_practice_session_answers_session ON practice_session_answers(session_id);
+
+            CREATE TABLE IF NOT EXISTS notes (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '未命名笔记',
+                concept_id TEXT NOT NULL DEFAULT '',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                content_html TEXT NOT NULL DEFAULT '',
+                content_markdown TEXT NOT NULL DEFAULT '',
+                handwriting_data TEXT NOT NULL DEFAULT '',
+                mindmap_json TEXT NOT NULL DEFAULT '[]',
+                favorite INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_notes_user_updated ON notes(user_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_notes_user_concept ON notes(user_id, concept_id);
+
+            CREATE TABLE IF NOT EXISTS note_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                concept_id TEXT NOT NULL DEFAULT '',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                content_html TEXT NOT NULL DEFAULT '',
+                content_markdown TEXT NOT NULL DEFAULT '',
+                handwriting_data TEXT NOT NULL DEFAULT '',
+                mindmap_json TEXT NOT NULL DEFAULT '[]',
+                favorite INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_note_versions_note ON note_versions(note_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS note_assets (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                storage_path TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_note_assets_user ON note_assets(user_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS workbench_template_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                concept_id TEXT NOT NULL,
+                question_type TEXT NOT NULL,
+                overview TEXT NOT NULL DEFAULT '',
+                framework_json TEXT NOT NULL DEFAULT '[]',
+                mistakes_json TEXT NOT NULL DEFAULT '[]',
+                memory_aid TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, concept_id, question_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS workbench_template_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                concept_id TEXT NOT NULL,
+                question_type TEXT NOT NULL,
+                overview TEXT NOT NULL DEFAULT '',
+                framework_json TEXT NOT NULL DEFAULT '[]',
+                mistakes_json TEXT NOT NULL DEFAULT '[]',
+                memory_aid TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_workbench_template_versions ON workbench_template_versions(user_id, concept_id, question_type, created_at DESC);
             """
         )
         attachment_columns = {row["name"] for row in connection.execute("PRAGMA table_info(answer_attachments)").fetchall()}
@@ -490,3 +561,312 @@ def attachment_path(attachment_id: str) -> Path | None:
     except ValueError:
         return None
     return path
+
+
+def _json_or_default(value: Any, default: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _note_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    item["tags"] = _json_or_default(item.pop("tags_json", "[]"), [])
+    item["mindmap"] = _json_or_default(item.pop("mindmap_json", "[]"), [])
+    item["favorite"] = bool(item.get("favorite", 0))
+    return item
+
+
+def _note_snapshot_params(item: dict[str, Any], *, note_id: str, user_id: str, created_at: str) -> tuple[Any, ...]:
+    return (
+        note_id,
+        user_id,
+        item.get("title", "未命名笔记"),
+        item.get("concept_id", ""),
+        json.dumps(item.get("tags", []), ensure_ascii=False),
+        item.get("content_html", ""),
+        item.get("content_markdown", ""),
+        item.get("handwriting_data", ""),
+        json.dumps(item.get("mindmap", []), ensure_ascii=False),
+        int(bool(item.get("favorite", False))),
+        created_at,
+    )
+
+
+def create_note(payload: dict[str, Any]) -> dict[str, Any]:
+    now = utc_now()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO notes(
+                id, user_id, title, concept_id, tags_json, content_html,
+                content_markdown, handwriting_data, mindmap_json, favorite,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            _note_snapshot_params(payload, note_id=payload["id"], user_id=payload["user_id"], created_at=now) + (now,),
+        )
+        connection.execute(
+            """
+            INSERT INTO note_versions(
+                note_id, user_id, title, concept_id, tags_json, content_html,
+                content_markdown, handwriting_data, mindmap_json, favorite, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            _note_snapshot_params(payload, note_id=payload["id"], user_id=payload["user_id"], created_at=now),
+        )
+        row = connection.execute("SELECT * FROM notes WHERE id = ?", (payload["id"],)).fetchone()
+    return _note_public(row) if row is not None else {}
+
+
+def get_note(note_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        if user_id is None:
+            row = connection.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        else:
+            row = connection.execute("SELECT * FROM notes WHERE id = ? AND user_id = ?", (note_id, user_id)).fetchone()
+    return _note_public(row) if row is not None else None
+
+
+def list_notes(
+    user_id: str,
+    *,
+    search: str = "",
+    concept_id: str = "",
+    favorite_only: bool = False,
+) -> list[dict[str, Any]]:
+    clauses = ["user_id = ?"]
+    params: list[Any] = [user_id]
+    if concept_id:
+        clauses.append("concept_id = ?")
+        params.append(concept_id)
+    if favorite_only:
+        clauses.append("favorite = 1")
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM notes WHERE {' AND '.join(clauses)} ORDER BY favorite DESC, updated_at DESC",
+            params,
+        ).fetchall()
+    notes = [_note_public(row) for row in rows]
+    query = search.strip().lower()
+    if not query:
+        return notes
+    return [
+        item for item in notes
+        if query in str(item.get("title", "")).lower()
+        or query in str(item.get("content_markdown", "")).lower()
+        or query in str(item.get("content_html", "")).lower()
+        or query in " ".join(str(tag) for tag in item.get("tags", [])).lower()
+    ]
+
+
+def update_note(note_id: str, user_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    now = utc_now()
+    with get_connection() as connection:
+        current = connection.execute("SELECT * FROM notes WHERE id = ? AND user_id = ?", (note_id, user_id)).fetchone()
+        if current is None:
+            return None
+        current_item = _note_public(current)
+        connection.execute(
+            """
+            INSERT INTO note_versions(
+                note_id, user_id, title, concept_id, tags_json, content_html,
+                content_markdown, handwriting_data, mindmap_json, favorite, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            _note_snapshot_params(current_item, note_id=note_id, user_id=user_id, created_at=now),
+        )
+        connection.execute(
+            """
+            UPDATE notes SET title = ?, concept_id = ?, tags_json = ?, content_html = ?,
+                content_markdown = ?, handwriting_data = ?, mindmap_json = ?,
+                favorite = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (
+                payload.get("title", "未命名笔记"),
+                payload.get("concept_id", ""),
+                json.dumps(payload.get("tags", []), ensure_ascii=False),
+                payload.get("content_html", ""),
+                payload.get("content_markdown", ""),
+                payload.get("handwriting_data", ""),
+                json.dumps(payload.get("mindmap", []), ensure_ascii=False),
+                int(bool(payload.get("favorite", False))),
+                now,
+                note_id,
+                user_id,
+            ),
+        )
+        row = connection.execute("SELECT * FROM notes WHERE id = ? AND user_id = ?", (note_id, user_id)).fetchone()
+    return _note_public(row) if row is not None else None
+
+
+def delete_note(note_id: str, user_id: str) -> bool:
+    with get_connection() as connection:
+        cursor = connection.execute("DELETE FROM notes WHERE id = ? AND user_id = ?", (note_id, user_id))
+    return cursor.rowcount > 0
+
+
+def list_note_versions(note_id: str, user_id: str) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM note_versions WHERE note_id = ? AND user_id = ? ORDER BY created_at DESC",
+            (note_id, user_id),
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["tags"] = _json_or_default(item.pop("tags_json", "[]"), [])
+        item["mindmap"] = _json_or_default(item.pop("mindmap_json", "[]"), [])
+        item["favorite"] = bool(item.get("favorite", 0))
+        result.append(item)
+    return result
+
+
+def restore_note_version(note_id: str, version_id: int, user_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM note_versions WHERE id = ? AND note_id = ? AND user_id = ?",
+            (version_id, note_id, user_id),
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    return update_note(
+        note_id,
+        user_id,
+        {
+            "title": item.get("title", "未命名笔记"),
+            "concept_id": item.get("concept_id", ""),
+            "tags": _json_or_default(item.get("tags_json", "[]"), []),
+            "content_html": item.get("content_html", ""),
+            "content_markdown": item.get("content_markdown", ""),
+            "handwriting_data": item.get("handwriting_data", ""),
+            "mindmap": _json_or_default(item.get("mindmap_json", "[]"), []),
+            "favorite": bool(item.get("favorite", 0)),
+        },
+    )
+
+
+def create_note_asset(payload: dict[str, Any]) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO note_assets(id, user_id, filename, content_type, size_bytes, storage_path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["user_id"],
+                payload["filename"],
+                payload["content_type"],
+                payload["size_bytes"],
+                payload["storage_path"],
+                utc_now(),
+            ),
+        )
+
+
+def note_asset_path(asset_id: str, user_id: str | None = None) -> Path | None:
+    with get_connection() as connection:
+        if user_id is None:
+            row = connection.execute("SELECT storage_path FROM note_assets WHERE id = ?", (asset_id,)).fetchone()
+        else:
+            row = connection.execute("SELECT storage_path FROM note_assets WHERE id = ? AND user_id = ?", (asset_id, user_id)).fetchone()
+    if row is None:
+        return None
+    path = (ROOT_DIR / row["storage_path"]).resolve()
+    try:
+        path.relative_to(UPLOADS_DIR.resolve())
+    except ValueError:
+        return None
+    return path
+
+
+def _template_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    item["framework"] = _json_or_default(item.pop("framework_json", "[]"), [])
+    item["mistakes"] = _json_or_default(item.pop("mistakes_json", "[]"), [])
+    return item
+
+
+def get_template_override(user_id: str, concept_id: str, question_type: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM workbench_template_overrides WHERE user_id = ? AND concept_id = ? AND question_type = ?",
+            (user_id, concept_id, question_type),
+        ).fetchone()
+    return _template_public(row) if row is not None else None
+
+
+def list_template_overrides(user_id: str) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM workbench_template_overrides WHERE user_id = ? ORDER BY concept_id, question_type",
+            (user_id,),
+        ).fetchall()
+    return [_template_public(row) for row in rows]
+
+
+def upsert_template_override(payload: dict[str, Any]) -> dict[str, Any]:
+    now = utc_now()
+    with get_connection() as connection:
+        current = connection.execute(
+            "SELECT * FROM workbench_template_overrides WHERE user_id = ? AND concept_id = ? AND question_type = ?",
+            (payload["user_id"], payload["concept_id"], payload["question_type"]),
+        ).fetchone()
+        if current is not None:
+            current_item = _template_public(current)
+            connection.execute(
+                """
+                INSERT INTO workbench_template_versions(
+                    user_id, concept_id, question_type, overview, framework_json,
+                    mistakes_json, memory_aid, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    current_item["user_id"], current_item["concept_id"], current_item["question_type"],
+                    current_item.get("overview", ""), json.dumps(current_item.get("framework", []), ensure_ascii=False),
+                    json.dumps(current_item.get("mistakes", []), ensure_ascii=False), current_item.get("memory_aid", ""), now,
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO workbench_template_overrides(
+                user_id, concept_id, question_type, overview, framework_json,
+                mistakes_json, memory_aid, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, concept_id, question_type) DO UPDATE SET
+                overview = excluded.overview,
+                framework_json = excluded.framework_json,
+                mistakes_json = excluded.mistakes_json,
+                memory_aid = excluded.memory_aid,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload["user_id"], payload["concept_id"], payload["question_type"], payload.get("overview", ""),
+                json.dumps(payload.get("framework", []), ensure_ascii=False), json.dumps(payload.get("mistakes", []), ensure_ascii=False),
+                payload.get("memory_aid", ""), now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM workbench_template_overrides WHERE user_id = ? AND concept_id = ? AND question_type = ?",
+            (payload["user_id"], payload["concept_id"], payload["question_type"]),
+        ).fetchone()
+    return _template_public(row) if row is not None else {}
+
+
+def list_template_versions(user_id: str, concept_id: str, question_type: str) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM workbench_template_versions
+            WHERE user_id = ? AND concept_id = ? AND question_type = ?
+            ORDER BY created_at DESC
+            """,
+            (user_id, concept_id, question_type),
+        ).fetchall()
+    return [_template_public(row) for row in rows]

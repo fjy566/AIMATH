@@ -143,6 +143,117 @@ def test_learning_analytics_separates_observed_evidence_from_untrained_topics() 
     assert any(row["attempts"] == 0 and row["status"] == "待训练" for row in result["concepts"])
 
 
+def test_workbench_covers_every_math2_block_with_real_examples() -> None:
+    from app.services.workbench import build_workbench_template, workbench_catalog
+
+    questions = load_questions()
+    catalog = workbench_catalog(questions)
+    assert len(catalog) == 10
+    assert all(item["template_count"] == 3 for item in catalog)
+    assert all(set(item["question_type_counts"]) == {"choice", "fill", "solution"} for item in catalog)
+
+    sparse = build_workbench_template(questions, "multiple-integral", "fill")
+    assert sparse["has_real_example"] is True
+    assert sparse["example"]["question"]["id"] in {item["id"] for item in questions}
+    assert sparse["variant_count"] >= 2
+    assert sparse["framework"] and sparse["mistakes"] and sparse["overview"]
+    assert any(item["source_scope"] == "同科目跨块" for item in sparse["variants"])
+
+
+def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    import app.main as main_module
+    from app.main import app
+
+    original_db_path = database.DB_PATH
+    original_database_root = database.ROOT_DIR
+    original_uploads_dir = database.UPLOADS_DIR
+    original_main_root = main_module.ROOT_DIR
+    original_main_uploads = main_module.UPLOADS_DIR
+    database.DB_PATH = tmp_path / "workbench.sqlite3"
+    database.ROOT_DIR = tmp_path
+    database.UPLOADS_DIR = tmp_path / "data" / "uploads"
+    main_module.ROOT_DIR = tmp_path
+    main_module.UPLOADS_DIR = tmp_path / "data" / "uploads"
+    try:
+        with TestClient(app) as client:
+            catalog = client.get("/api/workbench")
+            assert catalog.status_code == 200
+            assert len(catalog.json()["concepts"]) == 10
+            template = client.get("/api/workbench", params={"concept_id": "derivative", "question_type": "solution"})
+            assert template.status_code == 200
+            template_json = template.json()["template"]
+            assert template_json["has_real_example"] is True
+            assert template_json["example"]["question"]["solution_markdown"]
+            assert len(template_json["variants"]) >= 2
+
+            created = client.post(
+                "/api/workbench/notes",
+                json={
+                    "title": "极限错题复盘",
+                    "concept_id": "limit-continuity",
+                    "tags": ["极限", "错题"],
+                    "content_html": "<p>先检查定义域</p><script>alert(1)</script>",
+                    "content_markdown": "# 极限错题复盘\n\n先检查定义域",
+                    "mindmap": [{"id": "root", "label": "极限", "parent": "root"}],
+                    "favorite": True,
+                },
+            )
+            assert created.status_code == 200
+            note = created.json()["note"]
+            note_id = note["id"]
+            assert "script" not in note["content_html"]
+            assert note["favorite"] is True
+
+            asset = client.post(
+                "/api/workbench/notes/assets",
+                files={"file": ("note.png", b"\x89PNG\r\n\x1a\nreal-note-image", "image/png")},
+            )
+            assert asset.status_code == 200
+            assert client.get(asset.json()["url"]).status_code == 200
+
+            updated = client.put(
+                f"/api/workbench/notes/{note_id}",
+                json={"title": "极限错题复盘 2", "content_markdown": "第二版", "content_html": "<p>第二版</p>"},
+            )
+            assert updated.status_code == 200
+            versions = client.get(f"/api/workbench/notes/{note_id}/versions")
+            assert versions.status_code == 200
+            assert len(versions.json()["items"]) >= 2
+            first_version_id = versions.json()["items"][-1]["id"]
+            restored = client.post(f"/api/workbench/notes/{note_id}/restore/{first_version_id}")
+            assert restored.status_code == 200
+            assert restored.json()["note"]["title"] == "极限错题复盘"
+
+            saved_template = client.put(
+                "/api/workbench/templates/derivative/choice",
+                json={"overview": "自定义选择题提醒", "framework": ["先判条件"], "mistakes": ["别漏定义域"], "memory_aid": "先判后算"},
+            )
+            assert saved_template.status_code == 200
+            assert saved_template.json()["template"]["customized"] is True
+            exported = client.get("/api/workbench/export")
+            assert exported.status_code == 200
+            assert exported.json()["notes"]
+            assert exported.json()["note_versions"][note_id]
+            assert exported.json()["template_overrides"]
+
+            imported = client.post(
+                "/api/workbench/import",
+                json={"notes": [{"title": "导入笔记", "content_markdown": "导入成功"}]},
+            )
+            assert imported.status_code == 200
+            assert imported.json()["imported_notes"] == 1
+            assert any(item["title"] == "导入笔记" for item in client.get("/api/workbench/notes").json()["items"])
+    finally:
+        database.DB_PATH = original_db_path
+        database.ROOT_DIR = original_database_root
+        database.UPLOADS_DIR = original_uploads_dir
+        main_module.ROOT_DIR = original_main_root
+        main_module.UPLOADS_DIR = original_main_uploads
+
+
 def test_server_settings_validate_and_persist(tmp_path: Path) -> None:
     import app.database as database
     from app.services.server import ServerSettingsError, save_server_settings, server_settings

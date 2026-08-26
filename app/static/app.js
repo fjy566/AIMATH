@@ -11,6 +11,19 @@ const state = {
   exams: [],
   settings: null,
   serverSettings: null,
+  workbenchCatalog: [],
+  workbenchTypes: [],
+  workbenchConceptId: "",
+  workbenchQuestionType: "choice",
+  workbenchTemplate: null,
+  workbenchEditingTemplate: false,
+  notes: [],
+  currentNote: null,
+  noteEditorMode: "rich",
+  noteFavoriteOnly: false,
+  noteSearchTimer: null,
+  noteSavedRange: null,
+  handwritingErasing: false,
   currentQuestion: null,
   practiceSession: null,
   currentSimulation: null,
@@ -23,6 +36,7 @@ const state = {
 
 const viewMeta = {
   overview: ["STUDY DESK / OVERVIEW", "今天，把薄弱处练成得分点"],
+  workbench: ["WORKBENCH / ANSWER PATTERNS + NOTES", "学习工作台"],
   library: ["ARCHIVE / REAL QUESTIONS", "真题库"],
   blocks: ["ADAPTIVE PRACTICE / BLOC TRAINING", "分块训练"],
   simulation: ["FULL PAPER / TIMED PRACTICE", "模拟考"],
@@ -865,6 +879,7 @@ function navigate(view) {
   $("view-kicker").textContent = viewMeta[view][0];
   $("view-title").textContent = viewMeta[view][1];
   if (view === "overview") loadOverview();
+  if (view === "workbench") loadWorkbench();
   if (view === "library") loadLibrary();
   if (view === "blocks") loadBlocks();
   if (view === "simulation") loadSimulationCatalog();
@@ -895,6 +910,605 @@ function renderOverview() {
   const questions = state.nextQuestions.slice(0, 4);
   $("overview-questions").innerHTML = questions.length ? questions.map(renderQuestionMini).join("") : `<div class="loading-card">当前没有可推荐题目。</div>`;
   bindQuestionOpeners($("overview-questions"));
+}
+
+function notePreviewText(note) {
+  if (note?.content_markdown) return note.content_markdown;
+  const holder = document.createElement("div");
+  holder.innerHTML = note?.content_html || "";
+  return holder.innerText || holder.textContent || "";
+}
+
+function renderWorkbenchConcepts() {
+  const root = $("workbench-concept-list");
+  if (!root) return;
+  const concepts = state.workbenchCatalog || [];
+  $("workbench-total").textContent = concepts.length ? `${concepts.length} 个知识块` : "暂无";
+  root.innerHTML = concepts.length
+    ? concepts.map((concept) => {
+      const counts = concept.question_type_counts || {};
+      const total = Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
+      return `<button type="button" class="workbench-concept-item ${concept.id === state.workbenchConceptId ? "is-active" : ""}" data-workbench-concept="${escapeAttr(concept.id)}"><span class="workbench-concept-copy"><strong>${escapeHtml(concept.name)}</strong><small>${escapeHtml(concept.subject)} · ${total} 道题</small></span><span class="workbench-concept-count">${concept.template_count}</span></button>`;
+    }).join("")
+    : `<div class="loading-card">题库没有可用知识块。</div>`;
+  $$('[data-workbench-concept]', root).forEach((button) => button.addEventListener("click", () => selectWorkbenchConcept(button.dataset.workbenchConcept)));
+}
+
+function renderWorkbenchTypeTabs() {
+  const root = $("workbench-type-tabs");
+  if (!root) return;
+  const types = state.workbenchTypes.length ? state.workbenchTypes : [
+    { id: "choice", label: "选择题" },
+    { id: "fill", label: "填空题" },
+    { id: "solution", label: "解答题" },
+  ];
+  root.innerHTML = types.map((item) => `<button type="button" class="workbench-type-tab ${item.id === state.workbenchQuestionType ? "is-active" : ""}" data-workbench-type="${escapeAttr(item.id)}" role="tab" aria-selected="${item.id === state.workbenchQuestionType ? "true" : "false"}">${escapeHtml(item.label)}</button>`).join("");
+  $$('[data-workbench-type]', root).forEach((button) => button.addEventListener("click", () => selectWorkbenchType(button.dataset.workbenchType)));
+}
+
+function workbenchQuestionMarkup(item, label, variant = false) {
+  const question = item?.question;
+  if (!question) return `<article class="workbench-question-card empty-question"><span class="eyebrow">${escapeHtml(label)}</span><p>当前题库没有找到真实题目。</p></article>`;
+  const analysis = item.analysis || question.solution_markdown || "当前来源没有提供解析。";
+  const answer = item.answer || question.answer_markdown || "";
+  return `<article class="workbench-question-card ${variant ? "variant-question" : "example-question"}">
+    <div class="workbench-question-head"><div><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(question.year)} 年 / Q${escapeHtml(question.number)}</strong></div><div class="workbench-question-badges"><span class="difficulty-pill ${escapeAttr(question.difficulty_band || "other")}">${escapeHtml(question.difficulty_label || "待分层")}</span><span class="type-pill">${escapeHtml(typeLabel(question.question_type))}</span></div></div>
+    <div class="workbench-question-body markdown-body">${renderMarkdown(question.question_markdown || "")}</div>
+    <div class="workbench-question-foot"><span>${escapeHtml(item.source_scope || (question.concept_labels || []).map((concept) => concept.name).join("、") || "真实题库")}</span><button type="button" class="text-button" data-question-id="${escapeAttr(question.id)}">打开完整题面 ↗</button></div>
+    <details class="workbench-solution-details" ${variant ? "" : "open"}><summary>${variant ? "展开解析" : "典型解析"}</summary><div class="markdown-body">${renderMarkdown(analysis)}</div>${answer ? `<div class="workbench-answer-line"><b>答案</b><span class="markdown-body">${renderMarkdown(answer)}</span></div>` : ""}</details>
+  </article>`;
+}
+
+function templateListEditor(key, values) {
+  const items = values.length ? values : [""];
+  return `<div class="template-edit-list" data-template-list="${escapeAttr(key)}">${items.map((value, index) => `<div class="template-edit-row"><span>${index + 1}</span><input type="text" value="${escapeAttr(value)}" data-template-list-item="${escapeAttr(key)}" /><button type="button" class="text-button" data-template-remove="${escapeAttr(key)}" aria-label="删除第 ${index + 1} 项">删除</button></div>`).join("")}<button type="button" class="text-button template-add-button" data-template-add="${escapeAttr(key)}">＋ 添加一条</button></div>`;
+}
+
+function renderWorkbenchTemplate() {
+  const template = state.workbenchTemplate;
+  const card = $("workbench-template-card");
+  if (!card) return;
+  const concept = state.workbenchCatalog.find((item) => item.id === state.workbenchConceptId) || {};
+  $("workbench-current-title").textContent = template ? `${template.concept_name} · ${template.question_type_label}` : (concept.name || "选择知识块");
+  $("workbench-current-meta").textContent = template ? `${template.question_count || 0} 道本块题目 · 例题与变式来自真实题库${template.customized ? " · 已有个人修改" : ""}` : "每类题型都配有框架、易错点和真实题例。";
+  if (!template) {
+    card.innerHTML = `<div class="loading-card">请选择一个知识块和题型。</div>`;
+    return;
+  }
+  const framework = template.framework || [];
+  const mistakes = template.mistakes || [];
+  const summaryMarkup = state.workbenchEditingTemplate
+    ? `<div class="template-editing-form"><label>题型概述<textarea rows="4" data-template-field="overview">${escapeHtml(template.overview || "")}</textarea></label><div class="template-edit-columns"><label>解题思路框架${templateListEditor("framework", framework)}</label><label>常见易错点${templateListEditor("mistakes", mistakes)}</label></div><label>记忆提醒<input type="text" data-template-field="memory_aid" value="${escapeAttr(template.memory_aid || "")}" /></label></div>`
+    : `<div class="template-copy-grid"><section><span class="template-section-label">题型概述</span><p>${escapeHtml(template.overview || "")}</p></section><section><span class="template-section-label">解题思路框架</span><ol>${framework.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section><section><span class="template-section-label">常见易错点</span><ul>${mistakes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="template-memory"><span class="template-section-label">记忆提醒</span><strong>${escapeHtml(template.memory_aid || "")}</strong></section></div>`;
+  const variants = (template.variants || []).map((item, index) => workbenchQuestionMarkup(item, `变式 ${index + 1}`, true)).join("");
+  card.innerHTML = `<div class="workbench-template-head"><div><span class="eyebrow">${escapeHtml(template.subject)} / ${escapeHtml(template.question_type_label)}</span><h3>${escapeHtml(template.concept_name)} 的答题模板</h3><p>${template.available_count || 0} 道可用真实题目。${template.example_source === "同科目跨块真实题" ? "当前题型本块题目较少，变式题已从同科目真实题补足并明确标注。" : "例题优先取当前知识块，变式题按难度和年份分散。"}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></div>${summaryMarkup}<div class="workbench-example-section"><div class="workbench-section-head"><div><span class="eyebrow">REAL EXAMPLE</span><h4>典型例题与解析</h4></div><span>答案与解析来自题库来源文件</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</div><div class="workbench-variants-section"><div class="workbench-section-head"><div><span class="eyebrow">PRACTICE VARIANTS</span><h4>变式练习</h4></div><span>${template.variant_count || 0} 道 · 先独立完成，再展开解析</span></div><div class="workbench-variants-grid">${variants || `<div class="loading-card">暂无可用变式题。</div>`}</div></div>`;
+  bindQuestionOpeners(card);
+  if (state.workbenchEditingTemplate) bindTemplateEditor(card);
+  $("edit-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = true; renderWorkbenchTemplate(); });
+  $("cancel-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = false; renderWorkbenchTemplate(); });
+  $("save-workbench-template")?.addEventListener("click", saveWorkbenchTemplate);
+}
+
+function bindTemplateEditor(root) {
+  $$('[data-template-add]', root).forEach((button) => {
+    if (button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => {
+    const list = root.querySelector(`[data-template-list="${button.dataset.templateAdd}"]`);
+    if (!list) return;
+    const key = button.dataset.templateAdd;
+    const index = list.querySelectorAll("[data-template-list-item]").length + 1;
+    button.insertAdjacentHTML("beforebegin", `<div class="template-edit-row"><span>${index}</span><input type="text" value="" data-template-list-item="${escapeAttr(key)}" /><button type="button" class="text-button" data-template-remove="${escapeAttr(key)}">删除</button></div>`);
+    bindTemplateEditor(root);
+    });
+  });
+  $$('[data-template-remove]', root).forEach((button) => {
+    if (button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => {
+    const rows = root.querySelectorAll(`[data-template-list="${button.dataset.templateRemove}"] .template-edit-row`);
+    if (rows.length <= 1) return;
+    button.closest(".template-edit-row")?.remove();
+    });
+  });
+}
+
+async function saveWorkbenchTemplate() {
+  const card = $("workbench-template-card");
+  const overview = card.querySelector('[data-template-field="overview"]')?.value || "";
+  const memoryAid = card.querySelector('[data-template-field="memory_aid"]')?.value || "";
+  const values = (key) => [...card.querySelectorAll(`[data-template-list-item="${key}"]`)].map((input) => input.value.trim()).filter(Boolean);
+  const button = $("save-workbench-template");
+  if (button) button.disabled = true;
+  try {
+    const payload = await fetchJSON(`/api/workbench/templates/${encodeURIComponent(state.workbenchConceptId)}/${encodeURIComponent(state.workbenchQuestionType)}`, { ...jsonOptions({ user_id: state.userId, overview, framework: values("framework"), mistakes: values("mistakes"), memory_aid: memoryAid }), method: "PUT" });
+    state.workbenchTemplate = payload.template;
+    state.workbenchEditingTemplate = false;
+    renderWorkbenchTemplate();
+    showToast("答题模板已保存到本机。", false);
+  } catch (error) {
+    showToast(`模板保存失败：${error.message}`, true);
+    if (button) button.disabled = false;
+  }
+}
+
+async function selectWorkbenchConcept(conceptId) {
+  if (!conceptId || conceptId === state.workbenchConceptId) return;
+  state.workbenchConceptId = conceptId;
+  state.workbenchEditingTemplate = false;
+  renderWorkbenchConcepts();
+  await loadWorkbenchTemplate();
+}
+
+async function selectWorkbenchType(questionType) {
+  if (!questionType || questionType === state.workbenchQuestionType) return;
+  state.workbenchQuestionType = questionType;
+  state.workbenchEditingTemplate = false;
+  renderWorkbenchTypeTabs();
+  await loadWorkbenchTemplate();
+}
+
+async function loadWorkbenchTemplate() {
+  if (!state.workbenchConceptId) return;
+  const card = $("workbench-template-card");
+  card.innerHTML = `<div class="workbench-template-skeleton"><span></span><span></span><span></span></div>`;
+  try {
+    const payload = await fetchJSON(`/api/workbench?concept_id=${encodeURIComponent(state.workbenchConceptId)}&question_type=${encodeURIComponent(state.workbenchQuestionType)}&user_id=${encodeURIComponent(state.userId)}`);
+    state.workbenchTemplate = payload.template;
+    renderWorkbenchTemplate();
+  } catch (error) {
+    card.innerHTML = `<div class="loading-card">模板读取失败：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderWorkbenchNotes() {
+  const root = $("workbench-note-list");
+  if (!root) return;
+  root.innerHTML = state.notes.length
+    ? state.notes.map((note) => `<button type="button" class="workbench-note-item ${state.currentNote?.id === note.id ? "is-active" : ""}" data-workbench-note="${escapeAttr(note.id)}"><span class="note-item-title">${note.favorite ? "收藏 · " : ""}${escapeHtml(note.title || "未命名笔记")}</span><small>${escapeHtml(conceptName(note.concept_id) || "未归类")} · ${escapeHtml(String(note.updated_at || "").slice(0, 10))}</small><span class="note-item-preview">${escapeHtml(notePreviewText(note).replace(/\s+/g, " ").slice(0, 54) || "暂无正文")}</span></button>`).join("")
+    : `<div class="note-list-empty">${state.noteFavoriteOnly ? "还没有收藏笔记。" : "还没有笔记，先建立一条复盘。"}</div>`;
+  $$('[data-workbench-note]', root).forEach((button) => button.addEventListener("click", () => openWorkbenchNote(button.dataset.workbenchNote)));
+}
+
+async function loadWorkbenchNotes() {
+  const params = new URLSearchParams({ user_id: state.userId });
+  const search = $("note-search")?.value.trim();
+  if (search) params.set("search", search);
+  if (state.noteFavoriteOnly) params.set("favorite", "true");
+  try {
+    const payload = await fetchJSON(`/api/workbench/notes?${params}`);
+    state.notes = payload.items || [];
+    renderWorkbenchNotes();
+  } catch (error) {
+    $("workbench-note-list").innerHTML = `<div class="note-list-empty">笔记读取失败：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function populateNoteConcepts(selected = "") {
+  const select = $("note-concept");
+  if (!select) return;
+  select.innerHTML = `<option value="">未归类</option>${(state.concepts || []).map((concept) => `<option value="${escapeAttr(concept.id)}">${escapeHtml(concept.name)}</option>`).join("")}`;
+  select.value = selected || "";
+}
+
+function noteMarkdownToHtml(source) {
+  const blocks = String(source || "").replace(/\r/g, "").split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length) return "";
+  return blocks.map((block) => {
+    const lines = block.split("\n");
+    const first = lines[0];
+    if (/^#{1,4}\s+/.test(first)) return `<h4>${escapeHtml(first.replace(/^#{1,4}\s+/, ""))}</h4>`;
+    if (lines.every((line) => /^[-*]\s+/.test(line))) return `<ul>${lines.map((line) => `<li>${escapeHtml(line.replace(/^[-*]\s+/, ""))}</li>`).join("")}</ul>`;
+    return `<p>${escapeHtml(block).replace(/\n/g, "<br />")}</p>`;
+  }).join("");
+}
+
+function noteHtmlToMarkdown(html) {
+  const holder = document.createElement("div");
+  holder.innerHTML = html || "";
+  return (holder.innerText || holder.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function setNoteMode(mode) {
+  const nextMode = mode === "markdown" ? "markdown" : "rich";
+  if (nextMode === state.noteEditorMode) return;
+  const rich = $("note-rich-editor");
+  const markdown = $("note-markdown-editor");
+  if (nextMode === "markdown" && rich && markdown && !markdown.value.trim()) markdown.value = noteHtmlToMarkdown(rich.innerHTML);
+  if (nextMode === "rich" && rich && markdown && markdown.value.trim()) rich.innerHTML = noteMarkdownToHtml(markdown.value);
+  state.noteEditorMode = nextMode;
+  $("note-rich-pane").hidden = nextMode !== "rich";
+  $("note-markdown-pane").hidden = nextMode !== "markdown";
+  $$('[data-note-mode]').forEach((button) => { const active = button.dataset.noteMode === nextMode; button.classList.toggle("is-active", active); button.setAttribute("aria-selected", String(active)); });
+}
+
+function saveNoteSelection() {
+  const editor = $("note-rich-editor");
+  const selection = window.getSelection();
+  if (!editor || !selection?.rangeCount || !editor.contains(selection.anchorNode)) return;
+  state.noteSavedRange = selection.getRangeAt(0).cloneRange();
+}
+
+function restoreNoteSelection() {
+  if (!state.noteSavedRange) return;
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(state.noteSavedRange);
+}
+
+function insertNoteText(value) {
+  const editor = $("note-rich-editor");
+  if (!editor) return;
+  editor.focus();
+  restoreNoteSelection();
+  document.execCommand("insertText", false, value);
+  state.noteSavedRange = null;
+  $("note-save-state").textContent = "有未保存修改";
+}
+
+function runNoteCommand(command, value = null) {
+  const editor = $("note-rich-editor");
+  if (!editor) return;
+  editor.focus();
+  restoreNoteSelection();
+  document.execCommand(command, false, value);
+  saveNoteSelection();
+  $("note-save-state").textContent = "有未保存修改";
+}
+
+function setupHandwritingCanvas(dataUrl = "") {
+  const canvas = $("note-handwriting-canvas");
+  if (!canvas) return;
+  canvas.dataset.handwriting = dataUrl || "";
+  const width = Math.max(260, canvas.clientWidth || 520);
+  const height = 245;
+  const ratio = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.lineWidth = 2.2;
+  context.strokeStyle = "#173c3e";
+  context.clearRect(0, 0, width, height);
+  if (dataUrl) {
+    const image = new Image();
+    image.onload = () => context.drawImage(image, 0, 0, width, height);
+    image.src = dataUrl;
+  }
+  let drawing = false;
+  const point = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+  canvas.onpointerdown = (event) => { drawing = true; canvas.setPointerCapture?.(event.pointerId); const item = point(event); context.globalCompositeOperation = state.handwritingErasing ? "destination-out" : "source-over"; context.beginPath(); context.moveTo(item.x, item.y); };
+  canvas.onpointermove = (event) => { if (!drawing) return; const item = point(event); context.lineTo(item.x, item.y); context.stroke(); };
+  canvas.onpointerup = () => { drawing = false; context.closePath(); $("note-save-state").textContent = "有未保存修改"; };
+  canvas.onpointercancel = () => { drawing = false; };
+}
+
+function renderMindmapFields(nodes = []) {
+  const rootNode = nodes.find((item) => item.parent === "root") || nodes[0] || {};
+  $("note-mindmap-center").value = rootNode.label || "";
+  const branches = nodes.filter((item) => item !== rootNode);
+  const container = $("note-mindmap-branches");
+  container.innerHTML = (branches.length ? branches : [{ id: "branch-1", label: "", parent: "root" }]).map((item, index) => `<div class="mindmap-branch-row"><span>${index + 1}</span><input type="text" value="${escapeAttr(item.label || "")}" data-mindmap-branch /><button type="button" class="text-button" data-mindmap-remove aria-label="删除分支">删除</button></div>`).join("");
+  bindMindmapFields();
+  updateMindmapPreview();
+}
+
+function bindMindmapFields() {
+  $$('[data-mindmap-branch], #note-mindmap-center').forEach((input) => {
+    if (input.dataset.bound === "true") return;
+    input.dataset.bound = "true";
+    input.addEventListener("input", updateMindmapPreview);
+  });
+  $$('[data-mindmap-remove]').forEach((button) => {
+    if (button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => { const rows = $$(".mindmap-branch-row", $("note-mindmap-branches")); if (rows.length <= 1) return; button.closest(".mindmap-branch-row")?.remove(); updateMindmapPreview(); });
+  });
+}
+
+function updateMindmapPreview() {
+  const center = $("note-mindmap-center")?.value.trim();
+  const branches = $$('[data-mindmap-branch]').map((input) => input.value.trim()).filter(Boolean);
+  $("note-mindmap-preview").innerHTML = center ? `<div class="mindmap-node center-node">${escapeHtml(center)}</div><div class="mindmap-branch-preview">${branches.map((item) => `<span class="mindmap-node">${escapeHtml(item)}</span>`).join("") || `<span class="mindmap-preview-empty">添加分支</span>`}</div>` : `<span>填写中心和分支后预览</span>`;
+}
+
+function collectMindmap() {
+  const center = $("note-mindmap-center")?.value.trim() || "";
+  const nodes = center ? [{ id: "root", label: center, parent: "root" }] : [];
+  $$('[data-mindmap-branch]').forEach((input, index) => { const label = input.value.trim(); if (label) nodes.push({ id: `branch-${index + 1}`, label, parent: "root" }); });
+  return nodes;
+}
+
+function renderNoteEditor() {
+  const note = state.currentNote;
+  const empty = $("workbench-note-empty");
+  const editor = $("workbench-note-editor");
+  if (!note) {
+    empty.hidden = false;
+    editor.hidden = true;
+    $("note-save-state").textContent = "未选择笔记";
+    return;
+  }
+  empty.hidden = true;
+  editor.hidden = false;
+  $("note-title").value = note.title || "";
+  $("note-tags").value = (note.tags || []).join("，");
+  populateNoteConcepts(note.concept_id || state.workbenchConceptId);
+  $("note-rich-editor").innerHTML = note.content_html || noteMarkdownToHtml(note.content_markdown || "");
+  $("note-markdown-editor").value = note.content_markdown || noteHtmlToMarkdown(note.content_html || "");
+  $("note-favorite").textContent = note.favorite ? "已收藏" : "收藏";
+  $("note-favorite").setAttribute("aria-pressed", String(Boolean(note.favorite)));
+  $("note-version-label").textContent = note.id ? `版本记录 · ${String(note.updated_at || "").slice(0, 10)}` : "新笔记";
+  $("note-save-state").textContent = note.id ? "已保存到本机" : "尚未保存";
+  state.noteEditorMode = "rich";
+  setNoteMode("rich");
+  setupHandwritingCanvas(note.handwriting_data || "");
+  renderMindmapFields(note.mindmap || []);
+  if (note.id) loadNoteVersions(note.id);
+  else $("note-history-list").innerHTML = `<span class="note-history-empty">保存后可以回溯旧版本</span>`;
+  renderWorkbenchNotes();
+}
+
+function newWorkbenchNote() {
+  state.currentNote = { id: "", title: "", concept_id: state.workbenchConceptId, tags: [], content_html: "", content_markdown: "", handwriting_data: "", mindmap: [], favorite: false };
+  renderNoteEditor();
+  $("note-title")?.focus();
+}
+
+async function openWorkbenchNote(noteId) {
+  try {
+    const payload = await fetchJSON(`/api/workbench/notes/${encodeURIComponent(noteId)}?user_id=${encodeURIComponent(state.userId)}`);
+    state.currentNote = payload.note;
+    renderNoteEditor();
+  } catch (error) {
+    showToast(`笔记读取失败：${error.message}`, true);
+  }
+}
+
+function collectNotePayload() {
+  const rich = $("note-rich-editor");
+  const markdown = $("note-markdown-editor");
+  const contentHtml = state.noteEditorMode === "markdown" ? noteMarkdownToHtml(markdown.value) : rich.innerHTML;
+  const contentMarkdown = state.noteEditorMode === "markdown" ? markdown.value : (markdown.value.trim() || noteHtmlToMarkdown(rich.innerHTML));
+  const tags = $("note-tags").value.split(/[，,]/).map((item) => item.trim()).filter(Boolean);
+  const canvas = $("note-handwriting-canvas");
+  return {
+    user_id: state.userId,
+    title: $("note-title").value.trim() || "未命名笔记",
+    concept_id: $("note-concept").value,
+    tags,
+    content_html: contentHtml,
+    content_markdown: contentMarkdown,
+    handwriting_data: canvas && canvas.width ? canvas.toDataURL("image/png") : "",
+    mindmap: collectMindmap(),
+    favorite: $("note-favorite").getAttribute("aria-pressed") === "true",
+  };
+}
+
+async function saveWorkbenchNote() {
+  if (!state.currentNote) newWorkbenchNote();
+  const button = $("note-save");
+  button.disabled = true;
+  $("note-save-state").textContent = "正在保存……";
+  try {
+    const payload = collectNotePayload();
+    const response = state.currentNote?.id ? await fetchJSON(`/api/workbench/notes/${encodeURIComponent(state.currentNote.id)}`, { ...jsonOptions(payload), method: "PUT" }) : await fetchJSON("/api/workbench/notes", jsonOptions(payload));
+    state.currentNote = response.note;
+    renderNoteEditor();
+    await loadWorkbenchNotes();
+    showToast("笔记已保存到本机。", false);
+  } catch (error) {
+    $("note-save-state").textContent = `保存失败：${error.message}`;
+    showToast(`笔记保存失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteWorkbenchNote() {
+  if (!state.currentNote?.id) { state.currentNote = null; renderNoteEditor(); return; }
+  if (!window.confirm("确定删除这条笔记吗？删除后无法从版本记录恢复。")) return;
+  try {
+    await fetchJSON(`/api/workbench/notes/${encodeURIComponent(state.currentNote.id)}?user_id=${encodeURIComponent(state.userId)}`, { method: "DELETE" });
+    state.currentNote = null;
+    await loadWorkbenchNotes();
+    renderNoteEditor();
+    showToast("笔记已删除。", false);
+  } catch (error) {
+    showToast(`笔记删除失败：${error.message}`, true);
+  }
+}
+
+async function loadNoteVersions(noteId) {
+  try {
+    const payload = await fetchJSON(`/api/workbench/notes/${encodeURIComponent(noteId)}/versions?user_id=${encodeURIComponent(state.userId)}`);
+    const root = $("note-history-list");
+    const items = payload.items || [];
+    root.innerHTML = items.length ? items.slice(0, 8).map((item, index) => `<button type="button" class="note-history-item" data-note-restore="${item.id}"><span>${index === 0 ? "当前保存前" : "历史版本"}</span><small>${escapeHtml(String(item.created_at || "").replace("T", " ").slice(0, 16))}</small></button>`).join("") : `<span class="note-history-empty">还没有历史版本</span>`;
+    $$('[data-note-restore]', root).forEach((button) => button.addEventListener("click", () => restoreWorkbenchNote(button.dataset.noteRestore)));
+  } catch {
+    $("note-history-list").innerHTML = `<span class="note-history-empty">版本记录暂时不可用</span>`;
+  }
+}
+
+async function restoreWorkbenchNote(versionId) {
+  if (!state.currentNote?.id || !window.confirm("恢复后当前内容会作为一个新版本保存，继续吗？")) return;
+  try {
+    const payload = await fetchJSON(`/api/workbench/notes/${encodeURIComponent(state.currentNote.id)}/restore/${encodeURIComponent(versionId)}?user_id=${encodeURIComponent(state.userId)}`, { method: "POST" });
+    state.currentNote = payload.note;
+    renderNoteEditor();
+    await loadWorkbenchNotes();
+    showToast("已恢复历史版本。", false);
+  } catch (error) {
+    showToast(`恢复失败：${error.message}`, true);
+  }
+}
+
+function toggleNoteFavorite() {
+  if (!state.currentNote) return;
+  const button = $("note-favorite");
+  const active = button.getAttribute("aria-pressed") === "true";
+  button.setAttribute("aria-pressed", String(!active));
+  button.textContent = active ? "收藏" : "已收藏";
+  $("note-save-state").textContent = "有未保存修改";
+}
+
+async function exportWorkbenchData() {
+  try {
+    const payload = await fetchJSON(`/api/workbench/export?user_id=${encodeURIComponent(state.userId)}`);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `ai-math-workbench-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast("工作台数据已导出。", false);
+  } catch (error) {
+    showToast(`导出失败：${error.message}`, true);
+  }
+}
+
+async function importWorkbenchData(file) {
+  if (!file) return;
+  try {
+    const payload = JSON.parse(await file.text());
+    const result = await fetchJSON("/api/workbench/import", jsonOptions({ user_id: state.userId, notes: payload.notes || [], template_overrides: payload.template_overrides || [] }));
+    await loadWorkbenchNotes();
+    await loadWorkbenchTemplate();
+    showToast(`导入完成：${result.imported_notes} 条笔记，${result.imported_templates} 个模板。`, false);
+  } catch (error) {
+    showToast(`导入失败：${error.message}`, true);
+  } finally {
+    $("workbench-import-input").value = "";
+  }
+}
+
+function applyWorkbenchTheme() {
+  const dark = localStorage.getItem("ai-math-workbench-theme") === "dark";
+  document.body.classList.toggle("theme-dark", dark);
+  const button = $("workbench-theme-toggle");
+  if (button) button.textContent = dark ? "切换亮色" : "切换暗色";
+}
+
+async function loadWorkbench() {
+  applyWorkbenchTheme();
+  try {
+    if (!state.workbenchCatalog.length) {
+      const payload = await fetchJSON("/api/workbench");
+      state.workbenchCatalog = payload.concepts || [];
+      state.workbenchTypes = payload.question_types || [];
+      state.workbenchConceptId = state.workbenchConceptId || state.workbenchCatalog[0]?.id || "";
+      renderWorkbenchConcepts();
+      renderWorkbenchTypeTabs();
+    } else {
+      renderWorkbenchConcepts();
+      renderWorkbenchTypeTabs();
+    }
+    await Promise.all([loadWorkbenchTemplate(), loadWorkbenchNotes()]);
+  } catch (error) {
+    $("workbench-template-card").innerHTML = `<div class="loading-card">工作台读取失败：${escapeHtml(error.message)}</div>`;
+    showNotice(`无法读取学习工作台：${error.message}`);
+  }
+}
+
+async function uploadWorkbenchNoteImage(file) {
+  const error = validateImageFile(file);
+  if (error) throw new Error(error);
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("user_id", state.userId);
+  return fetchJSON("/api/workbench/notes/assets", { method: "POST", body: formData });
+}
+
+function bindNoteEditor() {
+  $$('[data-note-mode]').forEach((button) => button.addEventListener("click", () => setNoteMode(button.dataset.noteMode)));
+  $$('[data-note-command]').forEach((button) => button.addEventListener("mousedown", (event) => event.preventDefault()));
+  $$('[data-note-command]').forEach((button) => button.addEventListener("click", () => runNoteCommand(button.dataset.noteCommand, button.dataset.noteValue || null)));
+  $$('[data-note-insert]').forEach((button) => button.addEventListener("click", () => insertNoteText(button.dataset.noteInsert === "subquestion" ? "（1） " : "1. ")));
+  $$('[data-markdown-insert]').forEach((button) => button.addEventListener("click", () => {
+    const textarea = $("note-markdown-editor");
+    const value = button.dataset.markdownInsert || "";
+    const start = textarea.selectionStart || 0;
+    textarea.value = `${textarea.value.slice(0, start)}${value}${textarea.value.slice(textarea.selectionEnd || start)}`;
+    textarea.focus();
+    textarea.selectionStart = textarea.selectionEnd = start + value.length;
+    $("note-save-state").textContent = "有未保存修改";
+  }));
+  $("note-rich-editor")?.addEventListener("keyup", saveNoteSelection);
+  $("note-rich-editor")?.addEventListener("mouseup", saveNoteSelection);
+  $("note-rich-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; });
+  $("note-markdown-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; });
+  $("note-image-button")?.addEventListener("click", () => { saveNoteSelection(); $("note-image-input").click(); });
+  $("note-image-input")?.addEventListener("change", async () => {
+    const input = $("note-image-input");
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      $("note-save-state").textContent = "图片上传中……";
+      const uploaded = await uploadWorkbenchNoteImage(file);
+      const editor = $("note-rich-editor");
+      editor.focus();
+      restoreNoteSelection();
+      document.execCommand("insertHTML", false, `<img src="${escapeAttr(uploaded.url)}" alt="${escapeAttr(uploaded.filename || "笔记图片")}" />`);
+      $("note-save-state").textContent = "有未保存修改";
+    } catch (error) {
+      showToast(`图片插入失败：${error.message}`, true);
+    } finally {
+      input.value = "";
+    }
+  });
+  $("handwriting-eraser")?.addEventListener("click", () => {
+    state.handwritingErasing = !state.handwritingErasing;
+    $("handwriting-eraser").classList.toggle("is-active", state.handwritingErasing);
+    $("handwriting-eraser").textContent = state.handwritingErasing ? "画笔" : "橡皮";
+  });
+  $("handwriting-clear")?.addEventListener("click", () => {
+    const canvas = $("note-handwriting-canvas");
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+    context.save();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.restore();
+    canvas.dataset.handwriting = "";
+    $("note-save-state").textContent = "有未保存修改";
+  });
+  $("mindmap-add")?.addEventListener("click", () => {
+    const container = $("note-mindmap-branches");
+    const index = container.querySelectorAll("[data-mindmap-branch]").length + 1;
+    container.insertAdjacentHTML("beforeend", `<div class="mindmap-branch-row"><span>${index}</span><input type="text" value="" data-mindmap-branch placeholder="分支 ${index}" /><button type="button" class="text-button" data-mindmap-remove aria-label="删除分支">删除</button></div>`);
+    bindMindmapFields();
+    container.querySelector("[data-mindmap-branch]:last-of-type")?.focus();
+  });
+  $("note-save")?.addEventListener("click", saveWorkbenchNote);
+  $("note-delete")?.addEventListener("click", deleteWorkbenchNote);
+  $("note-favorite")?.addEventListener("click", toggleNoteFavorite);
+  $("new-note-button")?.addEventListener("click", newWorkbenchNote);
+  $("empty-new-note")?.addEventListener("click", newWorkbenchNote);
+  $("note-search")?.addEventListener("input", () => {
+    clearTimeout(state.noteSearchTimer);
+    state.noteSearchTimer = setTimeout(loadWorkbenchNotes, 250);
+  });
+  $("note-favorite-filter")?.addEventListener("click", () => {
+    state.noteFavoriteOnly = !state.noteFavoriteOnly;
+    $("note-favorite-filter").classList.toggle("is-active", state.noteFavoriteOnly);
+    $("note-favorite-filter").setAttribute("aria-pressed", String(state.noteFavoriteOnly));
+    loadWorkbenchNotes();
+  });
+  $("workbench-theme-toggle")?.addEventListener("click", () => {
+    const next = document.body.classList.contains("theme-dark") ? "light" : "dark";
+    localStorage.setItem("ai-math-workbench-theme", next);
+    applyWorkbenchTheme();
+  });
+  $("workbench-export")?.addEventListener("click", exportWorkbenchData);
+  $("workbench-import")?.addEventListener("click", () => $("workbench-import-input")?.click());
+  $("workbench-import-input")?.addEventListener("change", () => importWorkbenchData($("workbench-import-input").files?.[0]));
 }
 
 function analyticsPercent(value, fallback = "—") {
@@ -1811,6 +2425,8 @@ async function copyServerCommand() {
 
 async function init() {
   $("today-date").textContent = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date());
+  applyWorkbenchTheme();
+  bindNoteEditor();
   $$(".nav-item[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
   $$('[data-view-target]').forEach((button) => button.addEventListener("click", () => navigate(button.dataset.viewTarget)));
   $("refresh-button").addEventListener("click", () => loadOverview());
@@ -1831,6 +2447,12 @@ async function init() {
   $("clear-key").addEventListener("click", clearApiKey);
   $("model-select").addEventListener("change", () => { $("model-manual").value = $("model-select").value; });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeQuestion(); });
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && state.view === "workbench" && state.currentNote) {
+      event.preventDefault();
+      saveWorkbenchNote();
+    }
+  });
   document.addEventListener("click", (event) => {
     if (event.target.id === "submit-simulation") submitSimulation(false);
     if (event.target.id === "cancel-simulation") cancelSimulation();

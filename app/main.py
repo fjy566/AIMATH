@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,18 +17,31 @@ from app.database import (
     attachment_path,
     attachments_for_attempt,
     create_attachment,
+    create_note,
+    create_note_asset,
     delete_simulation,
     create_practice_session,
     create_simulation,
+    delete_note,
     fetch_attempts,
     finish_practice_session,
     finish_simulation,
+    get_note,
     get_simulation,
     get_practice_session,
+    get_template_override,
     init_db,
     insert_attempt,
+    list_note_versions,
+    list_notes,
+    list_template_overrides,
+    list_template_versions,
     link_attachments,
+    note_asset_path,
+    restore_note_version,
     touch_practice_session,
+    update_note,
+    upsert_template_override,
     upsert_practice_session_answer,
     upsert_simulation_answer,
 )
@@ -45,6 +60,12 @@ from app.services.learner import (
 )
 from app.services.llm import LLMError, fetch_models, public_settings, save_settings, tutor_response
 from app.services.server import ServerSettingsError, save_server_settings, server_settings
+from app.services.workbench import (
+    QUESTION_TYPES,
+    build_workbench_template,
+    question_type_catalog,
+    workbench_catalog,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -132,6 +153,32 @@ class TutorRequest(BaseModel):
     request: str = "分析我的错误"
 
 
+class NoteRequest(BaseModel):
+    user_id: str = "local-user"
+    title: str = Field(default="未命名笔记", max_length=200)
+    concept_id: str = Field(default="", max_length=100)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    content_html: str = Field(default="", max_length=300000)
+    content_markdown: str = Field(default="", max_length=300000)
+    handwriting_data: str = Field(default="", max_length=12_000_000)
+    mindmap: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    favorite: bool = False
+
+
+class TemplateUpdateRequest(BaseModel):
+    user_id: str = "local-user"
+    overview: str = Field(default="", max_length=5000)
+    framework: list[str] = Field(default_factory=list, max_length=20)
+    mistakes: list[str] = Field(default_factory=list, max_length=20)
+    memory_aid: str = Field(default="", max_length=500)
+
+
+class WorkbenchImportRequest(BaseModel):
+    user_id: str = "local-user"
+    notes: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    template_overrides: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
 def _question_public(question: dict[str, Any], reveal: bool = False) -> dict[str, Any]:
     result = {key: value for key, value in question.items() if key not in {"raw_markdown", "answer_markdown", "solution_markdown"}}
     difficulty_band, difficulty_label = difficulty_descriptor(question.get("year"))
@@ -165,6 +212,47 @@ def _attempt_response(question: dict[str, Any], result: dict[str, Any], attempt_
         "source_path": question.get("source_path", ""),
         "attachments": attachments_for_attempt(attempt_id),
     }
+
+
+def _sanitize_note_html(value: str) -> str:
+    """Keep the editor useful while removing executable or embedded content."""
+    html = str(value or "")
+    html = re.sub(r"<script\b[\s\S]*?</script\s*>", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"<(iframe|object|embed|form)\b[\s\S]*?</\1\s*>", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"\s+on[a-z0-9_-]+\s*=\s*(\"[^\"]*\"|'[^']*')", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"(href|src)\s*=\s*(['\"])\s*javascript:[^'\"]*\2", r"\1=\2\2", html, flags=re.IGNORECASE)
+    return html[:300000]
+
+
+def _normalize_note_payload(payload: NoteRequest, *, user_id: str, note_id: str | None = None) -> dict[str, Any]:
+    tags: list[str] = []
+    for raw_tag in payload.tags:
+        tag = str(raw_tag).strip()[:40]
+        if tag and tag not in tags:
+            tags.append(tag)
+    mindmap: list[dict[str, str]] = []
+    for index, raw_node in enumerate(payload.mindmap[:50]):
+        label = str(raw_node.get("label", "")).strip()[:200]
+        if not label:
+            continue
+        mindmap.append({
+            "id": str(raw_node.get("id", f"node-{index + 1}"))[:80],
+            "label": label,
+            "parent": str(raw_node.get("parent", "root"))[:80],
+        })
+    item = {
+        "id": note_id or uuid.uuid4().hex,
+        "user_id": user_id.strip() or "local-user",
+        "title": payload.title.strip() or "未命名笔记",
+        "concept_id": payload.concept_id.strip(),
+        "tags": tags,
+        "content_html": _sanitize_note_html(payload.content_html),
+        "content_markdown": payload.content_markdown[:300000],
+        "handwriting_data": payload.handwriting_data[:12_000_000],
+        "mindmap": mindmap,
+        "favorite": bool(payload.favorite),
+    }
+    return item
 
 
 @app.get("/", include_in_schema=False)
@@ -220,6 +308,207 @@ def get_attachment(attachment_id: str) -> FileResponse:
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="图片不存在。")
     return FileResponse(path)
+
+
+@app.get("/api/workbench")
+def get_workbench_catalog(
+    concept_id: str = Query(default=""),
+    question_type: str = Query(default=""),
+    user_id: str = Query(default="local-user"),
+) -> dict[str, Any]:
+    questions = question_store.list()
+    if concept_id or question_type:
+        if not concept_id or not question_type:
+            raise HTTPException(status_code=400, detail="选择知识块和题型后才能读取模板。")
+        override = get_template_override(user_id.strip() or "local-user", concept_id, question_type)
+        try:
+            template = build_workbench_template(questions, concept_id, question_type, override)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"template": template}
+    return {
+        "concepts": workbench_catalog(questions),
+        "question_types": question_type_catalog(),
+        "total_templates": len(workbench_catalog(questions)) * len(QUESTION_TYPES),
+    }
+
+
+@app.put("/api/workbench/templates/{concept_id}/{question_type}")
+def save_workbench_template(concept_id: str, question_type: str, payload: TemplateUpdateRequest) -> dict[str, Any]:
+    if concept_id not in CONCEPT_META or question_type not in QUESTION_TYPES:
+        raise HTTPException(status_code=400, detail="无效的知识块或题型。")
+    saved = upsert_template_override({
+        "user_id": payload.user_id.strip() or "local-user",
+        "concept_id": concept_id,
+        "question_type": question_type,
+        "overview": payload.overview.strip(),
+        "framework": [item.strip() for item in payload.framework if item.strip()],
+        "mistakes": [item.strip() for item in payload.mistakes if item.strip()],
+        "memory_aid": payload.memory_aid.strip(),
+    })
+    return {"template": build_workbench_template(question_store.list(), concept_id, question_type, saved)}
+
+
+@app.get("/api/workbench/templates/{concept_id}/{question_type}/versions")
+def get_workbench_template_versions(concept_id: str, question_type: str, user_id: str = "local-user") -> dict[str, Any]:
+    if concept_id not in CONCEPT_META or question_type not in QUESTION_TYPES:
+        raise HTTPException(status_code=400, detail="无效的知识块或题型。")
+    return {"items": list_template_versions(user_id.strip() or "local-user", concept_id, question_type)}
+
+
+@app.get("/api/workbench/notes")
+def get_workbench_notes(
+    user_id: str = "local-user",
+    search: str = "",
+    concept_id: str = "",
+    favorite: bool = False,
+) -> dict[str, Any]:
+    return {"items": list_notes(user_id.strip() or "local-user", search=search, concept_id=concept_id, favorite_only=favorite)}
+
+
+@app.post("/api/workbench/notes")
+def create_workbench_note(payload: NoteRequest) -> dict[str, Any]:
+    item = _normalize_note_payload(payload, user_id=payload.user_id)
+    return {"note": create_note(item)}
+
+
+@app.get("/api/workbench/notes/{note_id}")
+def get_workbench_note(note_id: str, user_id: str = "local-user") -> dict[str, Any]:
+    note = get_note(note_id, user_id.strip() or "local-user")
+    if note is None:
+        raise HTTPException(status_code=404, detail="笔记不存在。")
+    return {"note": note}
+
+
+@app.put("/api/workbench/notes/{note_id}")
+def update_workbench_note(note_id: str, payload: NoteRequest) -> dict[str, Any]:
+    user_id = payload.user_id.strip() or "local-user"
+    if get_note(note_id, user_id) is None:
+        raise HTTPException(status_code=404, detail="笔记不存在。")
+    item = _normalize_note_payload(payload, user_id=user_id, note_id=note_id)
+    saved = update_note(note_id, user_id, item)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="笔记不存在。")
+    return {"note": saved}
+
+
+@app.delete("/api/workbench/notes/{note_id}")
+def delete_workbench_note(note_id: str, user_id: str = "local-user") -> dict[str, Any]:
+    if not delete_note(note_id, user_id.strip() or "local-user"):
+        raise HTTPException(status_code=404, detail="笔记不存在。")
+    return {"status": "deleted", "note_id": note_id}
+
+
+@app.get("/api/workbench/notes/{note_id}/versions")
+def get_workbench_note_versions(note_id: str, user_id: str = "local-user") -> dict[str, Any]:
+    normalized_user_id = user_id.strip() or "local-user"
+    if get_note(note_id, normalized_user_id) is None:
+        raise HTTPException(status_code=404, detail="笔记不存在。")
+    return {"items": list_note_versions(note_id, normalized_user_id)}
+
+
+@app.post("/api/workbench/notes/{note_id}/restore/{version_id}")
+def restore_workbench_note_version(note_id: str, version_id: int, user_id: str = "local-user") -> dict[str, Any]:
+    note = restore_note_version(note_id, version_id, user_id.strip() or "local-user")
+    if note is None:
+        raise HTTPException(status_code=404, detail="笔记版本不存在。")
+    return {"note": note}
+
+
+@app.post("/api/workbench/notes/assets")
+async def upload_workbench_note_asset(
+    file: UploadFile = File(...),
+    user_id: str = Form(default="local-user"),
+) -> dict[str, Any]:
+    content_type = (file.content_type or "").lower()
+    if content_type not in IMAGE_SUFFIXES:
+        raise HTTPException(status_code=415, detail="只支持 PNG、JPG、WebP 或 GIF 图片。")
+    content = await file.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="图片不能超过 8 MB。")
+    asset_id = uuid.uuid4().hex
+    relative_path = Path("data") / "uploads" / "notes" / f"{asset_id}{IMAGE_SUFFIXES[content_type]}"
+    absolute_path = ROOT_DIR / relative_path
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    absolute_path.write_bytes(content)
+    create_note_asset({
+        "id": asset_id,
+        "user_id": user_id.strip() or "local-user",
+        "filename": file.filename or "note-image",
+        "content_type": content_type,
+        "size_bytes": len(content),
+        "storage_path": relative_path.as_posix(),
+    })
+    return {
+        "asset_id": asset_id,
+        "filename": file.filename or "note-image",
+        "content_type": content_type,
+        "size_bytes": len(content),
+        "url": f"/api/workbench/note-assets/{asset_id}",
+    }
+
+
+@app.get("/api/workbench/note-assets/{asset_id}")
+def get_workbench_note_asset(asset_id: str) -> FileResponse:
+    path = note_asset_path(asset_id)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="笔记图片不存在。")
+    return FileResponse(path)
+
+
+@app.get("/api/workbench/export")
+def export_workbench(user_id: str = "local-user") -> dict[str, Any]:
+    normalized_user_id = user_id.strip() or "local-user"
+    notes = list_notes(normalized_user_id)
+    versions = {note["id"]: list_note_versions(note["id"], normalized_user_id) for note in notes}
+    return {
+        "format": "ai-math-workbench",
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "user_id": normalized_user_id,
+        "notes": notes,
+        "note_versions": versions,
+        "template_overrides": list_template_overrides(normalized_user_id),
+    }
+
+
+@app.post("/api/workbench/import")
+def import_workbench(payload: WorkbenchImportRequest) -> dict[str, Any]:
+    user_id = payload.user_id.strip() or "local-user"
+    imported_notes = 0
+    imported_templates = 0
+    for raw_note in payload.notes:
+        try:
+            request = NoteRequest(**raw_note)
+        except Exception:
+            continue
+        note_id = str(raw_note.get("id") or uuid.uuid4().hex)
+        item = _normalize_note_payload(request, user_id=user_id, note_id=note_id)
+        if get_note(note_id, user_id) is None:
+            create_note(item)
+        else:
+            update_note(note_id, user_id, item)
+        imported_notes += 1
+    for raw_template in payload.template_overrides:
+        concept_id = str(raw_template.get("concept_id", ""))
+        question_type = str(raw_template.get("question_type", ""))
+        if concept_id not in CONCEPT_META or question_type not in QUESTION_TYPES:
+            continue
+        try:
+            request = TemplateUpdateRequest(**raw_template)
+        except Exception:
+            continue
+        upsert_template_override({
+            "user_id": user_id,
+            "concept_id": concept_id,
+            "question_type": question_type,
+            "overview": request.overview.strip(),
+            "framework": [item.strip() for item in request.framework if item.strip()],
+            "mistakes": [item.strip() for item in request.mistakes if item.strip()],
+            "memory_aid": request.memory_aid.strip(),
+        })
+        imported_templates += 1
+    return {"imported_notes": imported_notes, "imported_templates": imported_templates}
 
 
 @app.get("/api/stats")
