@@ -255,6 +255,16 @@ def get_simulation(simulation_id: str) -> dict[str, Any] | None:
     return item
 
 
+def delete_simulation(simulation_id: str) -> bool:
+    """Delete an in-progress simulation and its answers."""
+    with get_connection() as connection:
+        cursor = connection.execute(
+            "DELETE FROM simulations WHERE id = ? AND status = 'active'",
+            (simulation_id,),
+        )
+    return cursor.rowcount > 0
+
+
 def upsert_simulation_answer(payload: dict[str, Any]) -> None:
     with get_connection() as connection:
         connection.execute(

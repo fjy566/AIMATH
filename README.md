@@ -12,7 +12,8 @@
 - 模拟考：按真实年份生成整卷，使用题库原始题目和分值，提交后写回学习记录。
 - 手写过程图：练习题和模拟考都可以上传 PNG/JPG/WebP/GIF 作答图片，单张不超过 8 MB，文件保存在本地 `data/uploads` 并随作答记录关联。
 - 分数预估：基于知识块掌握度进行 800 次蒙特卡洛模拟，给出保守/中位/乐观区间，不承诺真实分数。
-- 模型设置：只留一个 OpenAI-compatible 接口配置页，可填写 Base URL 和 API Key，点击拉取 `/v1/models`，选择模型后保存。支持 Ollama、LM Studio、vLLM 和云端兼容接口。
+- 学习分析：统计有效作答、题库覆盖、正确率、掌握度、得分率、平均用时、题型表现、错因分布、知识块强弱项、近 30 天趋势和最近作答记录；没有真实作答时不会伪造个人分析。
+- 设置中心：模型接入、监听地址、端口和对外访问地址集中管理。模型接入支持 OpenAI-compatible 云服务、Ollama、LM Studio、vLLM 和本地接口。
 
 ## 启动
 
@@ -25,10 +26,16 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python scripts/import_questions.py
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+python scripts/run_server.py
 ```
 
 浏览器打开 <http://127.0.0.1:8000>。如果 PowerShell 禁止激活脚本，也可以直接使用 `.venv\Scripts\python.exe` 和 `.venv\Scripts\uvicorn.exe`。
+
+`python scripts/run_server.py` 会读取“设置”页面保存的监听地址和端口，默认是 `127.0.0.1:8000`。也可以直接用 Uvicorn 命令临时覆盖配置，例如：
+
+```powershell
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8123
+```
 
 运行测试：
 
@@ -40,7 +47,7 @@ node --check app\static\app.js
 
 ## 模型配置示例
 
-在“模型设置”页面填写服务地址，点击“拉取模型列表”，选择模型并保存：
+在“设置”页面的“连接模型服务”中填写服务地址，点击“拉取模型列表”，选择模型并保存：
 
 | 服务 | Base URL 示例 | API Key |
 | --- | --- | --- |
@@ -50,6 +57,17 @@ node --check app\static\app.js
 | vLLM | `http://127.0.0.1:8000/v1` | 按启动参数设置 |
 
 系统只调用两个标准接口：`GET /v1/models` 和 `POST /v1/chat/completions`。API Key 只写入项目 `data/ai_math.sqlite3`，接口返回时只显示末四位掩码；不要把这个数据库文件上传或提交到公开仓库。
+
+## 后端服务部署设置
+
+在“设置”的“后端服务”中配置：
+
+- `127.0.0.1`：仅当前电脑访问，适合个人学习。
+- `0.0.0.0`：允许局域网或公网设备连接；访问时应使用本机局域网 IP 或域名，而不是把 `0.0.0.0` 当作浏览器地址。
+- 端口：保存 1–65535 范围内的端口，例如 `8123`。保存后停止当前进程，再运行 `python scripts/run_server.py`，新端口才会监听。
+- 对外访问地址：可填写局域网地址、域名或反向代理后的 HTTPS 地址，仅用于界面展示和部署提示，不会替代监听地址。
+
+公网使用时请配合防火墙、HTTPS、反向代理和登录认证；不要把没有认证的开发服务直接暴露到公网。应用本身默认不增加跨域开放，也不会把服务端口的保存误报成已经完成重启。
 
 ## 真题来源与完整性边界
 
@@ -70,13 +88,15 @@ app/
   services/
     content.py            题库加载
     grading.py            判题
-    learner.py            掌握度、推荐、分块、预估
+    learner.py            掌握度、推荐、分块、统计、预估
     llm.py                OpenAI-compatible 模型网关
+    server.py             监听地址、端口和启动配置
   static/                 单页应用前端
 data/
   processed/questions.json  导入后的完整题目数据
   sources/                   原始来源文件
 scripts/import_questions.py 题库导入器
+scripts/run_server.py       按已保存配置启动 FastAPI
 tests/                       核心回归测试
 docs/adr/                    架构决策记录
 ```

@@ -4,11 +4,13 @@ const state = {
   stats: null,
   progress: null,
   forecast: null,
+  analytics: null,
   blocks: [],
   nextQuestions: [],
   concepts: [],
   exams: [],
   settings: null,
+  serverSettings: null,
   currentQuestion: null,
   practiceSession: null,
   currentSimulation: null,
@@ -24,7 +26,8 @@ const viewMeta = {
   library: ["ARCHIVE / REAL QUESTIONS", "真题库"],
   blocks: ["ADAPTIVE PRACTICE / BLOC TRAINING", "分块训练"],
   simulation: ["FULL PAPER / TIMED PRACTICE", "模拟考"],
-  settings: ["MODEL GATEWAY / OPENAI COMPATIBLE", "模型设置"],
+  analytics: ["ANALYTICS / EVIDENCE", "学习分析"],
+  settings: ["SETTINGS / MODEL + SERVER", "设置"],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -96,6 +99,15 @@ function renderMarkdown(source) {
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
     if (!line) {
+      closeParagraph();
+      closeList();
+      continue;
+    }
+    // Source files use a trailing `---` as a section delimiter. Treat both
+    // the normal Markdown form and the escaped `\---` variant as structure,
+    // not answer text, so the delimiter cannot appear as a broken tail in
+    // source answers or explanations.
+    if (/^\\?(?:-{3,}|_{3,}|\*{3,})$/.test(line)) {
       closeParagraph();
       closeList();
       continue;
@@ -329,8 +341,10 @@ function formulaToolMarkup(item) {
   return `<button type="button" class="formula-tool beginner-formula-tool" data-formula-tool data-formula-tex="${escapeAttr(item.tex)}" data-formula-select="${escapeAttr(item.select || "")}" data-formula-wrap="${escapeAttr(item.wrap || "inline")}" title="${escapeAttr(item.title || item.label)}">${content}</button>`;
 }
 
-function formulaGroupsMarkup(groups) {
-  return groups.map((group) => `<div class="formula-beginner-group"><span class="formula-group-label">${escapeHtml(group.label)}</span><div class="formula-beginner-list">${group.items.map((item) => formulaToolMarkup(item)).join("")}</div></div>`).join("");
+function formulaGroupsMarkup(editorId, groups) {
+  const tabs = groups.map((group, index) => `<button type="button" class="formula-category-tab ${index === 0 ? "is-active" : ""}" data-formula-category="${index}" role="tab" aria-selected="${index === 0 ? "true" : "false"}" aria-controls="${escapeAttr(editorId)}-formula-category-panel-${index}" tabindex="${index === 0 ? "0" : "-1"}"><span>${escapeHtml(group.label)}</span><small>${group.items.length}</small></button>`).join("");
+  const panels = groups.map((group, index) => `<section class="formula-beginner-group formula-group-panel" id="${escapeAttr(editorId)}-formula-category-panel-${index}" data-formula-group-panel="${index}" role="tabpanel" ${index === 0 ? "" : "hidden"}><div class="formula-group-panel-head"><span class="formula-group-label">${escapeHtml(group.label)}</span><span>${group.items.length} 个常用工具</span></div><div class="formula-beginner-list">${group.items.map((item) => formulaToolMarkup(item)).join("")}</div></section>`).join("");
+  return `<div class="formula-category-tabs" role="tablist" aria-label="公式分类">${tabs}</div><div class="formula-beginner-groups">${panels}</div>`;
 }
 
 function answerStructureMarkup(editorId, questionType) {
@@ -357,8 +371,8 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill")
       </div>
     </div>
     <div class="formula-tools-panel" id="${escapeAttr(editorId)}-formula-tools" data-formula-tools-panel hidden>
-      <div class="formula-beginner-head"><strong>直接插入常用公式</strong><span>插入后可以继续修改字母和数字</span></div>
-      <div class="formula-beginner-groups" role="toolbar" aria-label="常用数学公式工具">${formulaGroupsMarkup(BEGINNER_FORMULA_GROUPS)}</div>
+      <div class="formula-beginner-head"><strong>先选一类，再插入公式</strong><span>插入后可以继续修改字母和数字</span></div>
+      <div role="toolbar" aria-label="常用数学公式工具">${formulaGroupsMarkup(editorId, BEGINNER_FORMULA_GROUPS)}</div>
       <p class="formula-helper"><span>点击按钮插入模板，蓝色文字会自动选中，可直接替换</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></p>
     </div>
     ${answerStructureMarkup(editorId, questionType)}
@@ -482,6 +496,19 @@ function setDisclosure(button, panel, open) {
   button.classList.toggle("is-open", open);
 }
 
+function selectFormulaCategory(editor, category) {
+  const selected = String(category);
+  $$('[data-formula-category]', editor).forEach((button) => {
+    const active = button.dataset.formulaCategory === selected;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  $$('[data-formula-group-panel]', editor).forEach((panel) => {
+    panel.hidden = panel.dataset.formulaGroupPanel !== selected;
+  });
+}
+
 function selectChoice(editor, value) {
   const input = editor.querySelector("[data-choice-input]");
   if (!input) return;
@@ -514,6 +541,9 @@ function bindAnswerEditors(root = document) {
     });
     $$('[data-formula-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
       setDisclosure(button, editor.querySelector("[data-formula-tools-panel]"), button.getAttribute("aria-expanded") !== "true");
+    }));
+    $$('[data-formula-category]', editor).forEach((button) => button.addEventListener("click", () => {
+      selectFormulaCategory(editor, button.dataset.formulaCategory);
     }));
     $$('[data-answer-structure-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
       setDisclosure(button, editor.querySelector("[data-answer-structure-panel]"), button.getAttribute("aria-expanded") !== "true");
@@ -838,6 +868,7 @@ function navigate(view) {
   if (view === "library") loadLibrary();
   if (view === "blocks") loadBlocks();
   if (view === "simulation") loadSimulationCatalog();
+  if (view === "analytics") loadAnalytics();
   if (view === "settings") loadSettings();
 }
 
@@ -866,6 +897,114 @@ function renderOverview() {
   bindQuestionOpeners($("overview-questions"));
 }
 
+function analyticsPercent(value, fallback = "—") {
+  return value === null || value === undefined || Number.isNaN(Number(value)) ? fallback : `${formatScore(value)}%`;
+}
+
+function analyticsDuration(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds)) || Number(seconds) <= 0) return "—";
+  const value = Number(seconds);
+  return value < 60 ? `${formatScore(value)} 秒` : `${formatScore(value / 60)} 分钟`;
+}
+
+function analyticsStatusClass(status) {
+  return {
+    correct: "steady",
+    incorrect: "needs-work",
+    partial: "building",
+    manual: "untrained",
+    "需加强": "needs-work",
+    "待训练": "untrained",
+    "巩固中": "building",
+    "稳定": "steady",
+    "继续巩固": "building",
+  }[status] || "neutral";
+}
+
+function renderAnalyticsRankRow(row, index) {
+  const mastery = Math.max(0, Math.min(100, Number(row.mastery) || 0));
+  const attempted = Number(row.attempted_question_count || 0);
+  const total = Number(row.question_count || 0);
+  return `<div class="analytics-rank-row">
+    <span class="analytics-rank-index">${String(index + 1).padStart(2, "0")}</span>
+    <div class="analytics-rank-main">
+      <div class="analytics-rank-title"><strong>${escapeHtml(row.name || "未分类")}</strong><span class="analysis-status ${analyticsStatusClass(row.status)}">${escapeHtml(row.status || "待观察")}</span></div>
+      <div class="analytics-rank-meta"><span>${escapeHtml(row.subject || row.scope_label || "知识块")}</span><span>${attempted} / ${total} 题已覆盖</span><span>正确率 ${analyticsPercent(row.accuracy)}</span></div>
+      <div class="analytics-bar"><span style="--progress:${(mastery / 100).toFixed(3)}"></span></div>
+    </div>
+    <strong class="analytics-rank-value">${formatScore(row.mastery)}%</strong>
+  </div>`;
+}
+
+function renderAnalytics() {
+  const data = state.analytics || {};
+  const overview = data.overview || {};
+  const recommendations = data.recommendations || [];
+  const setText = (id, value) => { if ($(id)) $(id).textContent = value; };
+  setText("analytics-attempts", String(overview.attempts ?? data.attempts ?? 0));
+  setText("analytics-coverage", analyticsPercent(overview.coverage_rate, "0%"));
+  setText("analytics-coverage-note", `${overview.unique_questions || 0} / ${data.questions_available || 0} 道题`);
+  setText("analytics-accuracy", analyticsPercent(overview.accuracy));
+  setText("analytics-mastery", analyticsPercent(overview.mastery, "0%"));
+  setText("analytics-score-rate", analyticsPercent(overview.score_rate));
+  setText("analytics-avg-time", analyticsDuration(overview.avg_seconds));
+
+  const recommendationMarkup = recommendations.length
+    ? recommendations.slice(0, 3).map((item, index) => `<span class="analytics-recommendation"><b>${String(index + 1).padStart(2, "0")}</b>${escapeHtml(item)}</span>`).join("")
+    : `<span class="analytics-recommendation">完成真实作答后，这里会给出基于证据的下一步建议。</span>`;
+  $("analytics-recommendations").innerHTML = `<span class="eyebrow">NEXT MOVES</span>${recommendationMarkup}`;
+
+  const weaknesses = data.weaknesses || [];
+  const strengths = data.strengths || [];
+  $("analytics-weaknesses").innerHTML = weaknesses.length
+    ? weaknesses.map(renderAnalyticsRankRow).join("")
+    : `<div class="analytics-empty">完成真实作答后，这里会显示掌握度低、正确率低或覆盖不足的知识块。</div>`;
+  $("analytics-strengths").innerHTML = strengths.length
+    ? strengths.map(renderAnalyticsRankRow).join("")
+    : `<div class="analytics-empty">还没有足够的作答证据。系统不会把未训练的知识块误判为强项。</div>`;
+
+  const questionTypeRows = data.question_types || [];
+  $("analytics-type-breakdown").innerHTML = questionTypeRows.length
+    ? questionTypeRows.map((row) => `<div class="analytics-type-row">
+        <div class="analytics-type-title"><strong>${escapeHtml(typeLabel(row.question_type))}</strong><span class="analysis-status ${analyticsStatusClass(row.status)}">${escapeHtml(row.status || "待训练")}</span></div>
+        <div class="analytics-type-stats"><span><b>${row.attempts || 0}</b> 次作答</span><span><b>${row.attempted_question_count || 0}</b> / ${row.question_count || 0} 题</span><span>正确率 <b>${analyticsPercent(row.accuracy)}</b></span><span>平均 ${analyticsDuration(row.avg_seconds)}</span></div>
+        <div class="analytics-bar"><span style="--progress:${(Math.max(0, Math.min(100, Number(row.accuracy) || 0)) / 100).toFixed(3)}"></span></div>
+      </div>`).join("")
+    : `<div class="analytics-empty">题型数据读取中……</div>`;
+
+  const concepts = data.concepts || [];
+  $("analytics-concepts").innerHTML = concepts.length
+    ? `<div class="analytics-concepts-row analytics-concepts-header"><span>知识块</span><span>掌握度</span><span>题库覆盖</span><span>正确率</span><span>得分率</span><span>平均用时</span></div>${concepts.map((row) => `<div class="analytics-concepts-row"><span class="analytics-concept-name"><strong>${escapeHtml(row.name || "未分类")}</strong><small>${escapeHtml(row.subject || row.scope_label || "")}${row.scope === "out-of-syllabus" ? " · 原题保留" : ""}</small></span><strong>${formatScore(row.mastery)}%</strong><span>${row.attempted_question_count || 0} / ${row.question_count || 0}</span><span>${analyticsPercent(row.accuracy)}</span><span>${analyticsPercent(row.score_rate)}</span><span>${analyticsDuration(row.avg_seconds)}</span></div>`).join("")}`
+    : `<div class="analytics-empty">题库知识块读取中……</div>`;
+
+  const errors = data.error_types || [];
+  $("analytics-errors").innerHTML = errors.length
+    ? errors.slice(0, 8).map((row) => `<div class="analytics-error-row"><span class="analytics-error-name">${escapeHtml(row.name)}</span><span class="analytics-error-bar"><i style="--progress:${(Math.max(0, Math.min(100, Number(row.share) || 0)) / 100).toFixed(3)}"></i></span><strong>${row.count} 次</strong><small>${analyticsPercent(row.share)}</small></div>`).join("")
+    : `<div class="analytics-empty">暂无错因记录。选择题、填空题判错或解答题自评后，这里会逐步形成分布。</div>`;
+
+  const trend = data.daily_trend || [];
+  const maxDailyAttempts = Math.max(1, ...trend.map((row) => Number(row.attempts) || 0));
+  $("analytics-trend").innerHTML = trend.length
+    ? trend.map((row) => `<div class="analytics-trend-row"><span class="analytics-trend-date">${escapeHtml(String(row.date).slice(5))}</span><span class="analytics-trend-bar"><i style="--progress:${((Number(row.attempts) || 0) / maxDailyAttempts).toFixed(3)}"></i></span><span>${row.attempts} 次</span><span>正确率 ${analyticsPercent(row.accuracy)}</span></div>`).join("")
+    : `<div class="analytics-empty">完成作答并提交后，这里会按日期显示训练频率和正确率趋势。</div>`;
+
+  const recent = data.recent_attempts || [];
+  $("analytics-recent").innerHTML = recent.length
+    ? recent.map((row) => `<button type="button" class="analytics-recent-row" data-analytics-question="${escapeAttr(row.question_id)}"><span class="analytics-recent-ref">${escapeHtml(row.year || "—")} / Q${escapeHtml(row.number || "—")}</span><span class="analytics-recent-type">${escapeHtml(typeLabel(row.question_type))}</span><span class="analysis-status ${analyticsStatusClass(row.status)}">${escapeHtml(row.status_label)}</span><strong>${formatScore(row.score)} / ${formatScore(row.max_score)}</strong></button>`).join("")
+    : `<div class="analytics-empty">暂无最近作答记录。</div>`;
+  $$('[data-analytics-question]', $("analytics-recent")).forEach((button) => button.addEventListener("click", () => openQuestion(button.dataset.analyticsQuestion)));
+}
+
+async function loadAnalytics() {
+  try {
+    state.analytics = await fetchJSON(`/api/analytics?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`);
+    renderAnalytics();
+    showNotice("");
+  } catch (error) {
+    $("analytics-recommendations").textContent = `无法读取学习分析：${error.message}`;
+  }
+}
+
 function renderBlockPreview(block) {
   const concept = block.concept || {};
   const value = Math.max(2, Math.min(98, Number(concept.mastery ?? 22)));
@@ -878,9 +1017,16 @@ function renderBlockPreview(block) {
   </article>`;
 }
 
+function questionDifficultyMarkup(question) {
+  const year = Number(question.year) || 0;
+  const band = question.difficulty_band || (year >= 2020 && year <= 2026 ? "advanced" : year >= 1987 && year <= 2019 ? "basic" : "other");
+  const label = question.difficulty_label || (band === "advanced" ? "提高题" : band === "basic" ? "基础题" : "待分层");
+  return `<span class="difficulty-pill ${escapeAttr(band)}">${escapeHtml(label)}</span>`;
+}
+
 function renderQuestionMini(question) {
   return `<article class="question-mini" data-question-id="${escapeAttr(question.id)}">
-    <div class="question-mini-ref"><span>${escapeHtml(question.year)} / Q${escapeHtml(question.number)}</span><span>${formatScore(question.points)}分</span></div>
+    <div class="question-mini-ref"><span>${escapeHtml(question.year)} / Q${escapeHtml(question.number)}</span><span class="question-mini-meta">${questionDifficultyMarkup(question)}<span>${formatScore(question.points)}分</span></span></div>
     <div class="question-mini-preview markdown-body">${renderQuestionPreview(question.question_markdown, 300) || `<p class="muted-copy">完整题目</p>`}</div>
     <p class="question-concepts">${questionConceptMarkup(question)}</p>
     <div class="question-mini-foot"><span class="type-pill ${question.question_type === "solution" ? "solution" : ""}">${typeLabel(question.question_type)}</span><span>打开作答 →</span></div>
@@ -896,22 +1042,27 @@ async function loadBaseData() {
     fetchJSON("/api/stats"),
     fetchJSON(`/api/progress?user_id=${encodeURIComponent(state.userId)}`),
     fetchJSON(`/api/forecast?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`),
+    fetchJSON(`/api/analytics?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`),
     fetchJSON(`/api/study/blocks?user_id=${encodeURIComponent(state.userId)}&limit=6`),
     fetchJSON(`/api/practice/next?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二&limit=8`),
     fetchJSON("/api/concepts"),
     fetchJSON("/api/exams"),
     fetchJSON("/api/llm/settings"),
+    fetchJSON("/api/server/settings"),
   ]);
-  [state.stats, state.progress, state.forecast] = results.slice(0, 3);
-  state.blocks = results[3].blocks || [];
-  state.nextQuestions = results[4].items || [];
-  state.concepts = results[5] || [];
-  state.exams = results[6] || [];
-  state.settings = results[7] || {};
+  [state.stats, state.progress, state.forecast, state.analytics] = results.slice(0, 4);
+  state.blocks = results[4].blocks || [];
+  state.nextQuestions = results[5].items || [];
+  state.concepts = results[6] || [];
+  state.exams = results[7] || [];
+  state.settings = results[8] || {};
+  state.serverSettings = results[9] || {};
   populateFilters();
   renderModelStatus();
   renderOverview();
+  renderAnalytics();
   renderSettingsValues();
+  renderServerSettingsValues();
 }
 
 async function loadOverview() {
@@ -996,7 +1147,7 @@ function renderFullBlock(block) {
       <button class="secondary-button block-start-button" data-start-practice data-concept-id="${escapeAttr(concept.id || "")}" data-question-type="${escapeAttr(item.question_type)}">开始${escapeHtml(sizeLabel)}训练 →</button>
     </article>`;
   }).join("");
-  const samples = (block.questions || []).slice(0, 3).map((question, index) => `<div class="block-question" data-question-id="${escapeAttr(question.id)}"><span class="block-question-number">0${index + 1}</span><div class="block-question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 260)}</div><small>${formatScore(question.points)}分 · ${question.year}</small></div>`).join("");
+  const samples = (block.questions || []).slice(0, 3).map((question, index) => `<div class="block-question" data-question-id="${escapeAttr(question.id)}"><span class="block-question-number">0${index + 1}</span><div class="block-question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 260)}</div><small>${questionDifficultyMarkup(question)} ${formatScore(question.points)}分 · ${question.year}</small></div>`).join("");
   return `<article class="full-block-card">
     <div class="full-block-head"><div><span class="eyebrow">${escapeHtml(concept.subject || "知识块")}</span><h3>${escapeHtml(concept.name || "未分类")}</h3><p>${concept.attempts || 0} 次作答 · ${concept.accuracy == null ? "暂无正确率" : `${formatScore(concept.accuracy)}% 正确`}</p></div><div class="mastery-number">${formatScore(concept.mastery ?? 22)}%</div></div>
     <div class="progress-line"><span style="--progress:${(value / 100).toFixed(3)}"></span></div>
@@ -1271,18 +1422,22 @@ async function askTutor() {
 
 async function refreshLearningData() {
   try {
-    const [progress, forecast, blocks, next] = await Promise.all([
+    const [progress, forecast, analytics, blocks, next] = await Promise.all([
       fetchJSON(`/api/progress?user_id=${encodeURIComponent(state.userId)}`),
       fetchJSON(`/api/forecast?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`),
+      fetchJSON(`/api/analytics?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`),
       fetchJSON(`/api/study/blocks?user_id=${encodeURIComponent(state.userId)}&limit=12`),
       fetchJSON(`/api/practice/next?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二&limit=8`),
     ]);
     state.progress = progress;
     state.forecast = forecast;
+    state.analytics = analytics;
     state.blocks = blocks.blocks || [];
     state.nextQuestions = next.items || [];
     renderOverview();
+    renderAnalytics();
     if (state.view === "blocks") loadBlocks();
+    if (state.view === "analytics") await loadAnalytics();
   } catch (error) {
     console.warn("learning refresh failed", error);
   }
@@ -1303,7 +1458,13 @@ async function loadSimulationCatalog() {
       localStorage.removeItem("ai-math-simulation");
     }
   }
-  if (!state.currentSimulation) $("simulation-container").innerHTML = `<div class="empty-state"><div class="empty-mark">⌁</div><h3>还没有进行中的模拟考</h3><p>选择年份并生成一套完整试卷，提交后结果会回流到你的掌握度和分数预估。</p></div>`;
+  if (!state.currentSimulation) renderSimulationEmpty();
+}
+
+function renderSimulationEmpty() {
+  const container = $("simulation-container");
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state"><div class="empty-mark">⌁</div><h3>还没有进行中的模拟考</h3><p>选择年份并生成一套完整试卷，提交后结果会回流到你的掌握度和分数预估。</p></div>`;
 }
 
 async function createSimulation() {
@@ -1327,6 +1488,29 @@ async function createSimulation() {
     showToast(`生成模拟考失败：${error.message}`, true);
   } finally {
     button.disabled = false;
+  }
+}
+
+async function cancelSimulation() {
+  const simulation = state.currentSimulation;
+  if (!simulation || simulation.status === "finished") return;
+  if (!window.confirm("取消后将删除这套进行中的试卷、答题草稿和答题卡状态，确定取消吗？")) return;
+  const button = $("cancel-simulation");
+  if (button) button.disabled = true;
+  try {
+    await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}?user_id=${encodeURIComponent(state.userId)}`, { method: "DELETE" });
+    window.clearInterval(state.simulationTimer);
+    localStorage.removeItem("ai-math-simulation");
+    localStorage.removeItem(simulationDraftKey(simulation.id));
+    state.currentSimulation = null;
+    state.simulationDeadline = null;
+    state.simulationCurrentIndex = 0;
+    state.simulationCardFilter = "all";
+    renderSimulationEmpty();
+    showToast("模拟考已取消，答题草稿已清理。", false);
+  } catch (error) {
+    showToast(`取消模拟考失败：${error.message}`, true);
+    if (button) button.disabled = false;
   }
 }
 
@@ -1362,7 +1546,8 @@ function renderSimulationPaper(simulation, finished) {
     const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
     return `<article class="simulation-question" data-sim-index="${index}"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
   }).join("");
-  return `<div class="simulation-workspace"><div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "已交卷" : "答案不会自动显示，提交后统一判定"}</p></div><div class="simulation-clock" id="simulation-clock">${finished ? "已完成" : "180:00"}</div></div><div class="simulation-progress"><span id="simulation-progress-bar" style="--progress:0"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div><aside class="simulation-rail" aria-label="模拟考答题辅助栏"><div class="simulation-sticky-timer ${finished ? "finished" : ""}"><span>剩余时间</span><strong id="simulation-sticky-clock">${finished ? "已完成" : "180:00"}</strong><small>${finished ? "本套试卷已提交" : "计时不会因离开页面而暂停"}</small></div>${renderSimulationAnswerCard(simulation, finished)}</aside></div>`;
+  const simulationHeaderAction = finished ? "" : `<div class="simulation-header-actions"><button type="button" class="secondary-button simulation-cancel-button" id="cancel-simulation">取消模拟考</button><div class="simulation-clock" id="simulation-clock">180:00</div></div>`;
+  return `<div class="simulation-workspace"><div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "答案与解析已开放" : "答案不会自动显示，提交后统一判定"}</p></div>${finished ? `<div class="simulation-clock" id="simulation-clock">已完成</div>` : simulationHeaderAction}</div><div class="simulation-progress"><span id="simulation-progress-bar" style="--progress:0"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div><aside class="simulation-rail" aria-label="模拟考答题辅助栏"><div class="simulation-sticky-timer ${finished ? "finished" : ""}"><span>剩余时间</span><strong id="simulation-sticky-clock">${finished ? "已完成" : "180:00"}</strong><small>${finished ? "本套试卷已提交" : "计时不会因离开页面而暂停"}</small></div>${renderSimulationAnswerCard(simulation, finished)}</aside></div>`;
 }
 
 function bindSimulationUploads(root) {
@@ -1445,12 +1630,20 @@ async function submitSimulation(autoSubmit = false) {
 
 async function loadSettings() {
   try {
-    state.settings = await fetchJSON("/api/llm/settings");
+    const [modelSettings, serverSettings] = await Promise.all([
+      fetchJSON("/api/llm/settings"),
+      fetchJSON("/api/server/settings"),
+    ]);
+    state.settings = modelSettings;
+    state.serverSettings = serverSettings;
     renderSettingsValues();
+    renderServerSettingsValues();
     renderModelStatus();
   } catch (error) {
-    $("settings-status").textContent = `读取配置失败：${error.message}`;
+    $("settings-status").textContent = `读取模型配置失败：${error.message}`;
     $("settings-status").classList.add("error");
+    $("server-settings-status").textContent = `读取服务配置失败：${error.message}`;
+    $("server-settings-status").classList.add("error");
   }
 }
 
@@ -1473,6 +1666,21 @@ function renderModelStatus() {
   if (!badge) return;
   badge.classList.toggle("connected", configured);
   badge.innerHTML = `<span></span>${configured ? `已保存 · ${escapeHtml(state.settings.model)}` : "未配置"}`;
+}
+
+function renderServerSettingsValues() {
+  const settings = state.serverSettings;
+  if (!settings) return;
+  $("server-host").value = settings.host || "127.0.0.1";
+  $("server-port").value = settings.port || 8000;
+  $("server-public-url").value = settings.public_url || "";
+  $("server-binding-mode").textContent = `⌁ ${settings.binding_mode || "服务"}`;
+  $("server-launch-command").textContent = settings.launch_command || "python scripts/run_server.py";
+  const access = settings.public_url || settings.access_url || `http://${settings.host}:${settings.port}`;
+  const bindNote = settings.network_exposure_warning
+    ? "当前监听地址允许网络设备连接。局域网使用本机 IP；公网请先配置防火墙、HTTPS 和认证。"
+    : "当前只监听本机，其他设备无法访问。保存后请用启动脚本重启服务。";
+  $("server-access-note").innerHTML = `<strong>访问提示：</strong>${escapeHtml(bindNote)}<br /><span>展示地址：${escapeHtml(access)}</span>`;
 }
 
 async function fetchModelsFromForm() {
@@ -1533,6 +1741,36 @@ async function clearApiKey() {
   }
 }
 
+async function saveServerSettings(event) {
+  event.preventDefault();
+  const status = $("server-settings-status");
+  status.classList.remove("error");
+  status.textContent = "正在保存……";
+  try {
+    state.serverSettings = await fetchJSON("/api/server/settings", jsonOptions({
+      host: $("server-host").value,
+      port: Number($("server-port").value),
+      public_url: $("server-public-url").value,
+    }));
+    renderServerSettingsValues();
+    status.textContent = "已保存。请停止当前服务，再用上方启动命令重启后生效。";
+    showToast("后端服务设置已保存，重启后生效。");
+  } catch (error) {
+    status.textContent = `保存失败：${error.message}`;
+    status.classList.add("error");
+  }
+}
+
+async function copyServerCommand() {
+  const command = $("server-launch-command").textContent.trim();
+  try {
+    await navigator.clipboard.writeText(command);
+    showToast("启动命令已复制。", false);
+  } catch {
+    showToast(`无法自动复制，请手动复制：${command}`, true);
+  }
+}
+
 async function init() {
   $("today-date").textContent = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date());
   $$(".nav-item[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
@@ -1549,10 +1787,16 @@ async function init() {
   $("question-modal").addEventListener("click", (event) => { if (event.target === $("question-modal")) closeQuestion(); });
   $("fetch-models").addEventListener("click", fetchModelsFromForm);
   $("model-settings-form").addEventListener("submit", saveModelSettings);
+  $("server-settings-form").addEventListener("submit", saveServerSettings);
+  $("copy-server-command").addEventListener("click", copyServerCommand);
+  $("refresh-analytics").addEventListener("click", loadAnalytics);
   $("clear-key").addEventListener("click", clearApiKey);
   $("model-select").addEventListener("change", () => { $("model-manual").value = $("model-select").value; });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeQuestion(); });
-  document.addEventListener("click", (event) => { if (event.target.id === "submit-simulation") submitSimulation(false); });
+  document.addEventListener("click", (event) => {
+    if (event.target.id === "submit-simulation") submitSimulation(false);
+    if (event.target.id === "cancel-simulation") cancelSimulation();
+  });
   await loadOverview();
 }
 

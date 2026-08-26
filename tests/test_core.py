@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.services.grading import grade_question
-from app.services.learner import forecast_score, mastery_by_concept, progress_summary
+from app.services.learner import difficulty_descriptor, forecast_score, learning_analytics, mastery_by_concept, progress_summary
 from app.services.llm import _api_root
 
 
@@ -44,6 +46,13 @@ def test_modern_paper_has_real_150_point_total() -> None:
     assert questions[-1]["points"] == 12
 
 
+def test_real_question_years_have_explicit_study_difficulty_bands() -> None:
+    assert difficulty_descriptor(1987) == ("basic", "基础题")
+    assert difficulty_descriptor(2019) == ("basic", "基础题")
+    assert difficulty_descriptor(2020) == ("advanced", "提高题")
+    assert difficulty_descriptor(2026) == ("advanced", "提高题")
+
+
 def test_objective_and_manual_grading_are_honest() -> None:
     choice = next(question for question in load_questions() if question["question_type"] == "choice" and question["has_answer"])
     choice_result = grade_question(choice, choice["answer_markdown"])
@@ -81,6 +90,74 @@ def test_initial_forecast_is_zero_until_real_attempts_exist() -> None:
     assert forecast["p10"] == 0
     assert forecast["p50"] == 0
     assert forecast["p90"] == 0
+
+
+def test_learning_analytics_separates_observed_evidence_from_untrained_topics() -> None:
+    questions = load_questions()
+    first = next(question for question in questions if question["year"] == 2025 and question["question_type"] == "choice")
+    second = next(question for question in questions if question["year"] == 2025 and question["question_type"] == "solution")
+    attempts = [
+        {
+            "id": 1,
+            "question_id": first["id"],
+            "concepts": first["concept_ids"],
+            "status": "correct",
+            "correct": 1,
+            "score": first["points"],
+            "max_score": first["points"],
+            "duration_seconds": 120,
+            "hints_used": 0,
+            "error_type": "",
+            "created_at": "2026-08-26T09:00:00+00:00",
+        },
+        {
+            "id": 2,
+            "question_id": second["id"],
+            "concepts": second["concept_ids"],
+            "status": "partial",
+            "correct": 0,
+            "score": second["points"] * 0.4,
+            "max_score": second["points"],
+            "duration_seconds": 240,
+            "hints_used": 1,
+            "error_type": "步骤不完整",
+            "created_at": "2026-08-26T10:00:00+00:00",
+        },
+    ]
+    result = learning_analytics(questions, attempts)
+    assert result["questions_available"] == 792
+    assert result["overview"]["attempts"] == 2
+    assert result["overview"]["unique_questions"] == 2
+    assert result["overview"]["accuracy"] == 50.0
+    assert {row["question_type"] for row in result["question_types"]} == {"choice", "fill", "solution"}
+    assert result["error_types"][0]["name"] == "步骤不完整"
+    assert result["daily_trend"][0]["attempts"] == 2
+    assert any(row["attempts"] == 0 and row["status"] == "待训练" for row in result["concepts"])
+
+
+def test_server_settings_validate_and_persist(tmp_path: Path) -> None:
+    import app.database as database
+    from app.services.server import ServerSettingsError, save_server_settings, server_settings
+
+    original_db_path = database.DB_PATH
+    database.DB_PATH = tmp_path / "server.sqlite3"
+    try:
+        database.init_db()
+        defaults = server_settings()
+        assert defaults["host"] == "127.0.0.1"
+        assert defaults["port"] == 8000
+        saved = save_server_settings("0.0.0.0", 8123, "https://math.example.test/study/")
+        assert saved["host"] == "0.0.0.0"
+        assert saved["port"] == 8123
+        assert saved["public_url"] == "https://math.example.test/study"
+        assert saved["network_exposure_warning"] is True
+        assert saved["launch_command"] == "python scripts/run_server.py"
+        with pytest.raises(ServerSettingsError):
+            save_server_settings("bad host", 8123)
+        with pytest.raises(ServerSettingsError):
+            save_server_settings("127.0.0.1", 70000)
+    finally:
+        database.DB_PATH = original_db_path
 
 
 def test_openai_compatible_url_normalization() -> None:
@@ -141,6 +218,8 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
                 json={"answer": choice["answer_markdown"], "mode": "practice", "attachment_ids": [upload.json()["attachment_id"]]},
             )
             progress = client.get("/api/progress")
+            analytics = client.get("/api/analytics", params={"user_id": "local-user", "exam_type": "数学二"})
+            server_settings = client.get("/api/server/settings")
             simulation = client.post("/api/simulations", json={"exam_type": "数学二", "year": 2025, "duration_minutes": 180})
         assert health.status_code == 200
         assert health.json()["question_count"] == 792
@@ -160,9 +239,26 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
         assert client.get(attempt.json()["attachments"][0]["url"]).status_code == 200
         assert progress.status_code == 200
         assert progress.json()["attempts"] == 1
+        assert analytics.status_code == 200
+        assert analytics.json()["questions_available"] == 792
+        assert len(analytics.json()["question_types"]) == 3
+        assert server_settings.status_code == 200
+        assert server_settings.json()["port"] == 8000
         assert simulation.status_code == 200
         assert len(simulation.json()["questions"]) == 22
         assert simulation.json()["max_score"] == 150
+        assert all(item["difficulty_band"] == "advanced" for item in simulation.json()["questions"])
+        cancellable = client.post(
+            "/api/simulations",
+            json={"user_id": "cancel-user", "exam_type": "数学二", "year": 2025, "duration_minutes": 180},
+        )
+        assert cancellable.status_code == 200
+        cancelled_id = cancellable.json()["id"]
+        assert client.delete(f"/api/simulations/{cancelled_id}").status_code == 403
+        cancelled = client.delete(f"/api/simulations/{cancelled_id}", params={"user_id": "cancel-user"})
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        assert client.get(f"/api/simulations/{cancelled_id}").status_code == 404
         simulation_question = simulation.json()["questions"][0]
         simulation_upload = client.post(
             "/api/uploads/answer-image",

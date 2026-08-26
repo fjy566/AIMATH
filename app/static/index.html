@@ -27,7 +27,8 @@
           <button class="nav-item" data-view="library"><span class="nav-index">02</span><span>真题库</span></button>
           <button class="nav-item" data-view="blocks"><span class="nav-index">03</span><span>分块训练</span></button>
           <button class="nav-item" data-view="simulation"><span class="nav-index">04</span><span>模拟考</span></button>
-          <button class="nav-item settings-nav" data-view="settings"><span class="nav-index">05</span><span>模型设置</span><span class="status-dot" id="model-status-dot"></span></button>
+          <button class="nav-item" data-view="analytics"><span class="nav-index">05</span><span>学习分析</span></button>
+          <button class="nav-item settings-nav" data-view="settings"><span class="nav-index">06</span><span>设置</span><span class="status-dot" id="model-status-dot"></span></button>
         </nav>
 
         <div class="sidebar-bottom">
@@ -92,6 +93,57 @@
           <div class="question-strip" id="overview-questions"><div class="loading-card">正在挑选题目……</div></div>
         </section>
 
+        <section class="view" id="view-analytics">
+          <div class="view-intro"><div><span class="eyebrow">ANALYTICS / EVIDENCE</span><h2>学习分析</h2><p>把每一次真实作答拆成掌握度、正确率、覆盖率、题型表现、耗时和错因，帮助你知道下一步练什么。</p></div><button class="quiet-button" id="refresh-analytics">刷新分析</button></div>
+          <div class="analytics-recommendations" id="analytics-recommendations"><span class="eyebrow">NEXT MOVES</span><span>正在读取你的学习证据……</span></div>
+          <div class="metric-grid analytics-metrics" id="analytics-metrics">
+            <div class="metric-card"><span class="metric-label">有效作答</span><strong id="analytics-attempts">0</strong><small>数学二真实记录</small></div>
+            <div class="metric-card"><span class="metric-label">题库覆盖</span><strong id="analytics-coverage">0%</strong><small id="analytics-coverage-note">已作答 / 题库</small></div>
+            <div class="metric-card"><span class="metric-label">作答正确率</span><strong id="analytics-accuracy">—</strong><small>只统计可判定正确</small></div>
+            <div class="metric-card accent-metric"><span class="metric-label">掌握度均值</span><strong id="analytics-mastery">0%</strong><small>有记录的数学二知识块</small></div>
+            <div class="metric-card"><span class="metric-label">得分率</span><strong id="analytics-score-rate">—</strong><small>实际得分 / 记录满分</small></div>
+            <div class="metric-card"><span class="metric-label">平均用时</span><strong id="analytics-avg-time">—</strong><small>只统计填写过用时的题目</small></div>
+          </div>
+
+          <div class="analytics-primary-grid">
+            <article class="analytics-panel paper-panel">
+              <div class="analytics-panel-head"><div><span class="eyebrow">WEAKNESS MAP</span><h3>薄弱知识块</h3></div><span class="analytics-panel-note">按掌握度与作答证据</span></div>
+              <div class="analytics-rank-list" id="analytics-weaknesses"><div class="loading-card">正在分析……</div></div>
+            </article>
+            <article class="analytics-panel paper-panel">
+              <div class="analytics-panel-head"><div><span class="eyebrow">STRENGTH MAP</span><h3>稳定知识块</h3></div><span class="analytics-panel-note">仅显示做过的题</span></div>
+              <div class="analytics-rank-list" id="analytics-strengths"><div class="loading-card">正在分析……</div></div>
+            </article>
+          </div>
+
+          <div class="analytics-secondary-grid">
+            <article class="analytics-panel paper-panel">
+              <div class="analytics-panel-head"><div><span class="eyebrow">QUESTION TYPES</span><h3>题型表现</h3></div><span class="analytics-panel-note">选择 / 填空 / 解答</span></div>
+              <div class="analytics-type-list" id="analytics-type-breakdown"><div class="loading-card">正在分析……</div></div>
+            </article>
+            <article class="analytics-panel paper-panel">
+              <div class="analytics-panel-head"><div><span class="eyebrow">ERROR PATTERNS</span><h3>错因分布</h3></div><span class="analytics-panel-note">来自提交时的判题与自评</span></div>
+              <div class="analytics-error-list" id="analytics-errors"><div class="loading-card">正在分析……</div></div>
+            </article>
+          </div>
+
+          <article class="analytics-full-panel paper-panel">
+            <div class="analytics-panel-head"><div><span class="eyebrow">KNOWLEDGE DETAIL</span><h3>全部知识块明细</h3></div><span class="analytics-panel-note">掌握度、覆盖率、正确率、得分率与用时</span></div>
+            <div class="analytics-concepts-table" id="analytics-concepts"><div class="loading-card">正在分析……</div></div>
+          </article>
+
+          <div class="analytics-secondary-grid analytics-bottom-grid">
+            <article class="analytics-panel paper-panel">
+              <div class="analytics-panel-head"><div><span class="eyebrow">DAILY TREND</span><h3>近 30 天趋势</h3></div><span class="analytics-panel-note">按真实提交日期</span></div>
+              <div class="analytics-trend-list" id="analytics-trend"><div class="loading-card">正在分析……</div></div>
+            </article>
+            <article class="analytics-panel paper-panel">
+              <div class="analytics-panel-head"><div><span class="eyebrow">RECENT LOG</span><h3>最近作答</h3></div><span class="analytics-panel-note">最多显示 10 条</span></div>
+              <div class="analytics-recent-list" id="analytics-recent"><div class="loading-card">正在读取……</div></div>
+            </article>
+          </div>
+        </section>
+
         <section class="view" id="view-library">
           <div class="view-intro"><div><span class="eyebrow">ARCHIVE / REAL QUESTIONS</span><h2>真题库</h2><p>来自原始 Markdown/LaTeX 文件的完整题目。知识块按数学二大纲组织；非数学二范围的原题仍保留并单独标记。</p></div><div class="archive-count" id="archive-count">读取中</div></div>
           <div class="filter-bar">
@@ -126,19 +178,35 @@
         </section>
 
         <section class="view" id="view-settings">
-          <div class="view-intro"><div><span class="eyebrow">MODEL GATEWAY / OPENAI COMPATIBLE</span><h2>模型设置</h2><p>只需配置一个兼容 OpenAI 接口的服务。密钥只保存在本机 SQLite，不会展示完整内容。</p></div><div class="connection-badge" id="connection-badge"><span></span>未配置</div></div>
+          <div class="view-intro"><div><span class="eyebrow">SETTINGS / MODEL + SERVER</span><h2>设置</h2><p>管理模型接入和本地服务部署。配置会保存在本机；监听地址和端口保存后，使用启动脚本重启服务才会生效。</p></div><div class="connection-badge" id="connection-badge"><span></span>模型未配置</div></div>
           <div class="settings-layout">
-            <form class="settings-card paper-panel" id="model-settings-form">
-              <div class="settings-card-head"><div><span class="eyebrow">ONE API ENTRY</span><h3>连接模型服务</h3></div><span class="settings-lock">⌁ LOCAL</span></div>
-              <label class="field-label">Base URL <span>例如 http://127.0.0.1:11434/v1</span><input id="base-url" type="url" placeholder="https://api.example.com/v1" autocomplete="url" /></label>
-              <label class="field-label">API Key <span>本地模型可留空；留空保存时会保留已存密钥</span><input id="api-key" type="password" placeholder="sk-... 或本地服务无需填写" autocomplete="off" /></label>
-              <div class="model-fetch-row"><button type="button" class="secondary-button" id="fetch-models">拉取模型列表</button><span id="fetch-model-status">支持 /v1/models</span></div>
-              <label class="field-label">选择模型 <span>先拉取列表，也可以手动输入模型 ID</span><select id="model-select"><option value="">请先拉取或输入模型</option></select><input id="model-manual" class="manual-model" type="text" placeholder="手动输入模型 ID（可选）" /></label>
-              <div class="settings-actions"><button type="submit" class="primary-button">保存配置</button><button type="button" class="text-button" id="clear-key">清除本机密钥</button></div>
-              <div class="form-status" id="settings-status"></div>
-            </form>
+            <div class="settings-stack">
+              <form class="settings-card paper-panel" id="model-settings-form">
+                <div class="settings-card-head"><div><span class="eyebrow">ONE API ENTRY</span><h3>连接模型服务</h3></div><span class="settings-lock">⌁ LOCAL</span></div>
+                <label class="field-label">Base URL <span>例如 http://127.0.0.1:11434/v1</span><input id="base-url" type="url" placeholder="https://api.example.com/v1" autocomplete="url" /></label>
+                <label class="field-label">API Key <span>本地模型可留空；留空保存时会保留已存密钥</span><input id="api-key" type="password" placeholder="sk-... 或本地服务无需填写" autocomplete="off" /></label>
+                <div class="model-fetch-row"><button type="button" class="secondary-button" id="fetch-models">拉取模型列表</button><span id="fetch-model-status">支持 /v1/models</span></div>
+                <label class="field-label">选择模型 <span>先拉取列表，也可以手动输入模型 ID</span><select id="model-select"><option value="">请先拉取或输入模型</option></select><input id="model-manual" class="manual-model" type="text" placeholder="手动输入模型 ID（可选）" /></label>
+                <div class="settings-actions"><button type="submit" class="primary-button">保存模型配置</button><button type="button" class="text-button" id="clear-key">清除本机密钥</button></div>
+                <div class="form-status" id="settings-status"></div>
+              </form>
+
+              <form class="settings-card paper-panel server-settings-card" id="server-settings-form">
+                <div class="settings-card-head"><div><span class="eyebrow">SERVER / BINDING</span><h3>后端服务</h3></div><span class="settings-lock" id="server-binding-mode">⌁ 读取中</span></div>
+                <div class="server-form-grid">
+                  <label class="field-label">监听地址 <span>127.0.0.1 仅本机；0.0.0.0 允许局域网/公网访问</span><input id="server-host" type="text" inputmode="text" placeholder="127.0.0.1" autocomplete="off" /></label>
+                  <label class="field-label">端口 <span>1–65535，常用 8000</span><input id="server-port" type="number" min="1" max="65535" step="1" placeholder="8000" /></label>
+                </div>
+                <label class="field-label">对外访问地址（可选） <span>用于展示；例如 http://192.168.1.20:8000 或你的 HTTPS 域名</span><input id="server-public-url" type="url" placeholder="留空则按监听地址生成" autocomplete="url" /></label>
+                <div class="server-access-note" id="server-access-note">读取服务配置……</div>
+                <div class="settings-actions"><button type="submit" class="primary-button">保存服务设置</button><button type="button" class="secondary-button" id="copy-server-command">复制启动命令</button></div>
+                <div class="server-command-wrap"><span>保存后重启：</span><code id="server-launch-command">python scripts/run_server.py</code></div>
+                <div class="form-status" id="server-settings-status"></div>
+              </form>
+            </div>
             <div class="settings-help">
               <div class="aside-card"><span class="eyebrow">COMPATIBLE SERVICES</span><h3>云端或本地都可以</h3><ul class="service-list"><li><b>OpenAI-compatible 云服务</b><span>填写服务商 Base URL、API Key，拉取 /v1/models。</span></li><li><b>Ollama</b><span>先开启兼容端点，常见地址为 http://127.0.0.1:11434/v1。</span></li><li><b>LM Studio / vLLM</b><span>填写本机服务的 /v1 地址，API Key 按服务要求填写或留空。</span></li></ul></div>
+              <div class="aside-card"><span class="eyebrow">DEPLOYMENT</span><h3>按访问范围选择</h3><ul class="service-list"><li><b>个人电脑</b><span>监听 127.0.0.1，只有当前设备可以访问。</span></li><li><b>局域网设备</b><span>监听 0.0.0.0，用本机局域网 IP 打开；记得放行端口。</span></li><li><b>公网部署</b><span>建议反向代理 + HTTPS + 认证，不要把未保护的开发服务直接暴露到公网。</span></li></ul></div>
               <div class="aside-card warning-card"><span class="eyebrow">BOUNDARY</span><h3>模型只做分析辅助</h3><p>题目和来源解析优先来自本地真题库。模型请求会携带当前题面、你的作答以及来源解析；若来源没有解析，模型必须明确说明，不应凭空补答案。</p></div>
             </div>
           </div>

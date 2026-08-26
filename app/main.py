@@ -15,6 +15,7 @@ from app.database import (
     attachment_path,
     attachments_for_attempt,
     create_attachment,
+    delete_simulation,
     create_practice_session,
     create_simulation,
     fetch_attempts,
@@ -35,12 +36,15 @@ from app.services.grading import grade_question
 from app.services.learner import (
     CONCEPT_META,
     forecast_score,
+    learning_analytics,
+    difficulty_descriptor,
     progress_summary,
     randomized_practice_questions,
     recommended_questions,
     study_blocks,
 )
 from app.services.llm import LLMError, fetch_models, public_settings, save_settings, tutor_response
+from app.services.server import ServerSettingsError, save_server_settings, server_settings
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -116,6 +120,12 @@ class ModelFetchRequest(BaseModel):
     api_key: str | None = None
 
 
+class ServerSettingsRequest(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=65535)
+    public_url: str = ""
+
+
 class TutorRequest(BaseModel):
     user_id: str = "local-user"
     answer: str = ""
@@ -124,6 +134,9 @@ class TutorRequest(BaseModel):
 
 def _question_public(question: dict[str, Any], reveal: bool = False) -> dict[str, Any]:
     result = {key: value for key, value in question.items() if key not in {"raw_markdown", "answer_markdown", "solution_markdown"}}
+    difficulty_band, difficulty_label = difficulty_descriptor(question.get("year"))
+    result["difficulty_band"] = difficulty_band
+    result["difficulty_label"] = difficulty_label
     result["answer_available"] = bool(question.get("has_answer"))
     result["solution_available"] = bool(question.get("has_solution"))
     result["concept_labels"] = [concept_descriptor(item) for item in question.get("concept_ids", [])]
@@ -328,6 +341,11 @@ def create_attempt(question_id: str, payload: AttemptRequest) -> dict[str, Any]:
 @app.get("/api/progress")
 def progress(user_id: str = "local-user") -> dict[str, Any]:
     return progress_summary(fetch_attempts(user_id), question_store.list())
+
+
+@app.get("/api/analytics")
+def analytics(user_id: str = "local-user", exam_type: str = "数学二") -> dict[str, Any]:
+    return learning_analytics(question_store.list(), fetch_attempts(user_id), exam_type=exam_type)
 
 
 @app.get("/api/practice/next")
@@ -577,6 +595,21 @@ def get_simulation_endpoint(simulation_id: str) -> dict[str, Any]:
     return simulation_view(simulation, reveal=bool(simulation and simulation.get("status") == "finished"))
 
 
+@app.delete("/api/simulations/{simulation_id}")
+def cancel_simulation_endpoint(simulation_id: str, user_id: str = "local-user") -> dict[str, str]:
+    simulation = get_simulation(simulation_id)
+    if simulation is None:
+        raise HTTPException(status_code=404, detail="模拟考试不存在。")
+    normalized_user_id = user_id.strip() or "local-user"
+    if simulation.get("user_id") != normalized_user_id:
+        raise HTTPException(status_code=403, detail="没有权限取消这套模拟考。")
+    if simulation.get("status") == "finished":
+        raise HTTPException(status_code=409, detail="已交卷的模拟考不能取消。")
+    if not delete_simulation(simulation_id):
+        raise HTTPException(status_code=409, detail="模拟考状态已发生变化，请刷新后重试。")
+    return {"id": simulation_id, "status": "cancelled"}
+
+
 @app.post("/api/simulations/{simulation_id}/submit")
 def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> dict[str, Any]:
     simulation = get_simulation(simulation_id)
@@ -649,6 +682,19 @@ async def llm_models(payload: ModelFetchRequest) -> dict[str, Any]:
         return {"models": models}
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/server/settings")
+def get_server_settings() -> dict[str, Any]:
+    return server_settings()
+
+
+@app.post("/api/server/settings")
+def update_server_settings(payload: ServerSettingsRequest) -> dict[str, Any]:
+    try:
+        return save_server_settings(payload.host, payload.port, payload.public_url)
+    except ServerSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/questions/{question_id}/tutor")

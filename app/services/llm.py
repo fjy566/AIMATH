@@ -104,7 +104,7 @@ async def chat_completion(messages: list[dict[str, Any]], *, model: str | None =
     api_key = settings.get("api_key", "")
     resolved_model = model or settings.get("model", "")
     if not base_url or not resolved_model:
-        raise LLMError("请先在模型设置页填写 Base URL 并选择模型。")
+        raise LLMError("请先在设置页填写 Base URL 并选择模型。")
     url = f"{_api_root(base_url)}/chat/completions"
     payload = {"model": resolved_model, "messages": messages, "temperature": temperature}
     try:
