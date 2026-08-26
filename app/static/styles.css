@@ -977,6 +977,8 @@ kbd { padding: 2px 5px; border: 1px solid #b5c9c4; border-bottom-width: 2px; bor
 .template-guide-columns section { min-width: 0; }
 .template-section-label { display: block; color: var(--accent-strong); font: 10px var(--mono); letter-spacing: .05em; }
 .template-guide p { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.75; }
+.template-rich-text p { margin: 0; }
+.template-rich-text .katex-display { margin: 7px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; text-align: left; }
 .template-formula-card { display: grid; grid-template-columns: minmax(145px, .3fr) minmax(0, 1fr); gap: 18px; margin-top: 20px; padding: 15px 16px; border: 1px solid #b8d2cb; border-radius: 10px; background: rgba(234,246,241,.72); }
 .template-formula-card > div:first-child { display: grid; align-content: start; gap: 5px; }
 .template-formula-card small { color: var(--muted); font-size: 10px; line-height: 1.5; }
@@ -986,10 +988,11 @@ kbd { padding: 2px 5px; border: 1px solid #b5c9c4; border-bottom-width: 2px; bor
 .template-formula-body .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; text-align: left; }
 .template-guide ol, .template-guide ul { margin: 10px 0 0; padding-left: 20px; color: var(--ink-soft); font-size: 12px; line-height: 1.75; }
 .template-guide li { margin: 7px 0; padding-left: 3px; }
+.template-guide li .template-rich-text { min-width: 0; }
 .template-mistakes { padding-left: 24px; border-left: 1px solid var(--line); }
 .template-memory { display: flex; align-items: baseline; gap: 12px; margin-top: 20px; padding: 13px 15px; border-radius: 9px; color: var(--ink); background: var(--verm-light); }
 .template-memory span { flex: 0 0 auto; color: var(--verm); font-size: 10px; font-weight: 700; }
-.template-memory strong { font-size: 13px; line-height: 1.6; }
+.template-memory .template-rich-text { min-width: 0; font-size: 13px; line-height: 1.6; }
 .workbench-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 6px 0 11px; }
 .workbench-section-head h4 { margin: 0; color: var(--ink); font-size: 18px; }
 .workbench-section-head p { max-width: 620px; margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
@@ -1083,6 +1086,12 @@ kbd { padding: 2px 5px; border: 1px solid #b5c9c4; border-bottom-width: 2px; bor
 .note-editor-hint { margin-top: 6px; color: var(--muted); font-size: 10px; }
 .markdown-shortcuts { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .note-markdown-pane textarea { min-height: 220px; border-radius: 9px; font: 12px/1.75 var(--mono); }
+.note-markdown-preview { margin-top: 12px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.58); }
+.note-markdown-preview-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: var(--ink-soft); font-size: 11px; font-weight: 650; }
+.note-markdown-preview-head small { color: var(--muted); font: 10px var(--mono); font-weight: 400; }
+.note-markdown-preview-body { min-width: 0; font-size: 13px; }
+.note-markdown-preview-body .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; text-align: left; }
+.note-markdown-preview-body .katex { max-width: 100%; }
 .note-history-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .note-history-row > div:first-child { display: grid; gap: 4px; }
 .note-history-row > div:first-child > span:last-child { color: var(--muted); font-size: 10px; }
@@ -1125,6 +1134,7 @@ body.theme-dark .note-filter-button:hover, body.theme-dark .note-filter-button.i
 body.theme-dark .workbench-type-tab { background: rgba(12,36,39,.62); }
 body.theme-dark .workbench-concept-count, body.theme-dark .workbench-type-tab.is-active, body.theme-dark .workbench-toolbar { background: #1a4547; }
 body.theme-dark .workbench-solution-details { border-color: var(--line); }
+body.theme-dark .note-markdown-preview { background: #112a2e; border-color: var(--line); }
 
 @media (max-width: 1080px) {
   .workbench-shell { grid-template-columns: 220px minmax(0, 1fr); }

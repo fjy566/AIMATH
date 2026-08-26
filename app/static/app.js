@@ -60,10 +60,21 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
+// A few imported/template records contain an extra slash before a TeX command
+// (for example "\\le"). Normalize only known command names so matrix row
+// breaks ("\\") remain intact.
+const TEX_COMMAND_PATTERN = /(?<!\\)\\\\(?=(?:begin|end|frac|dfrac|tfrac|sqrt|binom|left|right|mathrm|mathbf|mathit|text|operatorname|mathbb|mathsf|mathcal|mathscr|displaystyle|textstyle|scriptstyle|lim|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|ln|log|exp|sum|prod|int|iint|iiint|partial|nabla|infty|to|sim|le|ge|leq|geq|leqslant|geqslant|ne|neq|in|notin|subset|subseteq|forall|exists|varnothing|emptyset|Longleftrightarrow|Longrightarrow|Longleftarrow|Rightarrow|Leftrightarrow|leftarrow|rightarrow|cdot|times|pm|mp|approx|asymp|nsim|quad|qquad|det|lambda|xi|mu|alpha|beta|gamma|delta|theta|pi|Delta|Lambda|Omega|ell|eta|rho|psi|sigma|zeta|varphi|varepsilon|phi|boldsymbol|vec|overline|underline|overbrace|underbrace|widehat|hat|check|tilde|dot|ddot|cdots|ldots|dots|vdots|ddots|prime|mid|middle|boxed|hspace|limits|substack|max|min|Big|big|bigl|bigr|bigg|Bigg|Bigl|Bigr|Biggl|Biggr|cup|cap|setminus|circ|perp|downarrow|uparrow|triangle|ker|pmod|mod)\b)/g;
+
+function normalizeTexSource(value) {
+  return String(value || "")
+    .replace(TEX_COMMAND_PATTERN, "\\")
+    .replace(/(?<!\\)\\\\(?=[,;!])/g, "\\");
+}
+
 function renderMarkdown(source) {
   let text = String(source || "").replace(/\r/g, "");
   const formulas = [];
-  const formulaPattern = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$/g;
+  const formulaPattern = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$|\\begin\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}[\s\S]*?\\end\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}/g;
   text = text.replace(formulaPattern, (raw) => {
     let display = false;
     let tex = raw;
@@ -77,6 +88,8 @@ function renderMarkdown(source) {
       tex = raw.slice(2, -2);
     } else if (raw.startsWith("$")) {
       tex = raw.slice(1, -1);
+    } else if (raw.startsWith("\\begin")) {
+      display = true;
     }
     const token = `MATHTOKEN${formulas.length}END`;
     formulas.push({ token, display, tex });
@@ -168,7 +181,7 @@ function renderMarkdown(source) {
 }
 
 function renderFormula(tex, display) {
-  const source = String(tex || "").trim();
+  const source = normalizeTexSource(tex).trim();
   if (window.katex?.renderToString) {
     try {
       return window.katex.renderToString(source, {
@@ -183,6 +196,10 @@ function renderFormula(tex, display) {
   }
   const fallbackClass = display ? "math math-block math-fallback" : "math math-fallback";
   return `<span class="${fallbackClass}">${escapeHtml(source)}</span>`;
+}
+
+function renderTemplateText(value) {
+  return "<div class=\"markdown-body template-rich-text\">" + renderMarkdown(value) + "</div>";
 }
 
 function typeset(root) {
@@ -983,7 +1000,7 @@ function renderWorkbenchTemplate() {
   const mistakes = template.mistakes || [];
   const summaryMarkup = state.workbenchEditingTemplate
     ? `<div class="template-editing-form"><label>题型概述<textarea rows="4" data-template-field="overview">${escapeHtml(template.overview || "")}</textarea></label><div class="template-edit-columns"><label>解题思路框架${templateListEditor("framework", framework)}</label><label>常见易错点${templateListEditor("mistakes", mistakes)}</label></div><label>记忆提醒<input type="text" data-template-field="memory_aid" value="${escapeAttr(template.memory_aid || "")}" /></label></div>`
-    : `<div class="template-guide"><section class="template-overview"><span class="template-section-label">这类题在考什么</span><p>${escapeHtml(template.overview || "")}</p></section>${formulaSheet ? `<section class="template-formula-card"><div><span class="template-section-label">公式卡片</span><small>先理解公式的使用条件，再代入计算</small></div><div class="template-formula-body markdown-body">${renderMarkdown(formulaSheet)}</div></section>` : ""}<div class="template-guide-columns"><section><span class="template-section-label">推荐作答顺序</span><ol>${framework.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section><section class="template-mistakes"><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section></div><section class="template-memory"><span>考场提醒</span><strong>${escapeHtml(template.memory_aid || "")}</strong></section></div>`;
+    : `<div class="template-guide"><section class="template-overview template-rich-text markdown-body"><span class="template-section-label">这类题在考什么</span>${renderMarkdown(template.overview || "")}</section>${formulaSheet ? `<section class="template-formula-card"><div><span class="template-section-label">公式卡片</span><small>先理解公式的使用条件，再代入计算</small></div><div class="template-formula-body markdown-body">${renderMarkdown(formulaSheet)}</div></section>` : ""}<div class="template-guide-columns"><section><span class="template-section-label">推荐作答顺序</span><ol>${framework.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ol></section><section class="template-mistakes"><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ul></section></div><section class="template-memory"><span>考场提醒</span>${renderTemplateText(template.memory_aid || "")}</section></div>`;
   const variantItems = template.variants || [];
   state.workbenchVariantIndex = Math.max(0, Math.min(state.workbenchVariantIndex, Math.max(variantItems.length - 1, 0)));
   const activeVariant = variantItems[state.workbenchVariantIndex];
@@ -1155,6 +1172,15 @@ function noteHtmlToMarkdown(html) {
   return (holder.innerText || holder.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function renderNoteMarkdownPreview() {
+  const preview = $("note-markdown-preview-body");
+  const source = $("note-markdown-editor")?.value || "";
+  if (!preview) return;
+  preview.innerHTML = source.trim()
+    ? renderMarkdown(source)
+    : '<p class="muted-copy">输入 Markdown 后，这里会显示排版结果。</p>';
+}
+
 function setNoteMode(mode) {
   const nextMode = mode === "markdown" ? "markdown" : "rich";
   if (nextMode === state.noteEditorMode) return;
@@ -1166,6 +1192,7 @@ function setNoteMode(mode) {
   $("note-rich-pane").hidden = nextMode !== "rich";
   $("note-markdown-pane").hidden = nextMode !== "markdown";
   $$('[data-note-mode]').forEach((button) => { const active = button.dataset.noteMode === nextMode; button.classList.toggle("is-active", active); button.setAttribute("aria-selected", String(active)); });
+  renderNoteMarkdownPreview();
 }
 
 function saveNoteSelection() {
@@ -1219,6 +1246,7 @@ function renderNoteEditor() {
   populateNoteConcepts(note.concept_id || state.workbenchConceptId);
   $("note-rich-editor").innerHTML = note.content_html || noteMarkdownToHtml(note.content_markdown || "");
   $("note-markdown-editor").value = note.content_markdown || noteHtmlToMarkdown(note.content_html || "");
+  renderNoteMarkdownPreview();
   $("note-favorite").textContent = note.favorite ? "已收藏" : "收藏";
   $("note-favorite").setAttribute("aria-pressed", String(Boolean(note.favorite)));
   $("note-version-label").textContent = note.id ? `版本记录 · ${String(note.updated_at || "").slice(0, 10)}` : "新笔记";
@@ -1418,11 +1446,12 @@ function bindNoteEditor() {
     textarea.focus();
     textarea.selectionStart = textarea.selectionEnd = start + value.length;
     $("note-save-state").textContent = "有未保存修改";
+    renderNoteMarkdownPreview();
   }));
   $("note-rich-editor")?.addEventListener("keyup", saveNoteSelection);
   $("note-rich-editor")?.addEventListener("mouseup", saveNoteSelection);
   $("note-rich-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; });
-  $("note-markdown-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; });
+  $("note-markdown-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; renderNoteMarkdownPreview(); });
   $("note-image-button")?.addEventListener("click", () => { saveNoteSelection(); $("note-image-input").click(); });
   $("note-image-input")?.addEventListener("change", async () => {
     const input = $("note-image-input");
@@ -2028,10 +2057,10 @@ async function askTutor() {
       request: "分析我的错误，指出最关键的思路断点，并给出下一步训练建议",
     }));
     const content = String(payload.content || "");
-    let html = escapeHtml(content).replace(/\n/g, "<br />");
+    let html = renderMarkdown(content);
     try {
       const parsed = JSON.parse(content);
-      html = Object.entries(parsed).map(([key, value]) => `<p><strong>${escapeHtml(key)}：</strong>${escapeHtml(value)}</p>`).join("");
+      html = Object.entries(parsed).map(([key, value]) => `<p><strong>${escapeHtml(key)}：</strong>${renderMarkdown(String(value))}</p>`).join("");
     } catch { /* model may return ordinary text; it is still shown safely */ }
     $("tutor-content").innerHTML = html || "模型没有返回可显示的内容。";
   } catch (error) {

@@ -11,6 +11,38 @@ QUESTION_TYPE_LABELS = {"choice": "选择题", "fill": "填空题", "solution": 
 WORKBENCH_EXCLUDED_SECTIONS = ("参考答案", "简明解析")
 SUBQUESTION_HEADING_RE = re.compile(r"(?m)^#{3,6}\s+[（(]\s*\d+\s*[）)]")
 
+# Some of the built-in prose templates are ordinary Python strings while the
+# formula cards intentionally use raw strings.  Keep the API response clean
+# for both cases: a doubled command slash (``\\\\le``) is not the same as the
+# TeX command ``\\le``.  Matrix row breaks (``\\\\`` before a row's content)
+# are deliberately left alone in formula cards.
+_TEX_COMMAND_NAMES = (
+    "begin|end|frac|dfrac|tfrac|sqrt|binom|left|right|mathrm|mathbf|mathit|"
+    "text|operatorname|mathbb|mathsf|mathcal|mathscr|displaystyle|textstyle|"
+    "scriptstyle|lim|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|ln|log|exp|"
+    "sum|prod|int|iint|iiint|partial|nabla|infty|to|sim|le|ge|leq|geq|leqslant|"
+    "geqslant|ne|neq|in|notin|subset|subseteq|forall|exists|varnothing|emptyset|"
+    "Longleftrightarrow|Longrightarrow|Longleftarrow|Rightarrow|Leftrightarrow|"
+    "leftarrow|rightarrow|cdot|times|pm|mp|approx|asymp|nsim|quad|qquad|det|"
+    "lambda|xi|mu|alpha|beta|gamma|delta|theta|pi|Delta|Lambda|Omega|ell|eta|"
+    "rho|psi|sigma|zeta|varphi|varepsilon|phi|boldsymbol|vec|overline|underline|"
+    "overbrace|underbrace|widehat|hat|check|tilde|dot|ddot|cdots|ldots|dots|"
+    "vdots|ddots|prime|mid|middle|boxed|hspace|limits|substack|max|min|"
+    "Big|big|bigl|bigr|bigg|Bigg|Bigl|Bigr|Biggl|Biggr|cup|cap|setminus|circ|"
+    "perp|downarrow|uparrow|triangle|ker|pmod|mod"
+)
+_TEX_COMMAND_RE = re.compile(rf"(?<!\\)\\\\(?=(?:{_TEX_COMMAND_NAMES})\b)")
+
+
+def _normalize_template_prose(value: str) -> str:
+    """Collapse accidental double escapes in one-line template guidance."""
+    return str(value or "").replace("\\\\", "\\")
+
+
+def _normalize_template_formula(value: str) -> str:
+    """Normalize doubled TeX command escapes without destroying matrix rows."""
+    return _TEX_COMMAND_RE.sub(lambda _match: "\\", str(value or ""))
+
 
 def _topic(
     subtype_id: str,
@@ -1910,11 +1942,11 @@ def _copy_template(concept_id: str, subtype: dict[str, Any]) -> dict[str, Any]:
         "subtype_id": subtype["id"],
         "subtype_name": subtype["name"],
         "subtype_summary": subtype["summary"],
-        "overview": subtype["overview"],
-        "framework": list(subtype["framework"]),
-        "formula_sheet": subtype.get("formula_sheet", ""),
-        "mistakes": list(subtype["mistakes"]),
-        "memory_aid": subtype["memory_aid"],
+        "overview": _normalize_template_prose(subtype["overview"]),
+        "framework": [_normalize_template_prose(item) for item in subtype["framework"]],
+        "formula_sheet": _normalize_template_formula(subtype.get("formula_sheet", "")),
+        "mistakes": [_normalize_template_prose(item) for item in subtype["mistakes"]],
+        "memory_aid": _normalize_template_prose(subtype["memory_aid"]),
         "source": "数学二公开大纲、公开教材目录与开源笔记结构交叉整理",
     }
 
@@ -1949,6 +1981,11 @@ def build_workbench_template(
     variants = selected[1:4]
     matched_ids = {item.get("id") for item in matched}
     template = _apply_override(_copy_template(concept_id, subtype), override)
+    template["overview"] = _normalize_template_prose(template.get("overview", ""))
+    template["framework"] = [_normalize_template_prose(item) for item in template.get("framework", [])]
+    template["mistakes"] = [_normalize_template_prose(item) for item in template.get("mistakes", [])]
+    template["memory_aid"] = _normalize_template_prose(template.get("memory_aid", ""))
+    template["formula_sheet"] = _normalize_template_formula(template.get("formula_sheet", ""))
     template["matched_question_count"] = len(matched)
     template["available_count"] = len(matched) + len(supplements)
     template["example_source"] = "细分题型命中" if example and example.get("id") in matched_ids else "同知识块补充"

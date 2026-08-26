@@ -177,6 +177,12 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             assert len(template["framework"]) >= 5
             assert len(template["mistakes"]) >= 4
             assert template["formula_sheet"].strip() and "$" in template["formula_sheet"]
+            assert all(
+                "\\\\" not in value
+                for value in [template["overview"], template["memory_aid"], *template["framework"], *template["mistakes"]]
+            )
+            assert r"\\begin" not in template["formula_sheet"]
+            assert r"\\end{" not in template["formula_sheet"]
             assert template["overview"]
             assert template["subtype_name"] == subtype["name"]
             assert template["example"]["source_scope"] in {"细分题型命中", "同知识块补充"}
@@ -192,6 +198,25 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
     selected_ids = {eigen_template["example"]["question"]["id"], *(item["question"]["id"] for item in eigen_template["variants"])}
     assert analysis_fragment["id"] not in selected_ids
     assert combined_paper["id"] not in selected_ids
+
+
+def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "const TEX_COMMAND_PATTERN" in source
+    assert "function normalizeTexSource" in source
+    assert "function renderTemplateText" in source
+    assert "function renderNoteMarkdownPreview" in source
+    assert "renderMarkdown(content)" in source
+    assert 'raw.startsWith("\\\\begin")' in source
+
+
+def test_tex_normalization_preserves_array_row_break_before_command() -> None:
+    from app.services.workbench import _normalize_template_formula
+
+    assert _normalize_template_formula(r"$\\left(x\\right)$") == r"$\left(x\right)$"
+    array_formula = r"$\begin{array}{l}y^{\prime}+ay=f(x),\\\left.y\right|_{x=0}=0\end{array}$"
+    assert _normalize_template_formula(array_formula) == array_formula
 
 
 def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> None:
