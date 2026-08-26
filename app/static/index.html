@@ -2,9 +2,10 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#12243a" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/styles.css" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
   </head>
@@ -34,7 +35,7 @@
             <span class="eyebrow">LOCAL-FIRST</span>
             <p>数据和学习记录保存在本机。模型服务可接入云端或本地 OpenAI-compatible 接口。</p>
           </div>
-          <div class="build-stamp">BUILD 1.0 · STUDY WITH EVIDENCE</div>
+           <div class="build-stamp">LOCAL WORKSPACE · STUDY WITH EVIDENCE</div>
         </div>
       </aside>
 
@@ -68,9 +69,9 @@
             </div>
             <div class="forecast-card dark-panel">
               <div class="panel-label light">ESTIMATED SCORE / 数学二</div>
-              <div class="forecast-score" id="forecast-p50">—<span> / 150</span></div>
+              <div class="forecast-score" id="forecast-p50">0<span> / 150</span></div>
               <div class="forecast-caption">中位预估分</div>
-              <div class="forecast-range"><span id="forecast-p10">—</span><i></i><span id="forecast-p90">—</span></div>
+              <div class="forecast-range"><span id="forecast-p10">0</span><i></i><span id="forecast-p90">0</span></div>
               <div class="forecast-range-label"><span>保守区间</span><span>乐观区间</span></div>
               <div class="forecast-meta" id="forecast-meta">正在计算掌握度……</div>
               <div class="forecast-footnote" id="forecast-note"></div>
@@ -78,10 +79,10 @@
           </div>
 
           <div class="metric-grid" id="overview-metrics">
-            <div class="metric-card"><span class="metric-label">题库规模</span><strong id="metric-questions">—</strong><small>道完整真题</small></div>
-            <div class="metric-card"><span class="metric-label">已完成</span><strong id="metric-attempts">—</strong><small>次有效作答</small></div>
-            <div class="metric-card"><span class="metric-label">当前掌握度</span><strong id="metric-mastery">—</strong><small>跨知识块加权</small></div>
-            <div class="metric-card accent-metric"><span class="metric-label">建议专注</span><strong id="metric-focus">—</strong><small>优先处理的知识块</small></div>
+            <div class="metric-card"><span class="metric-label">题库规模</span><strong id="metric-questions">读取中</strong><small>道完整真题</small></div>
+            <div class="metric-card"><span class="metric-label">已完成</span><strong id="metric-attempts">0</strong><small>次有效作答</small></div>
+            <div class="metric-card"><span class="metric-label">当前掌握度</span><strong id="metric-mastery">0%</strong><small>跨知识块加权</small></div>
+            <div class="metric-card accent-metric"><span class="metric-label">建议专注</span><strong id="metric-focus">读取中</strong><small>优先处理的知识块</small></div>
           </div>
 
           <div class="section-heading"><div><span class="section-number">A</span><h2>今天的训练处方</h2></div><button class="text-button" data-view-target="blocks">全部分块 <span>→</span></button></div>
@@ -92,7 +93,7 @@
         </section>
 
         <section class="view" id="view-library">
-          <div class="view-intro"><div><span class="eyebrow">ARCHIVE / REAL QUESTIONS</span><h2>真题库</h2><p>来自原始 Markdown/LaTeX 文件的完整题目。知识块按数学二大纲组织；非数学二范围的原题仍保留并单独标记。</p></div><div class="archive-count" id="archive-count">—</div></div>
+          <div class="view-intro"><div><span class="eyebrow">ARCHIVE / REAL QUESTIONS</span><h2>真题库</h2><p>来自原始 Markdown/LaTeX 文件的完整题目。知识块按数学二大纲组织；非数学二范围的原题仍保留并单独标记。</p></div><div class="archive-count" id="archive-count">读取中</div></div>
           <div class="filter-bar">
             <label>科目<select id="filter-exam"><option value="数学二">数学二</option></select></label>
             <label>年份<select id="filter-year"><option value="">全部年份</option></select></label>
@@ -148,13 +149,13 @@
     <div class="modal-backdrop" id="question-modal" aria-hidden="true">
       <div class="question-modal" role="dialog" aria-modal="true" aria-labelledby="question-modal-title">
         <button class="modal-close" id="close-question-modal" aria-label="关闭">×</button>
-        <div class="modal-topline"><span id="modal-question-ref">—</span><span id="modal-question-type">—</span></div>
+        <div class="modal-topline"><span id="modal-question-ref">待加载</span><span id="modal-question-type">待加载</span></div>
         <h2 id="question-modal-title">题目</h2>
         <div class="tag-row" id="modal-question-tags"></div>
         <div class="question-body markdown-body" id="modal-question-body"></div>
-        <div class="answer-box">
-          <div class="answer-box-head"><label for="answer-input">我的作答</label><span id="answer-hint">请写出答案或关键步骤</span></div>
-          <textarea id="answer-input" rows="5" placeholder="在这里输入你的答案……"></textarea>
+         <div class="answer-box">
+           <div class="answer-box-head"><label>我的作答</label><span id="answer-hint">请写出答案或关键步骤</span></div>
+           <div id="modal-answer-editor" class="modal-answer-editor"></div>
           <div class="answer-upload-row"><label class="upload-button" for="answer-image-input">＋ 上传手写过程图</label><input id="answer-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /><span id="answer-image-status">支持 PNG/JPG/WebP/GIF，单张不超过 8 MB</span></div>
           <div class="image-preview" id="answer-image-preview" hidden></div>
           <div class="answer-controls"><label id="self-grade-wrap">解答题自评<select id="self-grade"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></label><label>用时（分钟）<input id="answer-duration" type="number" min="0" max="1440" value="0" /></label><button class="primary-button" id="submit-answer">提交作答</button></div>

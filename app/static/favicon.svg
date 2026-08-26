@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>砺数</title>
+  <rect width="64" height="64" rx="16" fill="#c9ebe4"/>
+  <path d="M16 19h32M19 28h26M16 37h32M23 46h18" fill="none" stroke="#095a56" stroke-linecap="round" stroke-width="5"/>
+</svg>

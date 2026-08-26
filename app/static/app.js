@@ -192,9 +192,210 @@ function renderQuestionPreview(source, maxChars = 420) {
 
 function renderAnswerPreview(value) {
   const source = String(value || "").trim();
-  return source
-    ? renderMarkdown(source)
-    : `<p class="muted-copy">输入答案后，这里会实时预览 LaTeX。行内公式用 <code>$...$</code>，行间公式用 <code>$$...$$</code>。</p>`;
+  if (!source) return `<p class="muted-copy">输入答案后，这里会实时预览。点击下方工具可以插入常用公式模板。</p>`;
+  const hasMathDelimiters = /\$\$?[\s\S]*?\$\$?|\\\(|\\\[/.test(source);
+  const looksLikeStandaloneLatex = !hasMathDelimiters && !/[，。！？\n]/.test(source) && /\\[A-Za-z]+|[{}^_]/.test(source);
+  return renderMarkdown(looksLikeStandaloneLatex ? `$$${source}$$` : source);
+}
+
+const FORMULA_TOOL_GROUPS = [
+  {
+    label: "结构",
+    items: [
+      { label: "分数", tex: "\\frac{a}{b}", select: "a", title: "插入分数" },
+      { label: "根式", tex: "\\sqrt{x}", select: "x", title: "插入平方根" },
+      { label: "幂", tex: "x^{n}", select: "n", title: "插入幂" },
+      { label: "下标", tex: "x_{i}", select: "i", title: "插入下标" },
+      { label: "绝对值", tex: "\\left|x\\right|", select: "x", title: "插入绝对值" },
+      { label: "矩阵", tex: "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}", select: "a", wrap: "display", title: "插入二阶矩阵" },
+    ],
+  },
+  {
+    label: "微积分",
+    items: [
+      { label: "积分", tex: "\\int_{a}^{b} f(x)\\,dx", select: "a", wrap: "display", title: "插入定积分" },
+      { label: "二重积分", tex: "\\iint_{D} f(x,y)\\,dA", select: "D", wrap: "display", title: "插入二重积分" },
+      { label: "求和", tex: "\\sum_{i=1}^{n} a_i", select: "i=1", wrap: "display", title: "插入求和" },
+      { label: "极限", tex: "\\lim_{x\\to a} f(x)", select: "x\\to a", wrap: "display", title: "插入极限" },
+      { label: "导数", tex: "\\frac{dy}{dx}", select: "dy", title: "插入一阶导数" },
+      { label: "偏导", tex: "\\frac{\\partial f}{\\partial x}", select: "f", title: "插入偏导数" },
+    ],
+  },
+  {
+    label: "常用符号",
+    items: [
+      { label: "α", tex: "\\alpha", title: "希腊字母 alpha" },
+      { label: "β", tex: "\\beta", title: "希腊字母 beta" },
+      { label: "γ", tex: "\\gamma", title: "希腊字母 gamma" },
+      { label: "λ", tex: "\\lambda", title: "希腊字母 lambda" },
+      { label: "∞", tex: "\\infty", title: "无穷大" },
+      { label: "→", tex: "\\to", title: "趋于" },
+      { label: "≤", tex: "\\le", title: "小于等于" },
+      { label: "≥", tex: "\\ge", title: "大于等于" },
+      { label: "≠", tex: "\\ne", title: "不等于" },
+      { label: "±", tex: "\\pm", title: "正负号" },
+      { label: "·", tex: "\\cdot", title: "乘号" },
+      { label: "∈", tex: "\\in", title: "属于" },
+    ],
+  },
+  {
+    label: "函数",
+    items: [
+      { label: "sin", tex: "\\sin x", select: "x", title: "正弦函数" },
+      { label: "cos", tex: "\\cos x", select: "x", title: "余弦函数" },
+      { label: "ln", tex: "\\ln x", select: "x", title: "自然对数" },
+      { label: "eˣ", tex: "e^{x}", select: "x", title: "指数函数" },
+      { label: "f′", tex: "f'(x)", select: "f", title: "函数导数" },
+      { label: "向量", tex: "\\vec{a}", select: "a", title: "向量记号" },
+    ],
+  },
+];
+
+function domId(value) {
+  return String(value || "field").replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function extractChoiceOptions(source) {
+  const options = [];
+  let current = null;
+  for (const rawLine of String(source || "").replace(/\r/g, "").split("\n")) {
+    const line = rawLine.trim();
+    const match = line.match(/^(?:[-*]\s*)?([A-D])[\.．、\)]\s*(.*)$/i);
+    if (match) {
+      if (current) options.push(current);
+      current = { label: match[1].toUpperCase(), text: match[2].trim() };
+    } else if (current && line) {
+      current.text = `${current.text} ${line}`.trim();
+    }
+  }
+  if (current) options.push(current);
+  return options.length ? options : ["A", "B", "C", "D"].map((label) => ({ label, text: `选项 ${label}` }));
+}
+
+function formulaToolbarMarkup(editorId, readonly = false) {
+  if (readonly) return `<p class="formula-readonly-note">本题已提交。可查看公式，但不能修改。</p>`;
+  return `<div class="formula-toolbar" data-formula-toolbar="${escapeAttr(editorId)}" role="toolbar" aria-label="LaTeX 公式工具">
+    ${FORMULA_TOOL_GROUPS.map((group) => `<div class="formula-tool-group"><span class="formula-group-label">${escapeHtml(group.label)}</span><div class="formula-tool-list">${group.items.map((item) => `<button type="button" class="formula-tool" data-formula-tool data-formula-tex="${escapeAttr(item.tex)}" data-formula-select="${escapeAttr(item.select || "")}" data-formula-wrap="${escapeAttr(item.wrap || "inline")}" title="${escapeAttr(item.title || item.label)}"><span>${escapeHtml(item.label)}</span></button>`).join("")}</div></div>`).join("")}
+  </div>
+  <div class="formula-helper"><span>点击模板后可直接替换字母</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></div>`;
+}
+
+function renderFormulaEditor({ id, value = "", readonly = false, answerAttribute = "", label = "LaTeX 作答", placeholder = "先写文字，再用工具插入公式，例如：函数在区间上连续。" }) {
+  const editorId = domId(id);
+  const inputId = editorId === "modal-answer" ? "answer-input" : `${editorId}-input`;
+  return `<div class="formula-editor" data-formula-editor="${escapeAttr(editorId)}">
+    <div class="formula-editor-layout">
+      <div class="formula-source-pane">
+        <div class="formula-pane-head"><label for="${escapeAttr(inputId)}">${escapeHtml(label)}</label><span>文字与 LaTeX 混合</span></div>
+        <textarea id="${escapeAttr(inputId)}" ${answerAttribute} data-formula-input="${escapeAttr(editorId)}" rows="5" spellcheck="false" ${readonly ? "readonly" : ""} placeholder="${escapeAttr(placeholder)}">${escapeHtml(value)}</textarea>
+        ${formulaToolbarMarkup(editorId, readonly)}
+      </div>
+      <div class="formula-preview-pane">
+        <div class="formula-pane-head"><span>实时预览</span><span class="formula-engine">KaTeX</span></div>
+        <div class="formula-live-preview" data-formula-preview="${escapeAttr(editorId)}">${renderAnswerPreview(value)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderChoiceEditor({ question, value = "", readonly = false, answerAttribute = "", id = "modal-choice" }) {
+  const selected = String(value || "").trim().toUpperCase();
+  const editorId = domId(id);
+  const inputId = editorId === "modal-choice" ? "answer-input" : `${editorId}-input`;
+  const options = extractChoiceOptions(question.question_markdown);
+  return `<div class="choice-editor" data-choice-editor="${escapeAttr(editorId)}" tabindex="0" role="radiogroup" aria-label="选择题选项">
+    <div class="choice-editor-head"><span>选择一个选项</span><span><kbd>A</kbd>-<kbd>D</kbd> 或 <kbd>1</kbd>-<kbd>4</kbd> 快速作答</span></div>
+    <div class="choice-options">${options.map((option, index) => `<button type="button" class="choice-option ${selected === option.label ? "selected" : ""}" data-choice-value="${escapeAttr(option.label)}" role="radio" aria-checked="${selected === option.label ? "true" : "false"}" ${readonly ? "disabled" : ""}><span class="choice-letter">${escapeHtml(option.label)}</span><span class="choice-option-text markdown-body">${renderMarkdown(option.text)}</span><span class="choice-check" aria-hidden="true">✓</span></button>`).join("")}</div>
+    <textarea id="${escapeAttr(inputId)}" class="choice-value" ${answerAttribute} data-choice-input="${escapeAttr(editorId)}" aria-hidden="true" tabindex="-1" ${readonly ? "readonly" : ""}>${escapeHtml(selected)}</textarea>
+    <p class="choice-helper">还没想好也没关系，先选最有把握的一项，提交后可以回看解析。</p>
+  </div>`;
+}
+
+function renderAnswerEditor(question, { mode = "modal", value = "", readonly = false } = {}) {
+  const answerAttribute = mode === "practice"
+    ? `data-practice-answer="${escapeAttr(question.id)}"`
+    : mode === "simulation"
+      ? `data-sim-answer="${escapeAttr(question.id)}"`
+      : "";
+  if (question.question_type === "choice") {
+    return renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` });
+  }
+  return renderFormulaEditor({
+    id: mode === "modal" ? "modal-answer" : `${mode}-answer-${question.id}`,
+    value,
+    readonly,
+    answerAttribute,
+    label: question.question_type === "fill" ? "填写答案" : "我的解题过程",
+    placeholder: question.question_type === "fill" ? "输入最终结果，点击工具插入分数、根式、积分等公式。" : "先写解题步骤，公式直接点工具插入，也可以手动编辑 LaTeX。",
+  });
+}
+
+function insertFormulaSnippet(field, button) {
+  const tex = button.dataset.formulaTex || "";
+  const select = button.dataset.formulaSelect || "";
+  const display = button.dataset.formulaWrap === "display";
+  const wrapper = display ? "$$" : "$";
+  const start = field.selectionStart ?? field.value.length;
+  const end = field.selectionEnd ?? start;
+  const before = field.value.slice(0, start);
+  const after = field.value.slice(end);
+  const spacer = before && !/\s$/.test(before) ? " " : "";
+  const snippet = `${wrapper}${tex}${wrapper}`;
+  const insertAt = start + spacer.length;
+  field.value = `${before}${spacer}${snippet}${after}`;
+  const selectionAt = select ? snippet.indexOf(select) : snippet.length;
+  const selectionEnd = select ? selectionAt + select.length : selectionAt;
+  field.focus();
+  field.setSelectionRange(insertAt + selectionAt, insertAt + selectionEnd);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function selectChoice(editor, value) {
+  const input = editor.querySelector("[data-choice-input]");
+  if (!input) return;
+  input.value = value;
+  $$('[data-choice-value]', editor).forEach((button) => {
+    const selected = button.dataset.choiceValue === value;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-checked", selected ? "true" : "false");
+  });
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function bindAnswerEditors(root = document) {
+  $$('[data-formula-editor]', root).forEach((editor) => {
+    if (editor.dataset.bound === "true") return;
+    editor.dataset.bound = "true";
+    const field = editor.querySelector("[data-formula-input]");
+    const preview = editor.querySelector("[data-formula-preview]");
+    const update = () => {
+      if (preview) preview.innerHTML = renderAnswerPreview(field.value);
+      if (state.practiceSession) updatePracticeSessionStatus();
+    };
+    field?.addEventListener("input", update);
+    $$('[data-formula-tool]', editor).forEach((button) => button.addEventListener("click", () => insertFormulaSnippet(field, button)));
+    field?.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && editor.closest(".practice-session-shell")) {
+        event.preventDefault();
+        $("submit-practice-session")?.click();
+      }
+    });
+  });
+  $$('[data-choice-editor]', root).forEach((editor) => {
+    if (editor.dataset.bound === "true") return;
+    editor.dataset.bound = "true";
+    $$('[data-choice-value]', editor).forEach((button) => button.addEventListener("click", () => selectChoice(editor, button.dataset.choiceValue)));
+    editor.addEventListener("keydown", (event) => {
+      const key = event.key.toUpperCase();
+      const digitIndex = /^[1-4]$/.test(event.key) ? Number(event.key) - 1 : -1;
+      const choice = /^[A-D]$/.test(key) ? key : editor.querySelectorAll("[data-choice-value]")[digitIndex]?.dataset.choiceValue;
+      if (choice) {
+        event.preventDefault();
+        const button = $$('[data-choice-value]', editor).find((item) => item.dataset.choiceValue === choice);
+        if (button && !button.disabled) selectChoice(editor, choice);
+      }
+    });
+  });
 }
 
 function typeLabel(type) {
@@ -215,7 +416,7 @@ function questionConceptMarkup(question) {
 }
 
 function formatScore(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "暂无";
   const number = Number(value);
   return Number.isInteger(number) ? String(number) : number.toFixed(1);
 }
@@ -317,13 +518,13 @@ function renderOverview() {
   const stats = state.stats || {};
   const progress = state.progress || {};
   const forecast = state.forecast || {};
-  $("metric-questions").textContent = stats.total_questions ?? "—";
+  $("metric-questions").textContent = stats.total_questions ?? "读取中";
   $("metric-attempts").textContent = progress.attempts ?? 0;
-  $("metric-mastery").textContent = progress.overall_mastery == null ? "22%" : `${formatScore(progress.overall_mastery)}%`;
+  $("metric-mastery").textContent = progress.overall_mastery == null ? "0%" : `${formatScore(progress.overall_mastery)}%`;
   $("metric-focus").textContent = state.blocks[0]?.concept?.name || "暂无";
-  $("forecast-p50").innerHTML = forecast.available ? `${formatScore(forecast.p50)}<span> / ${formatScore(forecast.max_score)}</span>` : "—<span> / 150</span>";
-  $("forecast-p10").textContent = forecast.available ? formatScore(forecast.p10) : "—";
-  $("forecast-p90").textContent = forecast.available ? formatScore(forecast.p90) : "—";
+  $("forecast-p50").innerHTML = forecast.available ? `${formatScore(forecast.p50)}<span> / ${formatScore(forecast.max_score)}</span>` : "0<span> / 150</span>";
+  $("forecast-p10").textContent = forecast.available ? formatScore(forecast.p10) : "0";
+  $("forecast-p90").textContent = forecast.available ? formatScore(forecast.p90) : "0";
   $("forecast-meta").textContent = forecast.available ? `置信度 ${forecast.confidence} · 已使用 ${forecast.attempts_used} 次作答` : (forecast.reason || "等待题库数据");
   $("forecast-note").textContent = forecast.note || "区间会随着真实作答和模拟考更新。";
 
@@ -345,7 +546,7 @@ function renderBlockPreview(block) {
     <span class="eyebrow">${escapeHtml(concept.subject || "知识块")}</span>
     <h3>${escapeHtml(concept.name || "未分类")}</h3>
     <p>${escapeHtml(block.reason || "根据作答轨迹安排")}</p>
-    <div class="progress-line"><span style="width:${value}%"></span></div>
+    <div class="progress-line"><span style="--progress:${(value / 100).toFixed(3)}"></span></div>
     <div class="block-bottom"><span>掌握度 ${formatScore(concept.mastery ?? 22)}%</span><span>${concept.attempts || 0} 次练习</span></div>
   </article>`;
 }
@@ -471,7 +672,7 @@ function renderFullBlock(block) {
   const samples = (block.questions || []).slice(0, 3).map((question, index) => `<div class="block-question" data-question-id="${escapeAttr(question.id)}"><span class="block-question-number">0${index + 1}</span><div class="block-question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 260)}</div><small>${formatScore(question.points)}分 · ${question.year}</small></div>`).join("");
   return `<article class="full-block-card">
     <div class="full-block-head"><div><span class="eyebrow">${escapeHtml(concept.subject || "知识块")}</span><h3>${escapeHtml(concept.name || "未分类")}</h3><p>${concept.attempts || 0} 次作答 · ${concept.accuracy == null ? "暂无正确率" : `${formatScore(concept.accuracy)}% 正确`}</p></div><div class="mastery-number">${formatScore(concept.mastery ?? 22)}%</div></div>
-    <div class="progress-line"><span style="width:${value}%"></span></div>
+    <div class="progress-line"><span style="--progress:${(value / 100).toFixed(3)}"></span></div>
     <div class="block-reason">${escapeHtml(block.reason || "根据当前掌握度安排训练")}</div>
     <div class="block-type-grid">${typeCards || `<p class="muted-copy">该知识块暂时没有可用的题型子块。</p>`}</div>
     <div class="block-sample-head"><span class="eyebrow">题目预览</span><span>点击题目可直接作答</span></div>
@@ -508,7 +709,7 @@ function renderPracticeSession() {
       ["", "暂不自评"], ["1", "完整正确（100%）"], ["0.7", "主要正确（70%）"], ["0.4", "部分得到（40%）"], ["0", "不会/错误（0%）"],
     ].map(([value, label]) => `<option value="${value}" ${selectedGrade === value ? "selected" : ""}>${label}</option>`).join("");
     const resultMarkup = finished ? `<div class="practice-answer-result ${escapeAttr(result.status || answerState.status || "manual")}"><span>${escapeHtml(resultLabel(result.status || answerState.status))}</span><b>${formatScore(answerState.score)} / ${formatScore(answerState.max_score || question.points)} 分</b>${question.answer_markdown ? `<h5>来源答案</h5><div class="markdown-body">${renderMarkdown(question.answer_markdown)}</div>` : ""}${question.solution_markdown ? `<h5>来源解析</h5><div class="markdown-body">${renderMarkdown(question.solution_markdown)}</div>` : ""}</div>` : "";
-    const answerArea = `<div class="practice-answer-editor"><div class="practice-editor-head"><label for="practice-answer-${escapeAttr(question.id)}">我的 LaTeX 作答</label><span>源码可编辑</span></div><textarea id="practice-answer-${escapeAttr(question.id)}" data-practice-answer="${escapeAttr(question.id)}" rows="4" spellcheck="false" ${finished ? "readonly" : ""} placeholder="例如：$\\frac{1}{2}$ 或 $$\\int_0^1 f(x)dx$$">${escapeHtml(answer)}</textarea><div class="latex-hint">用 $...$ 写行内公式，用 $$...$$ 写行间公式；右侧实时预览。</div></div><div class="practice-answer-preview"><div class="practice-editor-head"><span>公式预览</span><span>KaTeX</span></div><div class="practice-live-preview" data-practice-preview="${escapeAttr(question.id)}">${renderAnswerPreview(answer)}</div></div>`;
+    const answerArea = renderAnswerEditor(question, { mode: "practice", value: answer, readonly: finished });
     const uploadArea = finished ? renderPracticeAttachments(answerState.attachments || []) : `<div class="practice-upload-row"><label class="upload-button small-upload" for="practice-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="practice-image-${escapeAttr(question.id)}" type="file" data-practice-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span data-practice-image-status="${escapeAttr(question.id)}">支持图片，单张不超过 8 MB</span></div>${renderPracticeAttachments(answerState.attachments || [])}`;
     const selfGrade = question.question_type === "solution" ? `<label class="practice-grade-label">解答题自评<select data-practice-grade="${escapeAttr(question.id)}" ${finished ? "disabled" : ""}>${gradeOptions}</select></label>` : "";
     return `<article class="practice-session-question" data-practice-question="${escapeAttr(question.id)}"><div class="practice-question-head"><span>${String(index + 1).padStart(2, "0")} / ${typeLabel(question.question_type)}</span><b>${formatScore(question.points)} 分</b></div><div class="practice-question-body markdown-body">${renderMarkdown(question.question_markdown)}</div><div class="practice-answer-grid">${answerArea}</div>${uploadArea}${selfGrade}${resultMarkup}</article>`;
@@ -521,6 +722,7 @@ function renderPracticeSession() {
   $("blocks-container").classList.add("practice-active");
   $("blocks-container").innerHTML = `<section class="practice-session-shell"><header class="practice-session-header"><div><span class="eyebrow">TRAINING SESSION / ${escapeHtml(typeLabel(session.question_type))}</span><h3>${escapeHtml(conceptName(session.concept_id))} · ${escapeHtml(typeLabel(session.question_type))}题训练</h3><p>随机抽取 ${escapeHtml(countLabel)} · 真实题库 · ${finished ? "本次已完成" : "提交后统一判题"}</p></div><div class="practice-session-actions"><button class="text-button" id="leave-practice-session">返回分块</button>${finished ? "" : `<button class="secondary-button" id="save-practice-session">保存草稿</button><button class="primary-button" id="submit-practice-session">提交训练</button>`}</div></header><div class="practice-session-status"><span>${escapeHtml(statusLabel)}</span><span class="practice-session-id">${escapeHtml(session.id.slice(0, 8))}</span></div><div class="practice-session-list">${cards}</div>${finished ? `<footer class="practice-session-footer"><p>本次结果已经写入学习记录，可以返回分块继续训练。</p><button class="primary-button" id="back-after-practice">返回分块训练</button></footer>` : `<footer class="practice-session-footer"><p>草稿只保存到本机，不会改变掌握度；点击提交后才会计入统计。</p><button class="primary-button" id="submit-practice-session-bottom">提交 15 题训练</button></footer>`}</section>`;
   typeset($("blocks-container"));
+  bindAnswerEditors($('blocks-container'));
   bindPracticeSession();
 }
 
@@ -534,14 +736,7 @@ function updatePracticeSessionStatus() {
 
 function bindPracticeSession() {
   const root = $("blocks-container");
-  $$('[data-practice-answer]', root).forEach((field) => field.addEventListener("input", () => {
-    const preview = $$('[data-practice-preview]', root).find((item) => item.dataset.practicePreview === field.dataset.practiceAnswer);
-    if (preview) {
-      preview.innerHTML = renderAnswerPreview(field.value);
-      typeset(preview);
-    }
-    updatePracticeSessionStatus();
-  }));
+  $$('[data-practice-answer]', root).forEach((field) => field.addEventListener("input", updatePracticeSessionStatus));
   $$('[data-practice-grade]', root).forEach((field) => field.addEventListener("change", updatePracticeSessionStatus));
   $$('[data-practice-image]', root).forEach((input) => input.addEventListener("change", () => {
     const status = $$('[data-practice-image-status]', root).find((item) => item.dataset.practiceImageStatus === input.dataset.practiceImage);
@@ -640,20 +835,25 @@ async function openQuestion(questionId) {
     $("modal-question-tags").innerHTML = questionConceptLabels(question).map((concept) => `<span class="tag ${concept.scope === "out-of-syllabus" ? "out-of-syllabus" : ""}">${escapeHtml(concept.scope === "out-of-syllabus" ? `${concept.scope_label} · ${concept.name}` : concept.name)}</span>`).join("");
     $("modal-question-body").innerHTML = renderMarkdown(question.question_markdown);
     typeset($("modal-question-body"));
-    $("answer-input").value = "";
+    $("modal-answer-editor").innerHTML = renderAnswerEditor(question, { mode: "modal" });
+    bindAnswerEditors($("modal-answer-editor"));
     $("answer-image-input").value = "";
     clearImagePreview($("answer-image-preview"));
     $("answer-image-status").textContent = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB";
     $("answer-duration").value = "0";
     $("self-grade").value = "";
     $("self-grade-wrap").style.display = question.question_type === "solution" ? "grid" : "none";
-    $("answer-hint").textContent = question.question_type === "solution" ? "可写关键步骤，提交后自评或请求模型复核" : "选择题填 A/B/C/D，填空题填最终表达式";
+    $("answer-hint").textContent = question.question_type === "choice"
+      ? "点击选项，或使用键盘 A-D / 1-4"
+      : question.question_type === "fill"
+        ? "点击公式工具插入模板，源码与预览同步"
+        : "先写步骤，再用公式工具补充关键表达式";
     $("question-result").hidden = true;
     $("tutor-box").hidden = true;
     $("modal-source").textContent = `SOURCE · ${question.source_path || "本地题库"}`;
     $("question-modal").classList.add("open");
     $("question-modal").setAttribute("aria-hidden", "false");
-    window.setTimeout(() => $("answer-input").focus(), 80);
+    window.setTimeout(() => $("answer-input")?.focus(), 120);
   } catch (error) {
     showToast(`打开题目失败：${error.message}`, true);
   }
@@ -814,6 +1014,7 @@ function renderSimulation() {
   }
   $("simulation-container").innerHTML = renderSimulationPaper(simulation, false);
   typeset($("simulation-container"));
+  bindAnswerEditors($("simulation-container"));
   bindSimulationUploads($("simulation-container"));
 }
 
@@ -821,10 +1022,10 @@ function renderSimulationPaper(simulation, finished) {
   const questions = simulation.questions || [];
   const questionMarkup = questions.map((question, index) => {
     const gradeMarkup = question.question_type === "solution" ? `<div class="sim-self-grade"><span>解答题自评</span><select data-sim-grade="${escapeAttr(question.id)}"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></div>` : "";
-    const answerMarkup = finished ? "" : `<div class="sim-answer"><label for="sim-answer-${escapeAttr(question.id)}">我的作答</label><textarea id="sim-answer-${escapeAttr(question.id)}" data-sim-answer="${escapeAttr(question.id)}" rows="3" placeholder="输入答案或解题步骤……"></textarea><div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
+    const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation" })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
     return `<article class="simulation-question"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
   }).join("");
-  return `<div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "已交卷" : "答案不会自动显示，提交后统一判定"}</p></div><div class="simulation-clock" id="simulation-clock">${finished ? "已完成" : "180:00"}</div></div><div class="simulation-progress"><span id="simulation-progress-bar" style="width:0%"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div>`;
+  return `<div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "已交卷" : "答案不会自动显示，提交后统一判定"}</p></div><div class="simulation-clock" id="simulation-clock">${finished ? "已完成" : "180:00"}</div></div><div class="simulation-progress"><span id="simulation-progress-bar" style="--progress:0"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div>`;
 }
 
 function bindSimulationUploads(root) {
@@ -857,7 +1058,7 @@ function startSimulationClock() {
     const answered = $$('[data-sim-answer]').filter((field) => field.value.trim()).length;
     const total = (simulation.questions || []).length || 1;
     const bar = $("simulation-progress-bar");
-    if (bar) bar.style.width = `${Math.round(answered / total * 100)}%`;
+    if (bar) bar.style.setProperty("--progress", String(answered / total));
     if (remaining <= 0) {
       window.clearInterval(state.simulationTimer);
       showToast("模拟考时间到，正在自动提交。", true);
