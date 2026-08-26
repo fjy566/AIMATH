@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing FastAPI + SQLite + static JavaScript application. Generate the complete template catalog from the ten active Math II knowledge blocks and three question types, select real questions from the imported question store, and persist notes, note assets, versions, and user template overrides in SQLite. Add one responsive Workbench view that uses the existing KaTeX renderer and CSS token system without a new frontend dependency.
 
-**Tech Stack:** FastAPI, Pydantic, SQLite, vanilla JavaScript, native `contenteditable`, Markdown textarea, Pointer Events canvas, KaTeX.
+**Tech Stack:** FastAPI, Pydantic, SQLite, vanilla JavaScript, native `contenteditable`, Markdown textarea, KaTeX.
 
 ---
 
@@ -29,7 +29,7 @@ Verification: exercise catalog coverage, real question IDs, note version creatio
 - Modify: `app/static/app.js`
 - Modify: `app/static/styles.css`
 
-Add Workbench navigation and view, template tabs, example/variant previews, searchable/favorite notes, rich editing, Markdown shortcuts, image insertion, handwriting canvas, mind-map branches, theme toggle, and JSON import/export controls. Collapse the sidebar/editor layout for narrow viewports and respect reduced-motion preferences.
+Add Workbench navigation and view, template tabs, example/variant previews, searchable/favorite notes, rich editing, Markdown shortcuts, image insertion, theme toggle, and JSON import/export controls. Collapse the sidebar/editor layout for narrow viewports and respect reduced-motion preferences.
 
 Verification: `node --check app/static/app.js`, desktop and 390px browser checks for loading templates, opening a real example, creating/editing a note, and mobile overflow.
 

@@ -177,6 +177,9 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             assert len(template["framework"]) >= 5
             assert len(template["mistakes"]) >= 4
             assert template["formula_sheet"].strip() and "$" in template["formula_sheet"]
+            assert len(template["answer_structure"]) == 4
+            assert [item["label"] for item in template["answer_structure"]] == ["题型定位", "条件核验", "核心过程", "结论复核"]
+            assert all(item["prompt"].strip() and item["content"].strip() for item in template["answer_structure"])
             assert all(
                 "\\\\" not in value
                 for value in [template["overview"], template["memory_aid"], *template["framework"], *template["mistakes"]]
@@ -202,11 +205,19 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
 
 def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
     source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "const TEX_COMMAND_PATTERN" in source
     assert "function normalizeTexSource" in source
     assert "function renderTemplateText" in source
+    assert "function renderInlineFormulaText" in source
     assert "function renderNoteMarkdownPreview" in source
+    assert "function handleStructuredTextKeydown" in source
+    assert "data-editor-count" in source
+    assert "function renderNoteRichPreview" in source
+    assert "note-rich-preview-body" in markup
+    assert "note-rich-count" in markup
+    assert "data-note-command=\"createLink\"" in markup
     assert "renderMarkdown(content)" in source
     assert 'raw.startsWith("\\\\begin")' in source
 

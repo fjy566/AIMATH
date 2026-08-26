@@ -198,8 +198,44 @@ function renderFormula(tex, display) {
   return `<span class="${fallbackClass}">${escapeHtml(source)}</span>`;
 }
 
+const RICH_FORMULA_PATTERN = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$|\\begin\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}[\s\S]*?\\end\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|smallmatrix)\}/g;
+
+function renderInlineFormulaText(value) {
+  const formulas = [];
+  const replaced = String(value || "").replace(/\r/g, "").replace(RICH_FORMULA_PATTERN, (raw) => {
+    let display = false;
+    let tex = raw;
+    if (raw.startsWith("$$")) {
+      display = true;
+      tex = raw.slice(2, -2);
+    } else if (raw.startsWith("\\[")) {
+      display = true;
+      tex = raw.slice(2, -2);
+    } else if (raw.startsWith("\\(")) {
+      tex = raw.slice(2, -2);
+    } else if (raw.startsWith("$")) {
+      tex = raw.slice(1, -1);
+    } else if (raw.startsWith("\\begin")) {
+      display = true;
+    }
+    const token = "RICHMATHTOKEN" + formulas.length + "END";
+    formulas.push({ token, display, tex });
+    return token;
+  });
+  let html = escapeHtml(replaced).replace(/\n/g, "<br />");
+  for (const formula of formulas) html = html.replaceAll(formula.token, renderFormula(formula.tex, formula.display));
+  return html;
+}
+
 function renderTemplateText(value) {
   return "<div class=\"markdown-body template-rich-text\">" + renderMarkdown(value) + "</div>";
+}
+
+function renderAnswerStructure(template) {
+  const items = template?.answer_structure || [];
+  if (!items.length) return "";
+  const steps = items.map((item, index) => "<article class=\"template-answer-step\"><span class=\"template-answer-step-index\">" + String(index + 1).padStart(2, "0") + "</span><div><strong>" + escapeHtml(item.label || "答题步骤") + "</strong><p>" + escapeHtml(item.prompt || "") + "</p><div class=\"markdown-body\">" + renderMarkdown(item.content || "") + "</div></div></article>").join("");
+  return "<section class=\"template-answer-structure\"><div class=\"template-answer-structure-head\"><div><span class=\"template-section-label\">可直接套写的答题纸结构</span><h4>把这类题写成完整得分链</h4></div><small>将题设中的字母、区间和数值代入对应位置，再逐步核对易错点。</small></div><div class=\"template-answer-structure-grid\">" + steps + "</div></section>";
 }
 
 function typeset(root) {
@@ -401,6 +437,17 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill")
         ${questionType === "solution" ? `<button type="button" class="answer-tool-toggle" data-answer-structure-toggle aria-expanded="false" aria-controls="${escapeAttr(editorId)}-answer-structure"><span>☷</span> 作答结构</button>` : ""}
       </div>
     </div>
+    <div class="answer-format-bar" role="toolbar" aria-label="文字作答工具">
+      <button type="button" data-editor-command="bold" title="加粗 Ctrl+B"><b>B</b></button>
+      <button type="button" data-editor-command="italic" title="斜体 Ctrl+I"><i>I</i></button>
+      <button type="button" data-editor-command="link" title="插入链接 Ctrl+K">链接</button>
+      <button type="button" data-editor-insert="quote" title="插入引用">引用</button>
+      <button type="button" data-editor-insert="point" title="插入分点">分点</button>
+      <button type="button" data-editor-insert="subquestion" title="插入小题">小题</button>
+      <span class="answer-format-spacer"></span>
+      <button type="button" data-editor-command="undo" title="撤销 Ctrl+Z">撤销</button>
+      <button type="button" data-editor-command="redo" title="重做 Ctrl+Y">重做</button>
+    </div>
     <div class="formula-tools-panel" id="${escapeAttr(editorId)}-formula-tools" data-formula-tools-panel hidden>
       <div class="formula-beginner-head"><strong>先选一类，再插入公式</strong><span>插入后可以继续修改字母和数字</span></div>
       <div role="toolbar" aria-label="常用数学公式工具">${formulaGroupsMarkup(editorId, BEGINNER_FORMULA_GROUPS)}</div>
@@ -418,6 +465,7 @@ function renderFormulaEditor({ id, value = "", readonly = false, answerAttribute
       <div class="formula-source-pane">
         <div class="formula-pane-head"><label for="${escapeAttr(inputId)}">${escapeHtml(label)}</label><span>文字和公式混合</span></div>
         <textarea id="${escapeAttr(inputId)}" ${answerAttribute} data-formula-input="${escapeAttr(editorId)}" rows="5" spellcheck="false" ${readonly ? "readonly" : ""} placeholder="${escapeAttr(placeholder)}">${escapeHtml(value)}</textarea>
+        <div class="editor-meta-row"><span>Enter 自动延续分点 · Tab 缩进 · Ctrl/Cmd + B 加粗</span><span class="editor-count" data-editor-count aria-live="polite">${editorCharacterCount(value)} 字</span></div>
         ${formulaToolbarMarkup(editorId, readonly, questionType)}
       </div>
       <div class="formula-preview-pane">
@@ -520,6 +568,209 @@ function insertAnswerStructure(field, action) {
   field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function editorCharacterCount(value) {
+  return Array.from(String(value || "")).length;
+}
+
+function updateEditorCount(root, value) {
+  const counter = root?.querySelector?.("[data-editor-count]") || (root?.matches?.("[data-editor-count]") ? root : null);
+  if (counter) counter.textContent = String(editorCharacterCount(value)) + " 字";
+}
+
+const TEXT_EDITOR_HISTORY = new WeakMap();
+
+function ensureTextEditorHistory(field) {
+  if (!field || typeof field.value !== "string") return null;
+  let history = TEXT_EDITOR_HISTORY.get(field);
+  if (!history) {
+    history = {
+      past: [],
+      future: [],
+      value: field.value,
+      selectionStart: field.selectionStart ?? field.value.length,
+      selectionEnd: field.selectionEnd ?? field.value.length,
+    };
+    TEXT_EDITOR_HISTORY.set(field, history);
+  }
+  return history;
+}
+
+function resetTextEditorHistory(field) {
+  if (!field) return;
+  TEXT_EDITOR_HISTORY.delete(field);
+  ensureTextEditorHistory(field);
+}
+
+function rememberTextEditorChange(field) {
+  const history = ensureTextEditorHistory(field);
+  if (!history || history.value === field.value) return;
+  history.past.push({ value: history.value, selectionStart: history.selectionStart, selectionEnd: history.selectionEnd });
+  if (history.past.length > 80) history.past.shift();
+  history.future = [];
+  history.value = field.value;
+  history.selectionStart = field.selectionStart ?? field.value.length;
+  history.selectionEnd = field.selectionEnd ?? history.selectionStart;
+}
+
+function dispatchEditorInput(field) {
+  rememberTextEditorChange(field);
+  field?.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function insertTextAtSelection(field, text, selectStart = String(text || "").length, selectEnd = selectStart) {
+  if (!field) return;
+  const value = String(field.value || "");
+  const start = field.selectionStart ?? value.length;
+  const end = field.selectionEnd ?? start;
+  const insertion = String(text || "");
+  field.value = value.slice(0, start) + insertion + value.slice(end);
+  const nextStart = start + selectStart;
+  field.focus();
+  field.setSelectionRange(nextStart, start + selectEnd);
+  dispatchEditorInput(field);
+}
+
+function wrapTextareaSelection(field, before, after, placeholder) {
+  if (!field) return;
+  const value = String(field.value || "");
+  const start = field.selectionStart ?? value.length;
+  const end = field.selectionEnd ?? start;
+  const selected = value.slice(start, end) || placeholder;
+  const insertion = String(before || "") + selected + String(after || "");
+  field.value = value.slice(0, start) + insertion + value.slice(end);
+  const innerStart = start + String(before || "").length;
+  field.focus();
+  field.setSelectionRange(innerStart, innerStart + selected.length);
+  dispatchEditorInput(field);
+}
+
+function insertMarkdownLink(field) {
+  if (!field) return;
+  const value = String(field.value || "");
+  const start = field.selectionStart ?? value.length;
+  const end = field.selectionEnd ?? start;
+  const label = value.slice(start, end) || "链接文字";
+  const insertion = "[" + label + "](https://)";
+  const urlStart = start + label.length + 3;
+  field.value = value.slice(0, start) + insertion + value.slice(end);
+  field.focus();
+  field.setSelectionRange(urlStart, urlStart + 8);
+  dispatchEditorInput(field);
+}
+
+function handleStructuredTextKeydown(field, event) {
+  if (!field || event.isComposing) return false;
+  const value = String(field.value || "");
+  const start = field.selectionStart ?? value.length;
+  const end = field.selectionEnd ?? start;
+  const modifier = event.ctrlKey || event.metaKey;
+  if (event.key === "Tab" && !modifier && !event.altKey) {
+    event.preventDefault();
+    const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+    if (event.shiftKey) {
+      const removed = value.slice(lineStart, lineStart + 2).match(/^ {1,2}/)?.[0] || "";
+      if (!removed) return true;
+      field.value = value.slice(0, lineStart) + value.slice(lineStart + removed.length);
+      field.focus();
+      field.setSelectionRange(Math.max(lineStart, start - removed.length), Math.max(lineStart, end - removed.length));
+    } else {
+      field.value = value.slice(0, lineStart) + "  " + value.slice(lineStart);
+      field.focus();
+      field.setSelectionRange(start + 2, end + 2);
+    }
+    dispatchEditorInput(field);
+    return true;
+  }
+  if (event.key === "Enter" && !event.shiftKey && !modifier && !event.altKey && start === end) {
+    const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+    const linePrefix = value.slice(lineStart, start);
+    const lineEnd = value.indexOf("\n", start);
+    const line = value.slice(lineStart, lineEnd < 0 ? value.length : lineEnd);
+    const unordered = linePrefix.match(/^(\s*)([-*+])\s+(.*)$/);
+    const ordered = linePrefix.match(/^(\s*)(\d+)([.、)])\s+(.*)$/);
+    const emptyUnordered = linePrefix.match(/^(\s*)([-*+])\s*$/);
+    const emptyOrdered = linePrefix.match(/^(\s*)(\d+)([.、)])\s*$/);
+    if (emptyUnordered || emptyOrdered) {
+      event.preventDefault();
+      const indent = (emptyUnordered || emptyOrdered)[1] || "";
+      const replacement = indent + "\n";
+      field.value = value.slice(0, lineStart) + replacement + value.slice(start);
+      field.focus();
+      field.setSelectionRange(lineStart + replacement.length, lineStart + replacement.length);
+      dispatchEditorInput(field);
+      return true;
+    }
+    if (unordered || ordered) {
+      event.preventDefault();
+      const indent = (unordered || ordered)[1] || "";
+      const marker = unordered
+        ? (unordered[2] || "-") + " "
+        : String(Number(ordered[2]) + 1) + (ordered[3] || ".") + " ";
+      const insertion = "\n" + indent + marker;
+      field.value = value.slice(0, start) + insertion + value.slice(start);
+      field.focus();
+      field.setSelectionRange(start + insertion.length, start + insertion.length);
+      dispatchEditorInput(field);
+      return true;
+    }
+    if (line && linePrefix === line && /^\s+$/.test(line)) {
+      event.preventDefault();
+      const indent = line.match(/^\s*/)?.[0] || "";
+      insertTextAtSelection(field, "\n" + indent);
+      return true;
+    }
+  }
+  if (modifier && !event.altKey) {
+    const key = event.key.toLowerCase();
+    if (key === "b" || key === "i" || key === "u") {
+      event.preventDefault();
+      const marks = { b: ["**", "**"], i: ["*", "*"], u: ["__", "__"] };
+      wrapTextareaSelection(field, marks[key][0], marks[key][1], key === "b" ? "重点内容" : "文字");
+      return true;
+    }
+    if (key === "k") {
+      event.preventDefault();
+      insertMarkdownLink(field);
+      return true;
+    }
+  }
+  return false;
+}
+
+function runTextEditorCommand(field, command) {
+  if (!field || field.readOnly) return;
+  field.focus();
+  if (command === "link") {
+    insertMarkdownLink(field);
+    return;
+  }
+  if (command === "bold" || command === "italic" || command === "underline") {
+    const marks = {
+      bold: ["**", "**", "重点内容"],
+      italic: ["*", "*", "文字"],
+      underline: ["__", "__", "文字"],
+    }[command];
+    wrapTextareaSelection(field, marks[0], marks[1], marks[2]);
+    return;
+  }
+  if (command === "undo" || command === "redo") {
+    const history = ensureTextEditorHistory(field);
+    if (!history) return;
+    const from = command === "undo" ? history.past : history.future;
+    const to = command === "undo" ? history.future : history.past;
+    if (!from.length) return;
+    to.push({ value: field.value, selectionStart: field.selectionStart ?? field.value.length, selectionEnd: field.selectionEnd ?? field.value.length });
+    const snapshot = from.pop();
+    field.value = snapshot.value;
+    field.focus();
+    field.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+    history.value = field.value;
+    history.selectionStart = snapshot.selectionStart;
+    history.selectionEnd = snapshot.selectionEnd;
+    dispatchEditorInput(field);
+  }
+}
+
 function setDisclosure(button, panel, open) {
   if (!button || !panel) return;
   panel.hidden = !open;
@@ -558,13 +809,24 @@ function bindAnswerEditors(root = document) {
     editor.dataset.bound = "true";
     const field = editor.querySelector("[data-formula-input]");
     const preview = editor.querySelector("[data-formula-preview]");
+    ensureTextEditorHistory(field);
     const update = () => {
+      rememberTextEditorChange(field);
       if (preview) preview.innerHTML = renderAnswerPreview(field.value);
+      updateEditorCount(editor, field?.value || "");
       if (state.practiceSession) updatePracticeSessionStatus();
     };
     field?.addEventListener("input", update);
     $$('[data-formula-tool]', editor).forEach((button) => button.addEventListener("click", () => insertFormulaSnippet(field, button)));
+    $$('[data-editor-command]', editor).forEach((button) => button.addEventListener("click", () => runTextEditorCommand(field, button.dataset.editorCommand)));
+    $$('[data-editor-insert]', editor).forEach((button) => button.addEventListener("click", () => {
+      const action = button.dataset.editorInsert;
+      if (action === "point" || action === "subquestion") insertAnswerStructure(field, action);
+      else if (action === "quote") insertTextAtSelection(field, "\n> ");
+    }));
     field?.addEventListener("keydown", (event) => {
+      const handled = handleStructuredTextKeydown(field, event);
+      if (handled) return;
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && editor.closest(".practice-session-shell")) {
         event.preventDefault();
         $("submit-practice-session")?.click();
@@ -1000,7 +1262,7 @@ function renderWorkbenchTemplate() {
   const mistakes = template.mistakes || [];
   const summaryMarkup = state.workbenchEditingTemplate
     ? `<div class="template-editing-form"><label>题型概述<textarea rows="4" data-template-field="overview">${escapeHtml(template.overview || "")}</textarea></label><div class="template-edit-columns"><label>解题思路框架${templateListEditor("framework", framework)}</label><label>常见易错点${templateListEditor("mistakes", mistakes)}</label></div><label>记忆提醒<input type="text" data-template-field="memory_aid" value="${escapeAttr(template.memory_aid || "")}" /></label></div>`
-    : `<div class="template-guide"><section class="template-overview template-rich-text markdown-body"><span class="template-section-label">这类题在考什么</span>${renderMarkdown(template.overview || "")}</section>${formulaSheet ? `<section class="template-formula-card"><div><span class="template-section-label">公式卡片</span><small>先理解公式的使用条件，再代入计算</small></div><div class="template-formula-body markdown-body">${renderMarkdown(formulaSheet)}</div></section>` : ""}<div class="template-guide-columns"><section><span class="template-section-label">推荐作答顺序</span><ol>${framework.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ol></section><section class="template-mistakes"><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ul></section></div><section class="template-memory"><span>考场提醒</span>${renderTemplateText(template.memory_aid || "")}</section></div>`;
+    : `<div class="template-guide"><section class="template-overview template-rich-text markdown-body"><span class="template-section-label">这类题在考什么</span>${renderMarkdown(template.overview || "")}</section>${formulaSheet ? `<section class="template-formula-card"><div><span class="template-section-label">公式卡片</span><small>先理解公式的使用条件，再代入计算</small></div><div class="template-formula-body markdown-body">${renderMarkdown(formulaSheet)}</div></section>` : ""}${renderAnswerStructure(template)}<div class="template-guide-columns"><section><span class="template-section-label">推荐作答顺序</span><ol>${framework.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ol></section><section class="template-mistakes"><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ul></section></div><section class="template-memory"><span>考场提醒</span>${renderTemplateText(template.memory_aid || "")}</section></div>`;
   const variantItems = template.variants || [];
   state.workbenchVariantIndex = Math.max(0, Math.min(state.workbenchVariantIndex, Math.max(variantItems.length - 1, 0)));
   const activeVariant = variantItems[state.workbenchVariantIndex];
@@ -1155,21 +1417,164 @@ function populateNoteConcepts(selected = "") {
 }
 
 function noteMarkdownToHtml(source) {
-  const blocks = String(source || "").replace(/\r/g, "").split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
-  if (!blocks.length) return "";
-  return blocks.map((block) => {
-    const lines = block.split("\n");
-    const first = lines[0];
-    if (/^#{1,4}\s+/.test(first)) return `<h4>${escapeHtml(first.replace(/^#{1,4}\s+/, ""))}</h4>`;
-    if (lines.every((line) => /^[-*]\s+/.test(line))) return `<ul>${lines.map((line) => `<li>${escapeHtml(line.replace(/^[-*]\s+/, ""))}</li>`).join("")}</ul>`;
-    return `<p>${escapeHtml(block).replace(/\n/g, "<br />")}</p>`;
-  }).join("");
+  const lines = String(source || "").replace(/\r/g, "").split("\n");
+  const output = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    output.push("<p>" + paragraph.map((line) => noteInlineMarkdownToHtml(line)).join("<br />") + "</p>");
+    paragraph = [];
+  };
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      flushParagraph();
+      index += 1;
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      const level = Math.min(4, heading[1].length + 1);
+      output.push("<h" + level + ">" + noteInlineMarkdownToHtml(heading[2]) + "</h" + level + ">");
+      index += 1;
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      flushParagraph();
+      const quote = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quote.push(noteInlineMarkdownToHtml(lines[index].replace(/^>\s?/, "")));
+        index += 1;
+      }
+      output.push("<blockquote>" + quote.join("<br />") + "</blockquote>");
+      continue;
+    }
+    const listMatch = line.match(/^\s*([-*+])\s+(.+)$/) || line.match(/^\s*(\d+)[.、)]\s+(.+)$/);
+    if (listMatch) {
+      flushParagraph();
+      const ordered = /^\s*\d+[.、)]\s+/.test(line);
+      const tag = ordered ? "ol" : "ul";
+      const items = [];
+      while (index < lines.length) {
+        const match = ordered
+          ? lines[index].match(/^\s*\d+[.、)]\s+(.+)$/)
+          : lines[index].match(/^\s*[-*+]\s+(.+)$/);
+        if (!match) break;
+        items.push("<li>" + noteInlineMarkdownToHtml(match[1]) + "</li>");
+        index += 1;
+      }
+      output.push("<" + tag + ">" + items.join("") + "</" + tag + ">");
+      continue;
+    }
+    paragraph.push(line);
+    index += 1;
+  }
+  flushParagraph();
+  return output.join("");
 }
 
 function noteHtmlToMarkdown(html) {
   const holder = document.createElement("div");
   holder.innerHTML = html || "";
-  return (holder.innerText || holder.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+  const inline = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const tag = node.tagName.toLowerCase();
+    if (tag === "br") return "\n";
+    if (tag === "img") {
+      const src = safeNoteUrl(node.getAttribute("src"));
+      return src ? "![" + (node.getAttribute("alt") || "图片") + "](" + src + ")" : "";
+    }
+    const content = Array.from(node.childNodes).map(inline).join("");
+    if (tag === "strong" || tag === "b") return "**" + content + "**";
+    if (tag === "em" || tag === "i") return "*" + content + "*";
+    if (tag === "u") return "__" + content + "__";
+    if (tag === "code") return "\x60" + content + "\x60";
+    if (tag === "a") {
+      const href = safeNoteUrl(node.getAttribute("href"));
+      return href ? "[" + content + "](" + href + ")" : content;
+    }
+    return content;
+  };
+  const blocks = (parent) => Array.from(parent.childNodes).map((node) => {
+    if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue || "").trim() ? (node.nodeValue || "") + "\n\n" : "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const tag = node.tagName.toLowerCase();
+    if (/^h[1-6]$/.test(tag)) return "#".repeat(Math.min(4, Number(tag.slice(1)))) + " " + inline(node) + "\n\n";
+    if (tag === "blockquote") return inline(node).split("\n").map((line) => "> " + line).join("\n") + "\n\n";
+    if (tag === "ul" || tag === "ol") {
+      return Array.from(node.children).map((item, itemIndex) => (tag === "ol" ? String(itemIndex + 1) + ". " : "- ") + inline(item).trim()).join("\n") + "\n\n";
+    }
+    return inline(node).trim() + "\n\n";
+  }).join("");
+  return blocks(holder).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function safeNoteUrl(value) {
+  const url = String(value || "").trim();
+  return /^(?:https?:\/\/|\/(?!\/)|#|data:image\/)/i.test(url) && !/^javascript:/i.test(url) ? url : "";
+}
+
+function noteInlineMarkdownToHtml(value) {
+  let html = escapeHtml(value);
+  html = html.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_match, alt, url, title) => {
+    const safe = safeNoteUrl(url);
+    return safe ? "<img src=\"" + escapeAttr(safe) + "\" alt=\"" + escapeAttr(alt) + "\"" + (title ? " title=\"" + escapeAttr(title) + "\"" : "") + " />" : _match;
+  });
+  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, url) => {
+    const safe = safeNoteUrl(url);
+    return safe ? "<a href=\"" + escapeAttr(safe) + "\" target=\"_blank\" rel=\"noreferrer\">" + label + "</a>" : _match;
+  });
+  html = html.replace(/\x60([^\x60]+)\x60/g, "<code>$1</code>");
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/__([^_]+?)__/g, "<strong>$1</strong>");
+  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+  return html;
+}
+
+function renderNoteRichPreview() {
+  const preview = $("note-rich-preview-body");
+  const editor = $("note-rich-editor");
+  if (!preview || !editor) return;
+  const holder = document.createElement("div");
+  holder.innerHTML = editor.innerHTML || "";
+  $$("script, style, iframe, object, embed, form", holder).forEach((element) => element.remove());
+  $$("*", holder).forEach((element) => {
+    [...element.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith("on") || !["href", "src", "alt", "title"].includes(name)) element.removeAttribute(attribute.name);
+    });
+    if (element.hasAttribute("href")) {
+      const safe = safeNoteUrl(element.getAttribute("href"));
+      if (safe) element.setAttribute("href", safe);
+      else element.removeAttribute("href");
+    }
+    if (element.hasAttribute("src")) {
+      const safe = safeNoteUrl(element.getAttribute("src"));
+      if (safe) element.setAttribute("src", safe);
+      else element.removeAttribute("src");
+    }
+  });
+  const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let current;
+  while ((current = walker.nextNode())) {
+    const parent = current.parentElement;
+    if (parent && !["CODE", "PRE", "SCRIPT", "STYLE"].includes(parent.tagName)) textNodes.push(current);
+  }
+  textNodes.forEach((node) => {
+    const rendered = renderInlineFormulaText(node.nodeValue || "");
+    const fragment = document.createRange().createContextualFragment(rendered);
+    node.replaceWith(fragment);
+  });
+  preview.innerHTML = holder.innerHTML || '<p class="muted-copy">输入内容后，这里会显示预览。</p>';
+}
+
+function updateNoteEditorStats() {
+  updateEditorCount($("note-rich-editor")?.parentElement, $("note-rich-editor")?.innerText || "");
+  updateEditorCount($("note-markdown-editor")?.parentElement, $("note-markdown-editor")?.value || "");
 }
 
 function renderNoteMarkdownPreview() {
@@ -1186,13 +1591,18 @@ function setNoteMode(mode) {
   if (nextMode === state.noteEditorMode) return;
   const rich = $("note-rich-editor");
   const markdown = $("note-markdown-editor");
-  if (nextMode === "markdown" && rich && markdown && !markdown.value.trim()) markdown.value = noteHtmlToMarkdown(rich.innerHTML);
-  if (nextMode === "rich" && rich && markdown && markdown.value.trim()) rich.innerHTML = noteMarkdownToHtml(markdown.value);
+  if (nextMode === "markdown" && rich && markdown) {
+    markdown.value = noteHtmlToMarkdown(rich.innerHTML);
+    resetTextEditorHistory(markdown);
+  }
+  if (nextMode === "rich" && rich && markdown) rich.innerHTML = noteMarkdownToHtml(markdown.value);
   state.noteEditorMode = nextMode;
   $("note-rich-pane").hidden = nextMode !== "rich";
   $("note-markdown-pane").hidden = nextMode !== "markdown";
   $$('[data-note-mode]').forEach((button) => { const active = button.dataset.noteMode === nextMode; button.classList.toggle("is-active", active); button.setAttribute("aria-selected", String(active)); });
   renderNoteMarkdownPreview();
+  renderNoteRichPreview();
+  updateNoteEditorStats();
 }
 
 function saveNoteSelection() {
@@ -1209,6 +1619,14 @@ function restoreNoteSelection() {
   selection.addRange(state.noteSavedRange);
 }
 
+function markNoteDirty() {
+  rememberTextEditorChange($("note-markdown-editor"));
+  $("note-save-state").textContent = "有未保存修改";
+  renderNoteRichPreview();
+  renderNoteMarkdownPreview();
+  updateNoteEditorStats();
+}
+
 function insertNoteText(value) {
   const editor = $("note-rich-editor");
   if (!editor) return;
@@ -1216,17 +1634,49 @@ function insertNoteText(value) {
   restoreNoteSelection();
   document.execCommand("insertText", false, value);
   state.noteSavedRange = null;
-  $("note-save-state").textContent = "有未保存修改";
+  markNoteDirty();
 }
 
 function runNoteCommand(command, value = null) {
   const editor = $("note-rich-editor");
   if (!editor) return;
   editor.focus();
-  restoreNoteSelection();
-  document.execCommand(command, false, value);
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) restoreNoteSelection();
+  if (command === "createLink") {
+    const input = window.prompt("输入链接地址", "https://");
+    if (!input) return;
+    const normalized = /^https?:\/\//i.test(input.trim()) ? input.trim() : "https://" + input.trim();
+    const safe = safeNoteUrl(normalized);
+    if (!safe) {
+      showToast("链接地址不可用。", true);
+      return;
+    }
+    document.execCommand("createLink", false, safe);
+  } else {
+    document.execCommand(command, false, value);
+  }
   saveNoteSelection();
-  $("note-save-state").textContent = "有未保存修改";
+  markNoteDirty();
+}
+
+function handleNoteRichKeydown(event) {
+  const editor = $("note-rich-editor");
+  if (!editor || event.isComposing) return;
+  const modifier = event.ctrlKey || event.metaKey;
+  if (modifier && !event.altKey) {
+    const key = event.key.toLowerCase();
+    const command = { b: "bold", i: "italic", u: "underline", k: "createLink" }[key];
+    if (command) {
+      event.preventDefault();
+      runNoteCommand(command);
+      return;
+    }
+  }
+  if (event.key === "Tab" && !modifier && !event.altKey) {
+    event.preventDefault();
+    runNoteCommand(event.shiftKey ? "outdent" : "indent");
+  }
 }
 
 function renderNoteEditor() {
@@ -1246,7 +1696,10 @@ function renderNoteEditor() {
   populateNoteConcepts(note.concept_id || state.workbenchConceptId);
   $("note-rich-editor").innerHTML = note.content_html || noteMarkdownToHtml(note.content_markdown || "");
   $("note-markdown-editor").value = note.content_markdown || noteHtmlToMarkdown(note.content_html || "");
+  resetTextEditorHistory($("note-markdown-editor"));
   renderNoteMarkdownPreview();
+  renderNoteRichPreview();
+  updateNoteEditorStats();
   $("note-favorite").textContent = note.favorite ? "已收藏" : "收藏";
   $("note-favorite").setAttribute("aria-pressed", String(Boolean(note.favorite)));
   $("note-version-label").textContent = note.id ? `版本记录 · ${String(note.updated_at || "").slice(0, 10)}` : "新笔记";
@@ -1434,10 +1887,16 @@ async function uploadWorkbenchNoteImage(file) {
 }
 
 function bindNoteEditor() {
+  ensureTextEditorHistory($("note-markdown-editor"));
   $$('[data-note-mode]').forEach((button) => button.addEventListener("click", () => setNoteMode(button.dataset.noteMode)));
   $$('[data-note-command]').forEach((button) => button.addEventListener("mousedown", (event) => event.preventDefault()));
   $$('[data-note-command]').forEach((button) => button.addEventListener("click", () => runNoteCommand(button.dataset.noteCommand, button.dataset.noteValue || null)));
   $$('[data-note-insert]').forEach((button) => button.addEventListener("click", () => insertNoteText(button.dataset.noteInsert === "subquestion" ? "（1） " : "1. ")));
+  $("note-rich-editor")?.addEventListener("keydown", handleNoteRichKeydown);
+  $("note-rich-editor")?.addEventListener("keyup", saveNoteSelection);
+  $("note-rich-editor")?.addEventListener("mouseup", saveNoteSelection);
+  $("note-rich-editor")?.addEventListener("input", markNoteDirty);
+  $("note-markdown-editor")?.addEventListener("keydown", (event) => handleStructuredTextKeydown($("note-markdown-editor"), event));
   $$('[data-markdown-insert]').forEach((button) => button.addEventListener("click", () => {
     const textarea = $("note-markdown-editor");
     const value = button.dataset.markdownInsert || "";
@@ -1445,13 +1904,9 @@ function bindNoteEditor() {
     textarea.value = `${textarea.value.slice(0, start)}${value}${textarea.value.slice(textarea.selectionEnd || start)}`;
     textarea.focus();
     textarea.selectionStart = textarea.selectionEnd = start + value.length;
-    $("note-save-state").textContent = "有未保存修改";
-    renderNoteMarkdownPreview();
+    markNoteDirty();
   }));
-  $("note-rich-editor")?.addEventListener("keyup", saveNoteSelection);
-  $("note-rich-editor")?.addEventListener("mouseup", saveNoteSelection);
-  $("note-rich-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; });
-  $("note-markdown-editor")?.addEventListener("input", () => { $("note-save-state").textContent = "有未保存修改"; renderNoteMarkdownPreview(); });
+  $("note-markdown-editor")?.addEventListener("input", markNoteDirty);
   $("note-image-button")?.addEventListener("click", () => { saveNoteSelection(); $("note-image-input").click(); });
   $("note-image-input")?.addEventListener("change", async () => {
     const input = $("note-image-input");
@@ -1464,7 +1919,7 @@ function bindNoteEditor() {
       editor.focus();
       restoreNoteSelection();
       document.execCommand("insertHTML", false, `<img src="${escapeAttr(uploaded.url)}" alt="${escapeAttr(uploaded.filename || "笔记图片")}" />`);
-      $("note-save-state").textContent = "有未保存修改";
+      markNoteDirty();
     } catch (error) {
       showToast(`图片插入失败：${error.message}`, true);
     } finally {

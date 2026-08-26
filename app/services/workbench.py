@@ -44,6 +44,45 @@ def _normalize_template_formula(value: str) -> str:
     return _TEX_COMMAND_RE.sub(lambda _match: "\\", str(value or ""))
 
 
+def _build_answer_structure(
+    overview: str,
+    framework: list[str],
+    mistakes: list[str],
+) -> list[dict[str, str]]:
+    """Turn a detailed subtype guide into a paper-ready writing sequence."""
+    steps = [str(item).strip() for item in framework if str(item).strip()]
+    if not steps:
+        return [
+            {"label": "题型定位", "prompt": "先写清题目要证明或计算什么。", "content": overview},
+            {"label": "条件核验", "prompt": "把定理或公式的使用条件逐项列出。", "content": "检查定义域、连续性、可导性和参数范围。"},
+            {"label": "核心过程", "prompt": "按照题型的标准方法展开计算或证明。", "content": "每一步保留关键等式、变形依据和中间结论。"},
+            {"label": "结论复核", "prompt": "最后回到题目要求，写出完整结论。", "content": "检查范围、符号、单位和充分必要性。"},
+        ]
+    middle = steps[2:-1] or steps[2:]
+    return [
+        {
+            "label": "题型定位",
+            "prompt": "开头先说明目标，告诉阅卷人你准备使用哪条主线。",
+            "content": overview,
+        },
+        {
+            "label": "条件核验",
+            "prompt": "把能拿到定理分的前提写出来，不用‘显然’带过。",
+            "content": steps[1] if len(steps) > 1 else steps[0],
+        },
+        {
+            "label": "核心过程",
+            "prompt": "按下面顺序逐步写，公式和关键理由不要省略。",
+            "content": "\n".join(middle),
+        },
+        {
+            "label": "结论复核",
+            "prompt": "收尾时把中间结论还原成题目要的答案，并主动检查高频失分点。",
+            "content": f"{steps[-1]}{' ' + mistakes[0] if mistakes else ''}",
+        },
+    ]
+
+
 def _topic(
     subtype_id: str,
     name: str,
@@ -1986,6 +2025,11 @@ def build_workbench_template(
     template["mistakes"] = [_normalize_template_prose(item) for item in template.get("mistakes", [])]
     template["memory_aid"] = _normalize_template_prose(template.get("memory_aid", ""))
     template["formula_sheet"] = _normalize_template_formula(template.get("formula_sheet", ""))
+    template["answer_structure"] = _build_answer_structure(
+        template["overview"],
+        template["framework"],
+        template["mistakes"],
+    )
     template["matched_question_count"] = len(matched)
     template["available_count"] = len(matched) + len(supplements)
     template["example_source"] = "细分题型命中" if example and example.get("id") in matched_ids else "同知识块补充"
