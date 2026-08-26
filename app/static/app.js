@@ -883,7 +883,7 @@ function renderOverview() {
   $("forecast-p50").innerHTML = forecast.available ? `${formatScore(forecast.p50)}<span> / ${formatScore(forecast.max_score)}</span>` : "0<span> / 150</span>";
   $("forecast-p10").textContent = forecast.available ? formatScore(forecast.p10) : "0";
   $("forecast-p90").textContent = forecast.available ? formatScore(forecast.p90) : "0";
-  $("forecast-meta").textContent = forecast.available ? `置信度 ${forecast.confidence} · 已使用 ${forecast.attempts_used} 次作答` : (forecast.reason || "等待题库数据");
+  $("forecast-meta").textContent = forecast.available ? `置信度 ${forecast.confidence} · 已使用 ${forecast.attempts_used} 次作答 · 近三年 ${((forecast.paper_years || []).join("、")) || "—"}` : (forecast.reason || "等待题库数据");
   $("forecast-note").textContent = forecast.note || "区间会随着真实作答和模拟考更新。";
 
   const blocks = state.blocks.slice(0, 3);
@@ -905,6 +905,16 @@ function analyticsDuration(seconds) {
   if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds)) || Number(seconds) <= 0) return "—";
   const value = Number(seconds);
   return value < 60 ? `${formatScore(value)} 秒` : `${formatScore(value / 60)} 分钟`;
+}
+
+function analyticsSignedPercent(value, fallback = "—") {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return fallback;
+  const numeric = Number(value);
+  return `${numeric > 0 ? "+" : ""}${formatScore(numeric)}%`;
+}
+
+function analyticsDate(value, fallback = "暂无") {
+  return value ? String(value).slice(0, 10) : fallback;
 }
 
 function analyticsStatusClass(status) {
@@ -929,7 +939,7 @@ function renderAnalyticsRankRow(row, index) {
     <span class="analytics-rank-index">${String(index + 1).padStart(2, "0")}</span>
     <div class="analytics-rank-main">
       <div class="analytics-rank-title"><strong>${escapeHtml(row.name || "未分类")}</strong><span class="analysis-status ${analyticsStatusClass(row.status)}">${escapeHtml(row.status || "待观察")}</span></div>
-      <div class="analytics-rank-meta"><span>${escapeHtml(row.subject || row.scope_label || "知识块")}</span><span>${attempted} / ${total} 题已覆盖</span><span>正确率 ${analyticsPercent(row.accuracy)}</span></div>
+      <div class="analytics-rank-meta"><span>${escapeHtml(row.subject || row.scope_label || "知识块")}</span><span>${attempted} / ${total} 题已覆盖</span><span>正确率 ${analyticsPercent(row.accuracy)}</span><span>近期 ${analyticsPercent(row.recent_accuracy)}</span></div>
       <div class="analytics-bar"><span style="--progress:${(mastery / 100).toFixed(3)}"></span></div>
     </div>
     <strong class="analytics-rank-value">${formatScore(row.mastery)}%</strong>
@@ -939,6 +949,7 @@ function renderAnalyticsRankRow(row, index) {
 function renderAnalytics() {
   const data = state.analytics || {};
   const overview = data.overview || {};
+  const profile = data.profile || {};
   const recommendations = data.recommendations || [];
   const setText = (id, value) => { if ($(id)) $(id).textContent = value; };
   setText("analytics-attempts", String(overview.attempts ?? data.attempts ?? 0));
@@ -948,11 +959,38 @@ function renderAnalytics() {
   setText("analytics-mastery", analyticsPercent(overview.mastery, "0%"));
   setText("analytics-score-rate", analyticsPercent(overview.score_rate));
   setText("analytics-avg-time", analyticsDuration(overview.avg_seconds));
+  setText("analytics-recent-accuracy", analyticsPercent(profile.recent_accuracy));
+  setText("analytics-active-days", `${profile.active_days_7d || 0} 天`);
+  setText("analytics-active-days-note", `${profile.attempts_7d || 0} 次作答`);
+  setText("analytics-repeat-gain", analyticsSignedPercent(profile.repeat_gain));
+  setText("analytics-hint-rate", analyticsPercent(profile.hint_rate));
+  setText("analytics-slow-rate", analyticsPercent(profile.slow_rate));
+  setText("analytics-manual-rate", analyticsPercent(profile.manual_rate));
 
   const recommendationMarkup = recommendations.length
     ? recommendations.slice(0, 3).map((item, index) => `<span class="analytics-recommendation"><b>${String(index + 1).padStart(2, "0")}</b>${escapeHtml(item)}</span>`).join("")
     : `<span class="analytics-recommendation">完成真实作答后，这里会给出基于证据的下一步建议。</span>`;
   $("analytics-recommendations").innerHTML = `<span class="eyebrow">NEXT MOVES</span>${recommendationMarkup}`;
+
+  const profileItems = [
+    ["最近状态", `${analyticsPercent(profile.recent_accuracy)} 正确 · ${analyticsPercent(profile.recent_score_rate)} 得分`, `最近 ${profile.recent_attempts || 0} 题`],
+    ["近 30 天", `${profile.active_days_30d || 0} 天活跃`, `${profile.attempts_30d || 0} 次作答`],
+    ["首次 / 复做", `${analyticsPercent(profile.first_pass_score_rate)} → ${analyticsPercent(profile.repeat_score_rate)}`, `${profile.repeat_questions || 0} 道题有复做`],
+    ["平均提示", `${formatScore(profile.avg_hints || 0)} 次`, `提示依赖率 ${analyticsPercent(profile.hint_rate)}`],
+    ["有效计时", `${profile.timed_attempts || 0} 次`, `超时比例 ${analyticsPercent(profile.slow_rate)}`],
+    ["数据可信度", profile.data_confidence || "暂无", `最后作答 ${analyticsDate(profile.last_attempt_at)}`],
+  ];
+  $("analytics-profile").innerHTML = profileItems.map(([label, value, note]) => `<div class="analytics-profile-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></div>`).join("");
+
+  const yearRows = data.recent_year_breakdown || [];
+  $("analytics-years").innerHTML = yearRows.length
+    ? yearRows.map((row) => `<div class="analytics-year-row"><div><strong>${escapeHtml(row.year)} 年</strong><small>平均难度 ${formatScore(row.average_difficulty)}</small></div><span>${row.attempted_question_count || 0} / ${row.question_count || 0} 题</span><span>得分率 ${analyticsPercent(row.score_rate)}</span><em>${Object.entries(row.difficulty_distribution || {}).map(([level, count]) => `难${level}·${count}`).join(" / ")}</em></div>`).join("")
+    : `<div class="analytics-empty">题库暂时没有最近三年的完整试卷。</div>`;
+
+  const difficultyRows = data.difficulty_breakdown || [];
+  $("analytics-difficulty").innerHTML = difficultyRows.length
+    ? `<div class="analytics-difficulty-row analytics-difficulty-header"><span>难度</span><span>题库题数</span><span>覆盖</span><span>正确率</span><span>得分率</span><span>平均用时</span><span>提示</span></div>${difficultyRows.map((row) => `<div class="analytics-difficulty-row"><strong>${escapeHtml(row.label || `难度 ${row.difficulty}`)}</strong><span>${row.question_count || 0}</span><span>${row.attempted_question_count || 0} 题</span><span>${analyticsPercent(row.accuracy)}</span><span>${analyticsPercent(row.score_rate)}</span><span>${analyticsDuration(row.avg_seconds)}</span><span>${row.avg_hints == null ? "—" : `${formatScore(row.avg_hints)} 次`}</span></div>`).join("")}`
+    : `<div class="analytics-empty">完成最近三年题目后，这里会显示不同难度的表现差异。</div>`;
 
   const weaknesses = data.weaknesses || [];
   const strengths = data.strengths || [];

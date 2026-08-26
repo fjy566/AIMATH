@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
@@ -11,6 +12,29 @@ from app.services.concepts import (
 )
 
 QUESTION_TYPE_ORDER = ("choice", "fill", "solution")
+QUESTION_TIME_TARGETS = {"choice": 150, "fill": 180, "solution": 600}
+
+
+def _attempt_datetime(attempt: dict[str, Any]) -> datetime | None:
+    raw_value = str(attempt.get("created_at") or "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _attempt_score_ratio(attempt: dict[str, Any]) -> float | None:
+    maximum = float(attempt.get("max_score") or 0)
+    if maximum <= 0:
+        return None
+    return max(0.0, min(1.0, float(attempt.get("score") or 0) / maximum))
+
+
+def _question_time_target(question: dict[str, Any]) -> float:
+    return float(QUESTION_TIME_TARGETS.get(question.get("question_type"), 300))
 
 
 def difficulty_descriptor(year: int | str | None) -> tuple[str, str]:
@@ -100,12 +124,23 @@ def recommended_questions(
     exam_type: str | None = None, concept_id: str | None = None, limit: int = 8,
 ) -> list[dict[str, Any]]:
     mastery = mastery_by_concept(attempts)
-    attempts_by_question: dict[str, int] = defaultdict(int)
-    latest: dict[str, str] = {}
+    question_by_id = {question.get("id"): question for question in questions}
+    attempts_by_question: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    attempts_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for attempt in attempts:
         question_id = attempt.get("question_id")
-        attempts_by_question[question_id] += 1
-        latest[question_id] = attempt.get("created_at", "")
+        if question_id:
+            attempts_by_question[question_id].append(attempt)
+        question_type = str(attempt.get("question_type") or question_by_id.get(question_id, {}).get("question_type") or "")
+        if question_type:
+            attempts_by_type[question_type].append(attempt)
+    dated_attempts = [value for items in attempts_by_question.values() for value in items if _attempt_datetime(value)]
+    reference_time = max((_attempt_datetime(item) for item in dated_attempts), default=None)
+    type_accuracy: dict[str, float] = {}
+    for question_type, items in attempts_by_type.items():
+        type_accuracy[question_type] = sum(
+            1 for item in items if item.get("correct") == 1 or item.get("status") == "correct"
+        ) / len(items)
 
     candidates = []
     for question in questions:
@@ -115,10 +150,38 @@ def recommended_questions(
             continue
         concept_values = [mastery.get(item, 0.22) for item in question.get("concept_ids") or []]
         weakest = min(concept_values) if concept_values else 0.22
-        unseen_bonus = 0.32 if question["id"] not in attempts_by_question else 0
-        repetition_penalty = min(0.3, attempts_by_question[question["id"]] * 0.08)
+        question_attempts = attempts_by_question.get(question["id"], [])
+        unseen_bonus = 0.32 if not question_attempts else 0
+        repetition_penalty = min(0.3, len(question_attempts) * 0.08)
         type_bonus = 0.08 if question.get("question_type") in {"choice", "fill"} else 0
-        score = (1.0 - weakest) + unseen_bonus + type_bonus - repetition_penalty
+        type_gap_bonus = 0.10 * (1.0 - type_accuracy.get(question.get("question_type", ""), 0.0)) if question_attempts else 0.03
+        recent_error_bonus = 0.0
+        stale_bonus = 0.0
+        slow_bonus = 0.0
+        if question_attempts:
+            latest_attempt = max(question_attempts, key=lambda item: _attempt_datetime(item) or datetime.min.replace(tzinfo=timezone.utc))
+            if latest_attempt.get("status") in {"incorrect", "partial", "manual"}:
+                recent_error_bonus = 0.14
+            latest_time = _attempt_datetime(latest_attempt)
+            if reference_time and latest_time and reference_time - latest_time >= timedelta(days=21):
+                stale_bonus = 0.08
+            durations = [float(item.get("duration_seconds") or 0) for item in question_attempts if float(item.get("duration_seconds") or 0) > 0]
+            if durations and mean(durations) > _question_time_target(question):
+                slow_bonus = 0.10
+        difficulty_band, _ = difficulty_descriptor(question.get("year"))
+        target_band = "basic" if weakest < 0.50 else "advanced"
+        difficulty_fit_bonus = 0.08 if difficulty_band == target_band else 0.0
+        score = (
+            (1.0 - weakest)
+            + unseen_bonus
+            + type_bonus
+            + type_gap_bonus
+            + recent_error_bonus
+            + stale_bonus
+            + slow_bonus
+            + difficulty_fit_bonus
+            - repetition_penalty
+        )
         candidates.append((score, question))
     # Keep the weakness-first score, but randomize equal-priority candidates
     # and the displayed order so refreshes do not become a fixed playlist.
@@ -184,10 +247,14 @@ def learning_analytics(
 
     pool = [question for question in questions if question.get("exam_type") == exam_type]
     question_by_id = {question["id"]: question for question in pool}
-    scoped_attempts = [
-        attempt for attempt in attempts
-        if attempt.get("question_id") in question_by_id
-    ]
+    scoped_attempts = sorted(
+        (
+            attempt for attempt in attempts
+            if attempt.get("question_id") in question_by_id
+        ),
+        key=lambda item: _attempt_datetime(item) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     mastery = mastery_by_concept(scoped_attempts)
 
     def is_correct(attempt: dict[str, Any]) -> bool:
@@ -220,6 +287,57 @@ def learning_analytics(
     manual_count = sum(1 for attempt in scoped_attempts if is_manual(attempt))
     incorrect_count = sum(1 for attempt in scoped_attempts if is_incorrect(attempt))
     attempted_question_ids = {attempt.get("question_id") for attempt in scoped_attempts}
+    dated_attempts = [(attempt, _attempt_datetime(attempt)) for attempt in scoped_attempts]
+    valid_attempt_dates = [value for _, value in dated_attempts if value is not None]
+    reference_time = max(valid_attempt_dates, default=datetime.now(timezone.utc))
+    recent_ten_attempts = scoped_attempts[:10]
+    recent_7d_attempts = [
+        attempt for attempt, value in dated_attempts
+        if value is not None and reference_time - value <= timedelta(days=7)
+    ]
+    recent_30d_attempts = [
+        attempt for attempt, value in dated_attempts
+        if value is not None and reference_time - value <= timedelta(days=30)
+    ]
+    active_days_7d = len({
+        value.date().isoformat()
+        for attempt, value in dated_attempts
+        if value is not None and reference_time - value <= timedelta(days=7)
+    })
+    active_days_30d = len({
+        value.date().isoformat()
+        for attempt, value in dated_attempts
+        if value is not None and reference_time - value <= timedelta(days=30)
+    })
+
+    attempts_by_question: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for attempt in reversed(scoped_attempts):
+        attempts_by_question[attempt.get("question_id")].append(attempt)
+    first_attempts = [items[0] for items in attempts_by_question.values() if items]
+    repeat_attempts = [attempt for items in attempts_by_question.values() for attempt in items[1:]]
+
+    def accuracy_of(items: list[dict[str, Any]]) -> float | None:
+        return percentage(sum(1 for item in items if is_correct(item)), len(items))
+
+    def score_rate_of(items: list[dict[str, Any]]) -> float | None:
+        ratios = [ratio for item in items if (ratio := _attempt_score_ratio(item)) is not None]
+        return round(mean(ratios) * 100, 1) if ratios else None
+
+    def average_duration_of(items: list[dict[str, Any]]) -> float | None:
+        values = [float(item.get("duration_seconds") or 0) for item in items if float(item.get("duration_seconds") or 0) > 0]
+        return round(mean(values), 1) if values else None
+
+    def hint_rate_of(items: list[dict[str, Any]]) -> float | None:
+        return percentage(sum(1 for item in items if int(item.get("hints_used") or 0) > 0), len(items))
+
+    slow_attempt_count = sum(
+        1 for attempt in scoped_attempts
+        if float(attempt.get("duration_seconds") or 0) > _question_time_target(question_by_id.get(attempt.get("question_id"), {}))
+    )
+    positive_time_attempts = [attempt for attempt in scoped_attempts if float(attempt.get("duration_seconds") or 0) > 0]
+    first_score_rate = score_rate_of(first_attempts)
+    repeat_score_rate = score_rate_of(repeat_attempts)
+    repeat_gain = round(repeat_score_rate - first_score_rate, 1) if first_score_rate is not None and repeat_score_rate is not None else None
 
     def attempt_row_base(
         *,
@@ -239,6 +357,12 @@ def learning_analytics(
             if float(attempt.get("duration_seconds") or 0) > 0
         ]
         hints = [float(attempt.get("hints_used") or 0) for attempt in type_attempts]
+        related_questions = [question_by_id.get(attempt.get("question_id"), {}) for attempt in type_attempts]
+        difficulty_values = [float(question.get("difficulty")) for question in related_questions if question.get("difficulty") is not None]
+        slow_count = sum(
+            1 for attempt, question in zip(type_attempts, related_questions)
+            if float(attempt.get("duration_seconds") or 0) > _question_time_target(question)
+        )
         return {
             "question_count": question_count,
             "attempts": len(type_attempts),
@@ -254,6 +378,8 @@ def learning_analytics(
             "score_rate": percentage(type_score, type_max_score),
             "avg_seconds": average(durations),
             "avg_hints": average(hints),
+            "avg_difficulty": round(mean(difficulty_values), 2) if difficulty_values else None,
+            "slow_rate": percentage(slow_count, len(type_attempts)),
         }
 
     type_rows: list[dict[str, Any]] = []
@@ -282,6 +408,59 @@ def learning_analytics(
         )
         type_rows.append(row)
 
+    years = sorted({int(question["year"]) for question in pool})
+    recent_years = years[-3:]
+    recent_year_questions = [question for question in pool if int(question["year"]) in recent_years]
+    recent_question_ids = {question["id"] for question in recent_year_questions}
+    recent_year_attempts = [attempt for attempt in scoped_attempts if attempt.get("question_id") in recent_question_ids]
+    difficulty_levels = sorted({int(question.get("difficulty") or 3) for question in recent_year_questions})
+    difficulty_rows: list[dict[str, Any]] = []
+    for difficulty_level in difficulty_levels:
+        level_questions = [
+            question for question in recent_year_questions
+            if int(question.get("difficulty") or 3) == difficulty_level
+        ]
+        level_ids = {question["id"] for question in level_questions}
+        level_attempts = [attempt for attempt in recent_year_attempts if attempt.get("question_id") in level_ids]
+        difficulty_rows.append(
+            {
+                "difficulty": difficulty_level,
+                "label": f"难度 {difficulty_level}",
+                "question_count": len(level_questions),
+                "attempts": len(level_attempts),
+                "attempted_question_count": len({attempt.get("question_id") for attempt in level_attempts}),
+                "accuracy": accuracy_of(level_attempts),
+                "score_rate": score_rate_of(level_attempts),
+                "avg_seconds": average_duration_of(level_attempts),
+                "avg_hints": mean([float(attempt.get("hints_used") or 0) for attempt in level_attempts]) if level_attempts else None,
+                "years": sorted({int(question["year"]) for question in level_questions}),
+            }
+        )
+
+    recent_year_rows: list[dict[str, Any]] = []
+    for year in recent_years:
+        year_questions = [question for question in pool if int(question["year"]) == year]
+        year_ids = {question["id"] for question in year_questions}
+        year_attempts = [attempt for attempt in scoped_attempts if attempt.get("question_id") in year_ids]
+        distribution = {
+            str(level): sum(1 for question in year_questions if int(question.get("difficulty") or 3) == level)
+            for level in sorted({int(question.get("difficulty") or 3) for question in year_questions})
+        }
+        recent_year_rows.append(
+            {
+                "year": year,
+                "question_count": len(year_questions),
+                "max_score": round(sum(float(question.get("points") or 0) for question in year_questions), 1),
+                "average_difficulty": round(mean([float(question.get("difficulty") or 3) for question in year_questions]), 2) if year_questions else None,
+                "difficulty_distribution": distribution,
+                "attempts": len(year_attempts),
+                "attempted_question_count": len({attempt.get("question_id") for attempt in year_attempts}),
+                "accuracy": accuracy_of(year_attempts),
+                "score_rate": score_rate_of(year_attempts),
+                "avg_seconds": average_duration_of(year_attempts),
+            }
+        )
+
     concept_ids: set[str] = set()
     concept_question_counts: dict[str, int] = defaultdict(int)
     concept_question_ids: dict[str, set[str]] = defaultdict(set)
@@ -305,6 +484,13 @@ def learning_analytics(
                 or question_by_id.get(attempt.get("question_id"), {}).get("concept_ids", [])
             )
         ]
+        concept_recent_attempts = [
+            attempt for attempt in recent_ten_attempts
+            if concept_id in (
+                attempt.get("concepts")
+                or question_by_id.get(attempt.get("question_id"), {}).get("concept_ids", [])
+            )
+        ]
         base = attempt_row_base(
             question_count=concept_question_counts.get(concept_id, 0),
             type_attempts=concept_attempts,
@@ -322,6 +508,11 @@ def learning_analytics(
                 "scope_note": descriptor["scope_note"],
                 "mastery": mastery_percent,
                 **base,
+                "recent_accuracy": accuracy_of(concept_recent_attempts),
+                "last_attempt_at": next(
+                    (value.isoformat() for attempt, value in dated_attempts if attempt in concept_attempts and value is not None),
+                    None,
+                ),
                 "status": (
                     "待训练" if not concept_attempts
                     else "需加强" if mastery_percent < 42 or (base["accuracy"] is not None and base["accuracy"] < 60)
@@ -431,6 +622,36 @@ def learning_analytics(
         "unseen_questions": max(0, len(pool) - len(attempted_question_ids)),
         "avg_seconds": average(positive_durations),
         "avg_hints": average([float(attempt.get("hints_used") or 0) for attempt in scoped_attempts]),
+        "recent_accuracy": accuracy_of(recent_ten_attempts),
+        "recent_score_rate": score_rate_of(recent_ten_attempts),
+        "active_days_7d": active_days_7d,
+        "slow_rate": percentage(slow_attempt_count, len(positive_time_attempts)),
+    }
+    profile = {
+        "recent_attempts": len(recent_ten_attempts),
+        "recent_accuracy": accuracy_of(recent_ten_attempts),
+        "recent_score_rate": score_rate_of(recent_ten_attempts),
+        "recent_avg_seconds": average_duration_of(recent_ten_attempts),
+        "attempts_7d": len(recent_7d_attempts),
+        "active_days_7d": active_days_7d,
+        "attempts_30d": len(recent_30d_attempts),
+        "active_days_30d": active_days_30d,
+        "repeat_questions": len([items for items in attempts_by_question.values() if len(items) > 1]),
+        "first_pass_score_rate": first_score_rate,
+        "repeat_score_rate": repeat_score_rate,
+        "repeat_gain": repeat_gain,
+        "avg_hints": average([float(attempt.get("hints_used") or 0) for attempt in scoped_attempts]),
+        "hint_rate": hint_rate_of(scoped_attempts),
+        "manual_rate": percentage(manual_count, len(scoped_attempts)),
+        "slow_rate": percentage(slow_attempt_count, len(positive_time_attempts)),
+        "timed_attempts": len(positive_time_attempts),
+        "last_attempt_at": valid_attempt_dates[0].isoformat() if valid_attempt_dates else None,
+        "data_confidence": (
+            "暂无" if not scoped_attempts
+            else "低" if len(scoped_attempts) < 10 or len(attempted_question_ids) < 8
+            else "中" if len(scoped_attempts) < 40 or len(attempted_question_ids) < 25
+            else "较高"
+        ),
     }
     recommendations: list[str] = []
     type_labels = {"choice": "选择题", "fill": "填空题", "solution": "解答题"}
@@ -448,17 +669,31 @@ def learning_analytics(
             recommendations.append(f"当前只覆盖题库 {overview['coverage_rate']}%，先扩大真实作答覆盖面，再看长期掌握度。")
         if overview["avg_seconds"] and overview["avg_seconds"] > 300:
             recommendations.append("平均单题用时偏长，建议加入限时小组训练，先保证基础题的解题节奏。")
+        if profile["recent_accuracy"] is not None and overview["accuracy"] is not None and profile["recent_accuracy"] + 12 < overview["accuracy"]:
+            recommendations.append(f"近 {profile['recent_attempts']} 题正确率已回落到 {profile['recent_accuracy']}%，建议先复盘最近错题。")
+        if profile["slow_rate"] is not None and profile["slow_rate"] >= 40:
+            recommendations.append(f"有 {profile['slow_rate']}% 的有效计时作答超过建议用时，优先安排限时训练。")
+        if profile["hint_rate"] is not None and profile["hint_rate"] >= 35:
+            recommendations.append(f"提示依赖率为 {profile['hint_rate']}%，建议先独立思考再查看提示。")
+        if profile["repeat_gain"] is not None and profile["repeat_gain"] < 0:
+            recommendations.append("复做得分率暂未提升，建议把同类题间隔 1–3 天后再次练习。")
+        if recent_years:
+            recommendations.append(f"预测会参考最近三年（{'、'.join(str(year) for year in recent_years)}）的真实难度分布。")
 
     return {
         "exam_type": exam_type,
         "questions_available": len(pool),
         "attempts": len(scoped_attempts),
         "overview": overview,
+        "profile": profile,
         "question_types": type_rows,
         "concepts": concept_rows,
         "weaknesses": weaknesses,
         "strengths": strengths,
         "error_types": error_types,
+        "difficulty_breakdown": difficulty_rows,
+        "recent_years": recent_years,
+        "recent_year_breakdown": recent_year_rows,
         "daily_trend": daily_trend,
         "recent_attempts": recent_attempts,
         "recommendations": recommendations,
@@ -511,56 +746,139 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
     if not pool:
         return {"available": False, "reason": "当前题库没有该科目数据。"}
     years = sorted({int(question["year"]) for question in pool})
-    target_year = years[-1]
-    paper = [question for question in pool if int(question["year"]) == target_year]
-    if not paper:
-        paper = pool[-30:]
-    mastery = mastery_by_concept(attempts)
-    attempted_count = len(attempts)
-    rng = random.Random(20260825 + attempted_count)
-    max_score = sum(float(question.get("points", 0)) for question in paper)
-    if not attempts:
+    recent_years = years[-3:]
+    target_year = recent_years[-1]
+    papers = {
+        year: [question for question in pool if int(question["year"]) == year]
+        for year in recent_years
+    }
+    papers = {year: paper for year, paper in papers.items() if paper}
+    recent_years = list(papers)
+    recent_questions = [question for year in recent_years for question in papers[year]]
+    question_by_id = {question["id"]: question for question in pool}
+    scoped_attempts = sorted(
+        (
+            attempt for attempt in attempts
+            if attempt.get("question_id") in question_by_id
+        ),
+        key=lambda item: _attempt_datetime(item) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    mastery = mastery_by_concept(scoped_attempts)
+    attempted_count = len(scoped_attempts)
+    unique_attempted_count = len({attempt.get("question_id") for attempt in scoped_attempts})
+    rng = random.Random(20260825 + attempted_count + sum(recent_years))
+    paper_max_scores = {
+        year: sum(float(question.get("points") or 0) for question in paper)
+        for year, paper in papers.items()
+    }
+    # The national postgraduate mathematics paper is scored on a 150-point
+    # scale. Some source files distribute points slightly differently, so each
+    # recent paper is normalized to that common scale before aggregation.
+    max_score = 150.0 if paper_max_scores else 0.0
+    difficulty_center = mean([float(question.get("difficulty") or 3) for question in recent_questions]) if recent_questions else 3.0
+    recent_question_ids = {question["id"] for question in recent_questions}
+    calibration_attempts = [
+        attempt for attempt in scoped_attempts
+        if attempt.get("question_id") in recent_question_ids
+    ] or scoped_attempts
+
+    difficulty_stats: dict[int, dict[str, int]] = defaultdict(lambda: {"attempts": 0, "correct": 0})
+    for attempt in calibration_attempts:
+        question = question_by_id.get(attempt.get("question_id"), {})
+        difficulty_level = int(question.get("difficulty") or 3)
+        difficulty_stats[difficulty_level]["attempts"] += 1
+        difficulty_stats[difficulty_level]["correct"] += int(
+            attempt.get("correct") == 1 or attempt.get("status") == "correct"
+        )
+    prior_probability = 0.30
+    global_attempts = sum(item["attempts"] for item in difficulty_stats.values())
+    global_correct = sum(item["correct"] for item in difficulty_stats.values())
+    global_smoothed = (global_correct + prior_probability * 4) / (global_attempts + 4) if global_attempts else prior_probability
+    difficulty_adjustments: dict[int, float] = {}
+    difficulty_calibration = []
+    for difficulty_level in sorted({int(question.get("difficulty") or 3) for question in recent_questions}):
+        level_questions = [
+            question for question in recent_questions
+            if int(question.get("difficulty") or 3) == difficulty_level
+        ]
+        stats = difficulty_stats[difficulty_level]
+        smoothed_accuracy = (stats["correct"] + prior_probability * 4) / (stats["attempts"] + 4)
+        adjustment = max(-0.06, min(0.06, (smoothed_accuracy - global_smoothed) * 0.25))
+        difficulty_adjustments[difficulty_level] = adjustment
+        difficulty_calibration.append(
+            {
+                "difficulty": difficulty_level,
+                "label": f"难度 {difficulty_level}",
+                "question_count": len(level_questions),
+                "attempts": stats["attempts"],
+                "accuracy": round(smoothed_accuracy * 100, 1) if stats["attempts"] else None,
+                "adjustment": round(adjustment * 100, 1),
+                "years": sorted({int(question["year"]) for question in level_questions}),
+            }
+        )
+
+    def probability_for(question: dict[str, Any]) -> float:
+        values = [mastery.get(item, 0.22) for item in question.get("concept_ids") or []]
+        state = mean(values) if values else 0.22
+        # Keep the conservative no-data anchor, then adjust it with the actual
+        # difficulty label from the recent three papers and the learner's
+        # observed performance at that difficulty.
+        probability = prior_probability + (state - 0.22) * (0.82 - prior_probability) / (1.0 - 0.22)
+        difficulty_level = int(question.get("difficulty") or 3)
+        probability += (difficulty_center - difficulty_level) * 0.07
+        probability += difficulty_adjustments.get(difficulty_level, 0.0)
+        return max(0.05, min(0.90, probability))
+
+    if not scoped_attempts:
         return {
             "available": True,
             "exam_type": exam_type,
             "paper_year": target_year,
-            "paper_questions": len(paper),
+            "paper_years": recent_years,
+            "paper_questions": len(papers.get(target_year, [])),
+            "evaluation_questions": sum(len(paper) for paper in papers.values()),
             "max_score": max_score,
             "p10": 0.0,
             "p50": 0.0,
             "p90": 0.0,
             "confidence": "暂无",
             "attempts_used": 0,
-            "note": "尚无真实作答记录，初始预估分按 0 分显示。完成练习后再用个人数据更新；人群中约三成考生能超过 50 分，系统不会把这个比例直接当成你的个人成绩。",
+            "recent_difficulty_mean": round(difficulty_center, 2),
+            "difficulty_calibration": difficulty_calibration,
+            "note": f"尚无真实作答记录，初始预估分按 0 分显示。完成练习后，将用最近三年（{'、'.join(str(year) for year in recent_years)}）真题的难度分布校准；人群中约三成考生能超过 50 分，系统不会把这个比例直接当成你的个人成绩。",
         }
     scores: list[float] = []
     for _ in range(800):
-        score = 0.0
-        for question in paper:
-            values = [mastery.get(item, 0.22) for item in question.get("concept_ids") or []]
-            state = mean(values) if values else 0.22
-            # Anchor the no-data learner to the reported ~30% cohort baseline
-            # and let observed mastery, not optimism, move the estimate upward.
-            probability = 0.30 + (state - 0.22) * (0.82 - 0.30) / (1.0 - 0.22)
-            probability = max(0.05, min(0.90, probability))
-            if rng.random() < probability:
-                score += float(question.get("points", 0))
-        scores.append(score)
+        paper_scores = []
+        for year, paper in papers.items():
+            score = sum(
+                float(question.get("points") or 0)
+                for question in paper
+                if rng.random() < probability_for(question)
+            )
+            paper_max = paper_max_scores[year]
+            paper_scores.append(score / paper_max * max_score if paper_max else 0.0)
+        scores.append(mean(paper_scores) if paper_scores else 0.0)
     scores.sort()
     p10 = round(scores[int(len(scores) * 0.10)], 1)
     p50 = round(scores[int(len(scores) * 0.50)], 1)
     p90 = round(scores[int(len(scores) * 0.90)], 1)
-    confidence = "低" if attempted_count < 10 else ("中" if attempted_count < 40 else "较高")
+    confidence = "低" if attempted_count < 10 or unique_attempted_count < 8 else ("中" if attempted_count < 40 or unique_attempted_count < 25 else "较高")
     return {
         "available": True,
         "exam_type": exam_type,
         "paper_year": target_year,
-        "paper_questions": len(paper),
+        "paper_years": recent_years,
+        "paper_questions": len(papers.get(target_year, [])),
+        "evaluation_questions": sum(len(paper) for paper in papers.values()),
         "max_score": max_score,
         "p10": p10,
         "p50": p50,
         "p90": p90,
         "confidence": confidence,
         "attempts_used": attempted_count,
-        "note": "这是基于当前掌握度的模拟区间，不等同于真实考试承诺；低样本阶段按约三成考生超过 50 分的保守人群基线校准，完成更多带计时的模拟考后会更可靠。",
+        "recent_difficulty_mean": round(difficulty_center, 2),
+        "difficulty_calibration": difficulty_calibration,
+        "note": f"这是基于当前掌握度、最近三年（{'、'.join(str(year) for year in recent_years)}）真实题目难度的模拟区间，不等同于真实考试承诺；低样本阶段仍按约三成考生超过 50 分的保守人群基线校准，完成更多带计时的模拟考后会更可靠。",
     }

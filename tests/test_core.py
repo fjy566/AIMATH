@@ -86,6 +86,9 @@ def test_learning_state_updates_and_forecast_inputs_are_interpretable() -> None:
 def test_initial_forecast_is_zero_until_real_attempts_exist() -> None:
     forecast = forecast_score(load_questions(), [], exam_type="数学二")
     assert forecast["available"] is True
+    assert forecast["paper_years"] == [2024, 2025, 2026]
+    assert forecast["max_score"] == 150
+    assert len(forecast["difficulty_calibration"]) == 4
     assert forecast["attempts_used"] == 0
     assert forecast["p10"] == 0
     assert forecast["p50"] == 0
@@ -132,6 +135,11 @@ def test_learning_analytics_separates_observed_evidence_from_untrained_topics() 
     assert {row["question_type"] for row in result["question_types"]} == {"choice", "fill", "solution"}
     assert result["error_types"][0]["name"] == "步骤不完整"
     assert result["daily_trend"][0]["attempts"] == 2
+    assert result["profile"]["recent_attempts"] == 2
+    assert result["profile"]["active_days_7d"] == 1
+    assert result["recent_years"] == [2024, 2025, 2026]
+    assert len(result["difficulty_breakdown"]) == 4
+    assert len(result["recent_year_breakdown"]) == 3
     assert any(row["attempts"] == 0 and row["status"] == "待训练" for row in result["concepts"])
 
 
@@ -219,6 +227,7 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
             )
             progress = client.get("/api/progress")
             analytics = client.get("/api/analytics", params={"user_id": "local-user", "exam_type": "数学二"})
+            forecast = client.get("/api/forecast", params={"user_id": "local-user", "exam_type": "数学二"})
             server_settings = client.get("/api/server/settings")
             simulation = client.post("/api/simulations", json={"exam_type": "数学二", "year": 2025, "duration_minutes": 180})
         assert health.status_code == 200
@@ -242,6 +251,10 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
         assert analytics.status_code == 200
         assert analytics.json()["questions_available"] == 792
         assert len(analytics.json()["question_types"]) == 3
+        assert len(analytics.json()["difficulty_breakdown"]) == 4
+        assert analytics.json()["recent_years"] == [2024, 2025, 2026]
+        assert forecast.status_code == 200
+        assert forecast.json()["max_score"] == 150
         assert server_settings.status_code == 200
         assert server_settings.json()["port"] == 8000
         assert simulation.status_code == 200
