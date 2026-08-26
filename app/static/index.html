@@ -96,7 +96,7 @@
 
         <section class="view" id="view-workbench">
           <div class="view-intro workbench-intro">
-            <div><span class="eyebrow">WORKBENCH / ANSWER PATTERNS + NOTES</span><h2>把方法整理成自己的得分路径</h2><p>每个数学二知识块都有按题型整理的答题模板、真实例题和同科目变式题。笔记、手写过程与思维导图统一保存在本机。</p></div>
+            <div><span class="eyebrow">WORKBENCH / ANSWER PATTERNS + NOTES</span><h2>把具体考法整理成自己的得分路径</h2><p>每个数学二知识块都按真实考法继续细分，例如罗尔定理应用、拉格朗日中值定理应用。选择、填空、解答只作为题面形式标签。</p></div>
             <div class="workbench-actions">
               <button class="quiet-button" id="workbench-theme-toggle" type="button">切换暗色</button>
               <button class="quiet-button" id="workbench-export" type="button">导出数据</button>
@@ -118,9 +118,12 @@
 
             <main class="workbench-main">
               <div class="workbench-contextbar">
-                <div><span class="eyebrow">TEMPLATE LIBRARY</span><h3 id="workbench-current-title">选择知识块</h3><p id="workbench-current-meta">每类题型都配有框架、易错点和真实题例。</p></div>
-                <div class="workbench-type-tabs" id="workbench-type-tabs" role="tablist" aria-label="题型选择"></div>
+                <div><span class="eyebrow">TEMPLATE LIBRARY</span><h3 id="workbench-current-title">选择知识块</h3><p id="workbench-current-meta">每种具体考法都配有框架、易错点和真实题例。</p></div>
               </div>
+              <section class="workbench-subtype-browser" aria-label="细分题型选择">
+                <div class="workbench-subtype-head"><strong>细分题型</strong><span id="workbench-subtype-count">读取中</span></div>
+                <div class="workbench-type-tabs" id="workbench-type-tabs" role="tablist" aria-label="细分题型选择"></div>
+              </section>
               <article class="workbench-template-card paper-panel" id="workbench-template-card"><div class="loading-card">正在读取答题模板……</div></article>
 
               <section class="workbench-progress-panel paper-panel" aria-labelledby="workbench-progress-title">

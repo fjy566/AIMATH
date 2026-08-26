@@ -61,9 +61,9 @@ from app.services.learner import (
 from app.services.llm import LLMError, fetch_models, public_settings, save_settings, tutor_response
 from app.services.server import ServerSettingsError, save_server_settings, server_settings
 from app.services.workbench import (
-    QUESTION_TYPES,
     build_workbench_template,
-    question_type_catalog,
+    is_valid_subtype,
+    subtype_count,
     workbench_catalog,
 )
 
@@ -313,47 +313,48 @@ def get_attachment(attachment_id: str) -> FileResponse:
 @app.get("/api/workbench")
 def get_workbench_catalog(
     concept_id: str = Query(default=""),
-    question_type: str = Query(default=""),
+    subtype_id: str = Query(default=""),
     user_id: str = Query(default="local-user"),
 ) -> dict[str, Any]:
     questions = question_store.list()
-    if concept_id or question_type:
-        if not concept_id or not question_type:
-            raise HTTPException(status_code=400, detail="选择知识块和题型后才能读取模板。")
-        override = get_template_override(user_id.strip() or "local-user", concept_id, question_type)
+    if concept_id or subtype_id:
+        if not concept_id or not subtype_id:
+            raise HTTPException(status_code=400, detail="选择知识块和细分题型后才能读取模板。")
+        override = get_template_override(user_id.strip() or "local-user", concept_id, subtype_id)
         try:
-            template = build_workbench_template(questions, concept_id, question_type, override)
+            template = build_workbench_template(questions, concept_id, subtype_id, override)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"template": template}
+    catalog = workbench_catalog(questions)
     return {
-        "concepts": workbench_catalog(questions),
-        "question_types": question_type_catalog(),
-        "total_templates": len(workbench_catalog(questions)) * len(QUESTION_TYPES),
+        "concepts": catalog,
+        "total_templates": subtype_count(),
+        "taxonomy_version": "math2-subtypes-v1",
     }
 
 
-@app.put("/api/workbench/templates/{concept_id}/{question_type}")
-def save_workbench_template(concept_id: str, question_type: str, payload: TemplateUpdateRequest) -> dict[str, Any]:
-    if concept_id not in CONCEPT_META or question_type not in QUESTION_TYPES:
-        raise HTTPException(status_code=400, detail="无效的知识块或题型。")
+@app.put("/api/workbench/templates/{concept_id}/{subtype_id}")
+def save_workbench_template(concept_id: str, subtype_id: str, payload: TemplateUpdateRequest) -> dict[str, Any]:
+    if not is_valid_subtype(concept_id, subtype_id):
+        raise HTTPException(status_code=400, detail="无效的知识块或细分题型。")
     saved = upsert_template_override({
         "user_id": payload.user_id.strip() or "local-user",
         "concept_id": concept_id,
-        "question_type": question_type,
+        "question_type": subtype_id,
         "overview": payload.overview.strip(),
         "framework": [item.strip() for item in payload.framework if item.strip()],
         "mistakes": [item.strip() for item in payload.mistakes if item.strip()],
         "memory_aid": payload.memory_aid.strip(),
     })
-    return {"template": build_workbench_template(question_store.list(), concept_id, question_type, saved)}
+    return {"template": build_workbench_template(question_store.list(), concept_id, subtype_id, saved)}
 
 
-@app.get("/api/workbench/templates/{concept_id}/{question_type}/versions")
-def get_workbench_template_versions(concept_id: str, question_type: str, user_id: str = "local-user") -> dict[str, Any]:
-    if concept_id not in CONCEPT_META or question_type not in QUESTION_TYPES:
-        raise HTTPException(status_code=400, detail="无效的知识块或题型。")
-    return {"items": list_template_versions(user_id.strip() or "local-user", concept_id, question_type)}
+@app.get("/api/workbench/templates/{concept_id}/{subtype_id}/versions")
+def get_workbench_template_versions(concept_id: str, subtype_id: str, user_id: str = "local-user") -> dict[str, Any]:
+    if not is_valid_subtype(concept_id, subtype_id):
+        raise HTTPException(status_code=400, detail="无效的知识块或细分题型。")
+    return {"items": list_template_versions(user_id.strip() or "local-user", concept_id, subtype_id)}
 
 
 @app.get("/api/workbench/notes")
@@ -491,8 +492,8 @@ def import_workbench(payload: WorkbenchImportRequest) -> dict[str, Any]:
         imported_notes += 1
     for raw_template in payload.template_overrides:
         concept_id = str(raw_template.get("concept_id", ""))
-        question_type = str(raw_template.get("question_type", ""))
-        if concept_id not in CONCEPT_META or question_type not in QUESTION_TYPES:
+        subtype_id = str(raw_template.get("question_type", ""))
+        if not is_valid_subtype(concept_id, subtype_id):
             continue
         try:
             request = TemplateUpdateRequest(**raw_template)
@@ -501,7 +502,7 @@ def import_workbench(payload: WorkbenchImportRequest) -> dict[str, Any]:
         upsert_template_override({
             "user_id": user_id,
             "concept_id": concept_id,
-            "question_type": question_type,
+            "question_type": subtype_id,
             "overview": request.overview.strip(),
             "framework": [item.strip() for item in request.framework if item.strip()],
             "mistakes": [item.strip() for item in request.mistakes if item.strip()],

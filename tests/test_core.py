@@ -144,20 +144,34 @@ def test_learning_analytics_separates_observed_evidence_from_untrained_topics() 
 
 
 def test_workbench_covers_every_math2_block_with_real_examples() -> None:
-    from app.services.workbench import build_workbench_template, workbench_catalog
+    from app.services.workbench import SUBTYPE_CATALOG, build_workbench_template, subtype_count, workbench_catalog
 
     questions = load_questions()
     catalog = workbench_catalog(questions)
     assert len(catalog) == 10
-    assert all(item["template_count"] == 3 for item in catalog)
-    assert all(set(item["question_type_counts"]) == {"choice", "fill", "solution"} for item in catalog)
+    assert subtype_count() == 65
+    assert all(item["template_count"] == item["subtype_count"] >= 4 for item in catalog)
+    assert all(item["subtypes"] for item in catalog)
+    assert all(
+        set(subtype["question_format_counts"]) == {"choice", "fill", "solution"}
+        for item in catalog
+        for subtype in item["subtypes"]
+    )
+    derivative_names = {item["name"] for item in SUBTYPE_CATALOG["derivative"]}
+    assert {"罗尔定理的应用", "拉格朗日中值定理的应用"}.issubset(derivative_names)
 
-    sparse = build_workbench_template(questions, "multiple-integral", "fill")
-    assert sparse["has_real_example"] is True
-    assert sparse["example"]["question"]["id"] in {item["id"] for item in questions}
-    assert sparse["variant_count"] >= 2
-    assert sparse["framework"] and sparse["mistakes"] and sparse["overview"]
-    assert any(item["source_scope"] == "同科目跨块" for item in sparse["variants"])
+    for concept_id, subtypes in SUBTYPE_CATALOG.items():
+        for subtype in subtypes:
+            template = build_workbench_template(questions, concept_id, subtype["id"])
+            assert template["has_real_example"] is True
+            assert template["example"]["question"]["id"] in {item["id"] for item in questions}
+            assert template["variant_count"] >= 2
+            assert template["framework"] and template["mistakes"] and template["overview"]
+            assert template["subtype_name"] == subtype["name"]
+            assert template["example"]["source_scope"] in {"细分题型命中", "同知识块补充"}
+
+    assert build_workbench_template(questions, "derivative", "rolle-theorem")["matched_question_count"] > 0
+    assert build_workbench_template(questions, "derivative", "lagrange-mvt")["matched_question_count"] > 0
 
 
 def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> None:
@@ -182,9 +196,12 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
             catalog = client.get("/api/workbench")
             assert catalog.status_code == 200
             assert len(catalog.json()["concepts"]) == 10
-            template = client.get("/api/workbench", params={"concept_id": "derivative", "question_type": "solution"})
+            assert catalog.json()["total_templates"] == 65
+            assert catalog.json()["taxonomy_version"] == "math2-subtypes-v1"
+            template = client.get("/api/workbench", params={"concept_id": "derivative", "subtype_id": "rolle-theorem"})
             assert template.status_code == 200
             template_json = template.json()["template"]
+            assert template_json["subtype_name"] == "罗尔定理的应用"
             assert template_json["has_real_example"] is True
             assert template_json["example"]["question"]["solution_markdown"]
             assert len(template_json["variants"]) >= 2
@@ -228,11 +245,19 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
             assert restored.json()["note"]["title"] == "极限错题复盘"
 
             saved_template = client.put(
-                "/api/workbench/templates/derivative/choice",
-                json={"overview": "自定义选择题提醒", "framework": ["先判条件"], "mistakes": ["别漏定义域"], "memory_aid": "先判后算"},
+                "/api/workbench/templates/derivative/rolle-theorem",
+                json={"overview": "自定义罗尔定理提醒", "framework": ["先判条件"], "mistakes": ["别漏闭区间连续"], "memory_aid": "先验条件再找零点"},
             )
             assert saved_template.status_code == 200
             assert saved_template.json()["template"]["customized"] is True
+            revised_template = client.put(
+                "/api/workbench/templates/derivative/rolle-theorem",
+                json={"overview": "自定义罗尔定理提醒第二版", "framework": ["验连续", "验端点"], "mistakes": ["别漏闭区间连续"], "memory_aid": "条件逐项核对"},
+            )
+            assert revised_template.status_code == 200
+            template_versions = client.get("/api/workbench/templates/derivative/rolle-theorem/versions")
+            assert template_versions.status_code == 200
+            assert template_versions.json()["items"]
             exported = client.get("/api/workbench/export")
             assert exported.status_code == 200
             assert exported.json()["notes"]

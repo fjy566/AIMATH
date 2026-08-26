@@ -12,9 +12,8 @@ const state = {
   settings: null,
   serverSettings: null,
   workbenchCatalog: [],
-  workbenchTypes: [],
   workbenchConceptId: "",
-  workbenchQuestionType: "choice",
+  workbenchSubtypeId: "",
   workbenchTemplate: null,
   workbenchEditingTemplate: false,
   workbenchAnalytics: null,
@@ -927,24 +926,24 @@ function renderWorkbenchConcepts() {
   $("workbench-total").textContent = concepts.length ? `${concepts.length} 个知识块` : "暂无";
   root.innerHTML = concepts.length
     ? concepts.map((concept) => {
-      const counts = concept.question_type_counts || {};
-      const total = Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
-      return `<button type="button" class="workbench-concept-item ${concept.id === state.workbenchConceptId ? "is-active" : ""}" data-workbench-concept="${escapeAttr(concept.id)}"><span class="workbench-concept-copy"><strong>${escapeHtml(concept.name)}</strong><small>${escapeHtml(concept.subject)} · ${total} 道题</small></span><span class="workbench-concept-count">${concept.template_count}</span></button>`;
+      return `<button type="button" class="workbench-concept-item ${concept.id === state.workbenchConceptId ? "is-active" : ""}" data-workbench-concept="${escapeAttr(concept.id)}"><span class="workbench-concept-copy"><strong>${escapeHtml(concept.name)}</strong><small>${escapeHtml(concept.subject)} / ${concept.total_questions || 0} 道真题</small></span><span class="workbench-concept-count" title="${concept.subtype_count || 0} 个细分题型">${concept.subtype_count || 0}</span></button>`;
     }).join("")
     : `<div class="loading-card">题库没有可用知识块。</div>`;
   $$('[data-workbench-concept]', root).forEach((button) => button.addEventListener("click", () => selectWorkbenchConcept(button.dataset.workbenchConcept)));
 }
 
-function renderWorkbenchTypeTabs() {
+function renderWorkbenchSubtypeTabs() {
   const root = $("workbench-type-tabs");
   if (!root) return;
-  const types = state.workbenchTypes.length ? state.workbenchTypes : [
-    { id: "choice", label: "选择题" },
-    { id: "fill", label: "填空题" },
-    { id: "solution", label: "解答题" },
-  ];
-  root.innerHTML = types.map((item) => `<button type="button" class="workbench-type-tab ${item.id === state.workbenchQuestionType ? "is-active" : ""}" data-workbench-type="${escapeAttr(item.id)}" role="tab" aria-selected="${item.id === state.workbenchQuestionType ? "true" : "false"}">${escapeHtml(item.label)}</button>`).join("");
-  $$('[data-workbench-type]', root).forEach((button) => button.addEventListener("click", () => selectWorkbenchType(button.dataset.workbenchType)));
+  const concept = state.workbenchCatalog.find((item) => item.id === state.workbenchConceptId) || {};
+  const subtypes = concept.subtypes || [];
+  if (!subtypes.some((item) => item.id === state.workbenchSubtypeId)) state.workbenchSubtypeId = subtypes[0]?.id || "";
+  const count = $("workbench-subtype-count");
+  if (count) count.textContent = `${subtypes.length} 类具体考法`;
+  root.innerHTML = subtypes.length
+    ? subtypes.map((item) => `<button type="button" class="workbench-type-tab ${item.id === state.workbenchSubtypeId ? "is-active" : ""}" data-workbench-subtype="${escapeAttr(item.id)}" role="tab" aria-selected="${item.id === state.workbenchSubtypeId ? "true" : "false"}"><strong>${escapeHtml(item.name)}</strong><small>${item.matched_question_count || 0} 道真题命中</small></button>`).join("")
+    : `<div class="loading-card">当前知识块暂无细分题型。</div>`;
+  $$('[data-workbench-subtype]', root).forEach((button) => button.addEventListener("click", () => selectWorkbenchSubtype(button.dataset.workbenchSubtype)));
 }
 
 function workbenchQuestionMarkup(item, label, variant = false) {
@@ -970,10 +969,10 @@ function renderWorkbenchTemplate() {
   const card = $("workbench-template-card");
   if (!card) return;
   const concept = state.workbenchCatalog.find((item) => item.id === state.workbenchConceptId) || {};
-  $("workbench-current-title").textContent = template ? `${template.concept_name} · ${template.question_type_label}` : (concept.name || "选择知识块");
-  $("workbench-current-meta").textContent = template ? `${template.question_count || 0} 道本块题目 · 例题与变式来自真实题库${template.customized ? " · 已有个人修改" : ""}` : "每类题型都配有框架、易错点和真实题例。";
+  $("workbench-current-title").textContent = template ? `${template.concept_name} / ${template.subtype_name}` : (concept.name || "选择知识块");
+  $("workbench-current-meta").textContent = template ? `${template.matched_question_count || 0} 道细分命中 / 选择、填空、解答仅作题面形式标签${template.customized ? " / 已有个人修改" : ""}` : "每种具体考法都配有框架、易错点和真实题例。";
   if (!template) {
-    card.innerHTML = `<div class="loading-card">请选择一个知识块和题型。</div>`;
+    card.innerHTML = `<div class="loading-card">请选择一个知识块和细分题型。</div>`;
     return;
   }
   const framework = template.framework || [];
@@ -982,7 +981,10 @@ function renderWorkbenchTemplate() {
     ? `<div class="template-editing-form"><label>题型概述<textarea rows="4" data-template-field="overview">${escapeHtml(template.overview || "")}</textarea></label><div class="template-edit-columns"><label>解题思路框架${templateListEditor("framework", framework)}</label><label>常见易错点${templateListEditor("mistakes", mistakes)}</label></div><label>记忆提醒<input type="text" data-template-field="memory_aid" value="${escapeAttr(template.memory_aid || "")}" /></label></div>`
     : `<div class="template-copy-grid"><section><span class="template-section-label">题型概述</span><p>${escapeHtml(template.overview || "")}</p></section><section><span class="template-section-label">解题思路框架</span><ol>${framework.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section><section><span class="template-section-label">常见易错点</span><ul>${mistakes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="template-memory"><span class="template-section-label">记忆提醒</span><strong>${escapeHtml(template.memory_aid || "")}</strong></section></div>`;
   const variants = (template.variants || []).map((item, index) => workbenchQuestionMarkup(item, `变式 ${index + 1}`, true)).join("");
-  card.innerHTML = `<div class="workbench-template-head"><div><span class="eyebrow">${escapeHtml(template.subject)} / ${escapeHtml(template.question_type_label)}</span><h3>${escapeHtml(template.concept_name)} 的答题模板</h3><p>${template.available_count || 0} 道可用真实题目。${template.example_source === "同科目跨块真实题" ? "当前题型本块题目较少，变式题已从同科目真实题补足并明确标注。" : "例题优先取当前知识块，变式题按难度和年份分散。"}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></div>${summaryMarkup}<div class="workbench-example-section"><div class="workbench-section-head"><div><span class="eyebrow">REAL EXAMPLE</span><h4>典型例题与解析</h4></div><span>答案与解析来自题库来源文件</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</div><div class="workbench-variants-section"><div class="workbench-section-head"><div><span class="eyebrow">PRACTICE VARIANTS</span><h4>变式练习</h4></div><span>${template.variant_count || 0} 道 · 先独立完成，再展开解析</span></div><div class="workbench-variants-grid">${variants || `<div class="loading-card">暂无可用变式题。</div>`}</div></div>`;
+  const sourceNote = template.example_source === "同知识块补充"
+    ? "当前细分题型的直接命中较少，例题或变式使用同知识块真题补充，并在题卡上明确标注。"
+    : "例题优先使用细分题型直接命中的真题，变式按难度与年份分散。";
+  card.innerHTML = `<div class="workbench-template-head"><div><span class="eyebrow">${escapeHtml(template.subject)} / 细分题型</span><h3>${escapeHtml(template.subtype_name)}</h3><p>${escapeHtml(template.subtype_summary || "")} ${sourceNote}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></div>${summaryMarkup}<div class="workbench-example-section"><div class="workbench-section-head"><div><span class="eyebrow">REAL EXAMPLE</span><h4>典型例题与解析</h4></div><span>答案与解析来自题库来源文件</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</div><div class="workbench-variants-section"><div class="workbench-section-head"><div><span class="eyebrow">PRACTICE VARIANTS</span><h4>变式练习</h4></div><span>${template.variant_count || 0} 道 / 先独立完成，再展开解析</span></div><div class="workbench-variants-grid">${variants || `<div class="loading-card">暂无可用变式题。</div>`}</div></div>`;
   bindQuestionOpeners(card);
   if (state.workbenchEditingTemplate) bindTemplateEditor(card);
   $("edit-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = true; renderWorkbenchTemplate(); });
@@ -1043,7 +1045,7 @@ async function saveWorkbenchTemplate() {
   const button = $("save-workbench-template");
   if (button) button.disabled = true;
   try {
-    const payload = await fetchJSON(`/api/workbench/templates/${encodeURIComponent(state.workbenchConceptId)}/${encodeURIComponent(state.workbenchQuestionType)}`, { ...jsonOptions({ user_id: state.userId, overview, framework: values("framework"), mistakes: values("mistakes"), memory_aid: memoryAid }), method: "PUT" });
+    const payload = await fetchJSON(`/api/workbench/templates/${encodeURIComponent(state.workbenchConceptId)}/${encodeURIComponent(state.workbenchSubtypeId)}`, { ...jsonOptions({ user_id: state.userId, overview, framework: values("framework"), mistakes: values("mistakes"), memory_aid: memoryAid }), method: "PUT" });
     state.workbenchTemplate = payload.template;
     state.workbenchEditingTemplate = false;
     renderWorkbenchTemplate();
@@ -1059,24 +1061,25 @@ async function selectWorkbenchConcept(conceptId) {
   state.workbenchConceptId = conceptId;
   state.workbenchEditingTemplate = false;
   renderWorkbenchConcepts();
+  renderWorkbenchSubtypeTabs();
   renderWorkbenchProgress();
   await loadWorkbenchTemplate();
 }
 
-async function selectWorkbenchType(questionType) {
-  if (!questionType || questionType === state.workbenchQuestionType) return;
-  state.workbenchQuestionType = questionType;
+async function selectWorkbenchSubtype(subtypeId) {
+  if (!subtypeId || subtypeId === state.workbenchSubtypeId) return;
+  state.workbenchSubtypeId = subtypeId;
   state.workbenchEditingTemplate = false;
-  renderWorkbenchTypeTabs();
+  renderWorkbenchSubtypeTabs();
   await loadWorkbenchTemplate();
 }
 
 async function loadWorkbenchTemplate() {
-  if (!state.workbenchConceptId) return;
+  if (!state.workbenchConceptId || !state.workbenchSubtypeId) return;
   const card = $("workbench-template-card");
   card.innerHTML = `<div class="workbench-template-skeleton"><span></span><span></span><span></span></div>`;
   try {
-    const payload = await fetchJSON(`/api/workbench?concept_id=${encodeURIComponent(state.workbenchConceptId)}&question_type=${encodeURIComponent(state.workbenchQuestionType)}&user_id=${encodeURIComponent(state.userId)}`);
+    const payload = await fetchJSON(`/api/workbench?concept_id=${encodeURIComponent(state.workbenchConceptId)}&subtype_id=${encodeURIComponent(state.workbenchSubtypeId)}&user_id=${encodeURIComponent(state.userId)}`);
     state.workbenchTemplate = payload.template;
     renderWorkbenchTemplate();
   } catch (error) {
@@ -1426,13 +1429,12 @@ async function loadWorkbench() {
     if (!state.workbenchCatalog.length) {
       const payload = await fetchJSON("/api/workbench");
       state.workbenchCatalog = payload.concepts || [];
-      state.workbenchTypes = payload.question_types || [];
       state.workbenchConceptId = state.workbenchConceptId || state.workbenchCatalog[0]?.id || "";
       renderWorkbenchConcepts();
-      renderWorkbenchTypeTabs();
+      renderWorkbenchSubtypeTabs();
     } else {
       renderWorkbenchConcepts();
-      renderWorkbenchTypeTabs();
+      renderWorkbenchSubtypeTabs();
     }
     await Promise.all([loadWorkbenchTemplate(), loadWorkbenchNotes(), (async () => {
       try {
