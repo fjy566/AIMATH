@@ -181,6 +181,10 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             assert [item["label"] for item in template["answer_structure"]] == ["题型定位", "条件核验", "核心过程", "结论复核"]
             assert all(item["prompt"].strip() and item["content"].strip() for item in template["answer_structure"])
             assert all(
+                value.count("$") % 2 == 0
+                for value in [template["overview"], template["memory_aid"], template["formula_sheet"], *template["framework"], *template["mistakes"]]
+            )
+            assert all(
                 "\\\\" not in value
                 for value in [template["overview"], template["memory_aid"], *template["framework"], *template["mistakes"]]
             )
