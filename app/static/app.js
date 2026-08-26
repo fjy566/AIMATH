@@ -105,6 +105,13 @@ function renderMarkdown(source) {
       output.push(`<h4>${inline(heading[1])}</h4>`);
       continue;
     }
+    const subquestion = line.match(/^[（(](\d+)[）)]\s*(.*)$/);
+    if (subquestion) {
+      closeParagraph();
+      closeList();
+      output.push(`<div class="subquestion-line"><span>${escapeHtml(`（${subquestion[1]}）`)}</span><div>${inline(subquestion[2])}</div></div>`);
+      continue;
+    }
     const unordered = line.match(/^[-*]\s+(.+)$/);
     const ordered = line.match(/^\d+[.、]\s+(.+)$/);
     if (unordered || ordered) {
@@ -198,6 +205,44 @@ function renderAnswerPreview(value) {
   return renderMarkdown(looksLikeStandaloneLatex ? `$$${source}$$` : source);
 }
 
+const BEGINNER_FORMULA_GROUPS = [
+  {
+    label: "基础结构",
+    items: [
+      { label: "分数", symbol: "½", tex: "\\frac{a}{b}", select: "a", title: "插入分数，先填写分子" },
+      { label: "根号", symbol: "√x", tex: "\\sqrt{x}", select: "x", title: "插入根号" },
+      { label: "次方", symbol: "xⁿ", tex: "x^{n}", select: "n", title: "插入次方" },
+      { label: "下标", symbol: "xᵢ", tex: "x_{i}", select: "i", title: "插入下标" },
+      { label: "括号", symbol: "( )", tex: "\\left( x \\right)", select: "x", title: "插入括号" },
+      { label: "矩阵", symbol: "▦", tex: "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}", select: "a", wrap: "display", title: "插入二阶矩阵" },
+    ],
+  },
+  {
+    label: "微积分",
+    items: [
+      { label: "导数", symbol: "dy/dx", tex: "\\frac{dy}{dx}", select: "dy", title: "插入一阶导数" },
+      { label: "偏导", symbol: "∂f/∂x", tex: "\\frac{\\partial f}{\\partial x}", select: "f", title: "插入偏导数" },
+      { label: "积分", symbol: "∫", tex: "\\int_{a}^{b} f(x)\\,dx", select: "a", wrap: "display", title: "插入定积分" },
+      { label: "二重积分", symbol: "∬", tex: "\\iint_{D} f(x,y)\\,dA", select: "D", wrap: "display", title: "插入二重积分" },
+      { label: "极限", symbol: "lim", tex: "\\lim_{x\\to a} f(x)", select: "x\\to a", wrap: "display", title: "插入极限" },
+      { label: "求和", symbol: "Σ", tex: "\\sum_{i=1}^{n} a_i", select: "i=1", wrap: "display", title: "插入求和" },
+    ],
+  },
+  {
+    label: "常用函数和符号",
+    items: [
+      { label: "正弦", symbol: "sin", tex: "\\sin x", select: "x", title: "插入正弦函数" },
+      { label: "余弦", symbol: "cos", tex: "\\cos x", select: "x", title: "插入余弦函数" },
+      { label: "自然对数", symbol: "ln", tex: "\\ln x", select: "x", title: "插入自然对数" },
+      { label: "指数", symbol: "eˣ", tex: "e^{x}", select: "x", title: "插入指数函数" },
+      { label: "绝对值", symbol: "|x|", tex: "\\left|x\\right|", select: "x", title: "插入绝对值" },
+      { label: "无穷大", symbol: "∞", tex: "\\infty", title: "插入无穷大" },
+      { label: "趋于", symbol: "→", tex: "\\to", title: "插入趋于符号" },
+      { label: "不等式", symbol: "≤ ≥", tex: "a \\le b", select: "a", title: "插入小于等于不等式" },
+    ],
+  },
+];
+
 const FORMULA_TOOL_GROUPS = [
   {
     label: "结构",
@@ -272,23 +317,62 @@ function extractChoiceOptions(source) {
   return options.length ? options : ["A", "B", "C", "D"].map((label) => ({ label, text: `选项 ${label}` }));
 }
 
-function formulaToolbarMarkup(editorId, readonly = false) {
-  if (readonly) return `<p class="formula-readonly-note">本题已提交。可查看公式，但不能修改。</p>`;
-  return `<div class="formula-toolbar" data-formula-toolbar="${escapeAttr(editorId)}" role="toolbar" aria-label="LaTeX 公式工具">
-    ${FORMULA_TOOL_GROUPS.map((group) => `<div class="formula-tool-group"><span class="formula-group-label">${escapeHtml(group.label)}</span><div class="formula-tool-list">${group.items.map((item) => `<button type="button" class="formula-tool" data-formula-tool data-formula-tex="${escapeAttr(item.tex)}" data-formula-select="${escapeAttr(item.select || "")}" data-formula-wrap="${escapeAttr(item.wrap || "inline")}" title="${escapeAttr(item.title || item.label)}"><span>${escapeHtml(item.label)}</span></button>`).join("")}</div></div>`).join("")}
-  </div>
-  <div class="formula-helper"><span>点击模板后可直接替换字母</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></div>`;
+function formulaToolMarkup(item, className = "formula-tool", beginner = false) {
+  const content = beginner
+    ? `<span class="formula-tool-glyph">${escapeHtml(item.symbol || item.label)}</span><span class="formula-tool-caption">${escapeHtml(item.label)}</span>`
+    : `<span>${escapeHtml(item.label)}</span>`;
+  return `<button type="button" class="${className}" data-formula-tool data-formula-tex="${escapeAttr(item.tex)}" data-formula-select="${escapeAttr(item.select || "")}" data-formula-wrap="${escapeAttr(item.wrap || "inline")}" title="${escapeAttr(item.title || item.label)}">${content}</button>`;
 }
 
-function renderFormulaEditor({ id, value = "", readonly = false, answerAttribute = "", label = "LaTeX 作答", placeholder = "先写文字，再用工具插入公式，例如：函数在区间上连续。" }) {
+function formulaGroupsMarkup(groups, beginner = false) {
+  const groupClass = beginner ? "formula-beginner-group" : "formula-tool-group";
+  const listClass = beginner ? "formula-beginner-list" : "formula-tool-list";
+  const buttonClass = beginner ? "formula-tool beginner-formula-tool" : "formula-tool";
+  return groups.map((group) => `<div class="${groupClass}"><span class="formula-group-label">${escapeHtml(group.label)}</span><div class="${listClass}">${group.items.map((item) => formulaToolMarkup(item, buttonClass, beginner)).join("")}</div></div>`).join("");
+}
+
+function answerStructureMarkup(editorId, questionType) {
+  if (questionType !== "solution") return "";
+  return `<div class="answer-structure-panel" id="${escapeAttr(editorId)}-answer-structure" data-answer-structure-panel="${escapeAttr(editorId)}" hidden>
+    <div class="answer-structure-head"><strong>把解题过程排得更清楚</strong><span>按钮会在光标处插入编号</span></div>
+    <div class="answer-structure-actions">
+      <button type="button" class="structure-action" data-structure-action="point"><span>1.</span> 添加分点</button>
+      <button type="button" class="structure-action" data-structure-action="subquestion"><span>（1）</span> 添加小题</button>
+      <button type="button" class="structure-action" data-structure-action="newline"><span>↵</span> 换一行</button>
+    </div>
+    <p class="answer-structure-hint">先把光标放到要继续作答的位置，再点按钮。已有文字不会被覆盖。</p>
+  </div>`;
+}
+
+function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill") {
+  if (readonly) return `<p class="formula-readonly-note">本题已提交。可查看公式，但不能修改。</p>`;
+  return `<div class="answer-toolbox">
+    <div class="answer-tool-row">
+      <span class="answer-tool-prompt">不懂 LaTeX 也没关系，直接点你想要的公式</span>
+      <div class="answer-tool-actions">
+        <button type="button" class="answer-tool-toggle" data-formula-toggle aria-expanded="false" aria-controls="${escapeAttr(editorId)}-formula-tools"><span>Σ</span> 公式工具</button>
+        ${questionType === "solution" ? `<button type="button" class="answer-tool-toggle" data-answer-structure-toggle aria-expanded="false" aria-controls="${escapeAttr(editorId)}-answer-structure"><span>☷</span> 作答结构</button>` : ""}
+      </div>
+    </div>
+    <div class="formula-tools-panel" id="${escapeAttr(editorId)}-formula-tools" data-formula-tools-panel hidden>
+      <div class="formula-beginner-head"><strong>直接插入常用公式</strong><span>插入后可以继续修改字母和数字</span></div>
+      <div class="formula-beginner-groups">${formulaGroupsMarkup(BEGINNER_FORMULA_GROUPS, true)}</div>
+      <div class="formula-advanced-toggle-row"><button type="button" class="formula-advanced-toggle" data-formula-advanced-toggle aria-expanded="false">显示高级 LaTeX 工具 <span>适合熟悉公式写法后使用</span></button></div>
+      <div class="formula-advanced-panel" data-formula-advanced-panel hidden><div class="formula-toolbar" data-formula-toolbar="${escapeAttr(editorId)}" role="toolbar" aria-label="高级 LaTeX 公式工具">${formulaGroupsMarkup(FORMULA_TOOL_GROUPS)}</div><p class="formula-helper"><span>高级工具仍然插入模板，不会覆盖你已有的文字</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></p></div>
+    </div>
+    ${answerStructureMarkup(editorId, questionType)}
+  </div>`;
+}
+
+function renderFormulaEditor({ id, value = "", readonly = false, answerAttribute = "", label = "LaTeX 作答", placeholder = "先写文字，再用工具插入公式，例如：函数在区间上连续。", questionType = "fill" }) {
   const editorId = domId(id);
   const inputId = editorId === "modal-answer" ? "answer-input" : `${editorId}-input`;
   return `<div class="formula-editor" data-formula-editor="${escapeAttr(editorId)}">
     <div class="formula-editor-layout">
       <div class="formula-source-pane">
-        <div class="formula-pane-head"><label for="${escapeAttr(inputId)}">${escapeHtml(label)}</label><span>文字与 LaTeX 混合</span></div>
+        <div class="formula-pane-head"><label for="${escapeAttr(inputId)}">${escapeHtml(label)}</label><span>文字和公式混合</span></div>
         <textarea id="${escapeAttr(inputId)}" ${answerAttribute} data-formula-input="${escapeAttr(editorId)}" rows="5" spellcheck="false" ${readonly ? "readonly" : ""} placeholder="${escapeAttr(placeholder)}">${escapeHtml(value)}</textarea>
-        ${formulaToolbarMarkup(editorId, readonly)}
+        ${formulaToolbarMarkup(editorId, readonly, questionType)}
       </div>
       <div class="formula-preview-pane">
         <div class="formula-pane-head"><span>实时预览</span><span class="formula-engine">KaTeX</span></div>
@@ -326,7 +410,8 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
     readonly,
     answerAttribute,
     label: question.question_type === "fill" ? "填写答案" : "我的解题过程",
-    placeholder: question.question_type === "fill" ? "输入最终结果，点击工具插入分数、根式、积分等公式。" : "先写解题步骤，公式直接点工具插入，也可以手动编辑 LaTeX。",
+    placeholder: question.question_type === "fill" ? "输入最终结果，点击工具插入分数、根式、积分等公式。" : "先写解题步骤，公式直接点工具插入，需要时再修改字母或数字。",
+    questionType: question.question_type,
   });
 }
 
@@ -348,6 +433,52 @@ function insertFormulaSnippet(field, button) {
   field.focus();
   field.setSelectionRange(insertAt + selectionAt, insertAt + selectionEnd);
   field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function nextStructuredNumber(value, pattern) {
+  const numbers = [...String(value || "").matchAll(pattern)].map((match) => Number(match[1])).filter(Number.isFinite);
+  return numbers.length ? Math.max(...numbers) + 1 : 1;
+}
+
+function cursorAfterFormula(value, position) {
+  const source = String(value || "");
+  const patterns = [/\$\$[\s\S]*?\$\$/g, /\$[^$\n]*\$/g, /\\\([\s\S]*?\\\)/g, /\\\[[\s\S]*?\\\]/g];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      if (position >= start && position <= end) return end;
+    }
+  }
+  return position;
+}
+
+function insertAnswerStructure(field, action) {
+  if (!field) return;
+  const cursor = cursorAfterFormula(field.value, field.selectionEnd ?? field.value.length);
+  const before = field.value.slice(0, cursor);
+  const after = field.value.slice(cursor);
+  const trailingNewlines = before.match(/\n*$/)?.[0].length || 0;
+  const requiredBreaks = action === "subquestion" ? 2 : 1;
+  const lineBreak = "\n".repeat(Math.max(0, requiredBreaks - trailingNewlines));
+  const marker = action === "point"
+    ? `${nextStructuredNumber(field.value, /(?:^|\n)\s*(\d+)[.、)]\s/g)}. `
+    : action === "subquestion"
+      ? `（${nextStructuredNumber(field.value, /(?:^|\n)\s*[（(](\d+)[）)]\s/g)}） `
+      : "";
+  const insertion = `${lineBreak}${marker}`;
+  field.value = `${before}${insertion}${after}`;
+  const nextCursor = cursor + insertion.length;
+  field.focus();
+  field.setSelectionRange(nextCursor, nextCursor);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setDisclosure(button, panel, open) {
+  if (!button || !panel) return;
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  button.classList.toggle("is-open", open);
 }
 
 function selectChoice(editor, value) {
@@ -380,6 +511,16 @@ function bindAnswerEditors(root = document) {
         $("submit-practice-session")?.click();
       }
     });
+    $$('[data-formula-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
+      setDisclosure(button, editor.querySelector("[data-formula-tools-panel]"), button.getAttribute("aria-expanded") !== "true");
+    }));
+    $$('[data-formula-advanced-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
+      setDisclosure(button, editor.querySelector("[data-formula-advanced-panel]"), button.getAttribute("aria-expanded") !== "true");
+    }));
+    $$('[data-answer-structure-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
+      setDisclosure(button, editor.querySelector("[data-answer-structure-panel]"), button.getAttribute("aria-expanded") !== "true");
+    }));
+    $$('[data-structure-action]', editor).forEach((button) => button.addEventListener("click", () => insertAnswerStructure(field, button.dataset.structureAction)));
   });
   $$('[data-choice-editor]', root).forEach((editor) => {
     if (editor.dataset.bound === "true") return;
