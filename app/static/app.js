@@ -16,6 +16,7 @@ const state = {
   workbenchSubtypeId: "",
   workbenchTemplate: null,
   workbenchEditingTemplate: false,
+  workbenchVariantIndex: 0,
   workbenchAnalytics: null,
   notes: [],
   currentNote: null,
@@ -23,7 +24,6 @@ const state = {
   noteFavoriteOnly: false,
   noteSearchTimer: null,
   noteSavedRange: null,
-  handwritingErasing: false,
   currentQuestion: null,
   practiceSession: null,
   currentSimulation: null,
@@ -949,13 +949,16 @@ function renderWorkbenchSubtypeTabs() {
 function workbenchQuestionMarkup(item, label, variant = false) {
   const question = item?.question;
   if (!question) return `<article class="workbench-question-card empty-question"><span class="eyebrow">${escapeHtml(label)}</span><p>当前题库没有找到真实题目。</p></article>`;
-  const analysis = item.analysis || question.solution_markdown || "当前来源没有提供解析。";
+  const analysis = item.analysis || question.solution_markdown || "";
   const answer = item.answer || question.answer_markdown || "";
+  const yearAndNumber = `${question.year} 年第 ${question.number} 题`;
+  const solutionHint = variant ? "完成后再展开" : "来源答案与完整解析";
   return `<article class="workbench-question-card ${variant ? "variant-question" : "example-question"}">
-    <div class="workbench-question-head"><div><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(question.year)} 年 / Q${escapeHtml(question.number)}</strong></div><div class="workbench-question-badges"><span class="difficulty-pill ${escapeAttr(question.difficulty_band || "other")}">${escapeHtml(question.difficulty_label || "待分层")}</span><span class="type-pill">${escapeHtml(typeLabel(question.question_type))}</span></div></div>
-    <div class="workbench-question-body markdown-body">${renderMarkdown(question.question_markdown || "")}</div>
-    <div class="workbench-question-foot"><span>${escapeHtml(item.source_scope || (question.concept_labels || []).map((concept) => concept.name).join("、") || "真实题库")}</span><button type="button" class="text-button" data-question-id="${escapeAttr(question.id)}">打开完整题面 ↗</button></div>
-    <details class="workbench-solution-details" ${variant ? "" : "open"}><summary>${variant ? "展开解析" : "典型解析"}</summary><div class="markdown-body">${renderMarkdown(analysis)}</div>${answer ? `<div class="workbench-answer-line"><b>答案</b><span class="markdown-body">${renderMarkdown(answer)}</span></div>` : ""}</details>
+    <header class="workbench-question-head"><div class="workbench-question-identity"><span>${escapeHtml(label)}</span><strong>${escapeHtml(yearAndNumber)}</strong></div><div class="workbench-question-badges"><span class="difficulty-pill ${escapeAttr(question.difficulty_band || "other")}">${escapeHtml(question.difficulty_label || "待分层")}</span><span class="type-pill">${escapeHtml(typeLabel(question.question_type))}</span></div></header>
+    <div class="workbench-study-grid">
+      <section class="workbench-question-pane" aria-label="${escapeAttr(label)}题目"><div class="workbench-pane-head"><strong>题目</strong><span>完整题面</span></div><div class="workbench-question-body markdown-body">${renderMarkdown(question.question_markdown || "")}</div><footer class="workbench-question-foot"><span>${escapeHtml(item.source_scope || (question.concept_labels || []).map((concept) => concept.name).join("、") || "真实题库")}</span><button type="button" class="text-button" data-question-id="${escapeAttr(question.id)}">进入作答</button></footer></section>
+      <aside class="workbench-solution-pane" aria-label="${escapeAttr(label)}答案与解析"><details class="workbench-solution-details" ${variant ? "" : "open"}><summary><span><strong>答案与解析</strong><small>${escapeHtml(solutionHint)}</small></span><b aria-hidden="true">展开</b></summary><div class="workbench-solution-content">${answer ? `<div class="workbench-answer-line"><b>答案</b><span class="markdown-body">${renderMarkdown(answer)}</span></div>` : ""}<div class="workbench-analysis-body markdown-body">${renderMarkdown(analysis)}</div></div></details></aside>
+    </div>
   </article>`;
 }
 
@@ -976,17 +979,31 @@ function renderWorkbenchTemplate() {
     return;
   }
   const framework = template.framework || [];
+  const formulaSheet = template.formula_sheet || "";
   const mistakes = template.mistakes || [];
   const summaryMarkup = state.workbenchEditingTemplate
     ? `<div class="template-editing-form"><label>题型概述<textarea rows="4" data-template-field="overview">${escapeHtml(template.overview || "")}</textarea></label><div class="template-edit-columns"><label>解题思路框架${templateListEditor("framework", framework)}</label><label>常见易错点${templateListEditor("mistakes", mistakes)}</label></div><label>记忆提醒<input type="text" data-template-field="memory_aid" value="${escapeAttr(template.memory_aid || "")}" /></label></div>`
-    : `<div class="template-copy-grid"><section><span class="template-section-label">题型概述</span><p>${escapeHtml(template.overview || "")}</p></section><section><span class="template-section-label">解题思路框架</span><ol>${framework.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section><section><span class="template-section-label">常见易错点</span><ul>${mistakes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section><section class="template-memory"><span class="template-section-label">记忆提醒</span><strong>${escapeHtml(template.memory_aid || "")}</strong></section></div>`;
-  const variants = (template.variants || []).map((item, index) => workbenchQuestionMarkup(item, `变式 ${index + 1}`, true)).join("");
+    : `<div class="template-guide"><section class="template-overview"><span class="template-section-label">这类题在考什么</span><p>${escapeHtml(template.overview || "")}</p></section>${formulaSheet ? `<section class="template-formula-card"><div><span class="template-section-label">公式卡片</span><small>先理解公式的使用条件，再代入计算</small></div><div class="template-formula-body markdown-body">${renderMarkdown(formulaSheet)}</div></section>` : ""}<div class="template-guide-columns"><section><span class="template-section-label">推荐作答顺序</span><ol>${framework.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section><section class="template-mistakes"><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section></div><section class="template-memory"><span>考场提醒</span><strong>${escapeHtml(template.memory_aid || "")}</strong></section></div>`;
+  const variantItems = template.variants || [];
+  state.workbenchVariantIndex = Math.max(0, Math.min(state.workbenchVariantIndex, Math.max(variantItems.length - 1, 0)));
+  const activeVariant = variantItems[state.workbenchVariantIndex];
+  const variantTabs = variantItems.map((item, index) => {
+    const question = item.question || {};
+    return `<button type="button" class="workbench-variant-tab ${index === state.workbenchVariantIndex ? "is-active" : ""}" data-workbench-variant="${index}" role="tab" aria-selected="${index === state.workbenchVariantIndex ? "true" : "false"}"><span>变式 ${index + 1}</span><small>${escapeHtml(question.year || "")} 年第 ${escapeHtml(question.number || "")} 题</small></button>`;
+  }).join("");
+  const variantViewer = activeVariant ? workbenchQuestionMarkup(activeVariant, `变式 ${state.workbenchVariantIndex + 1}`, true) : `<div class="loading-card">暂无可用变式题。</div>`;
   const sourceNote = template.example_source === "同知识块补充"
     ? "当前细分题型的直接命中较少，例题或变式使用同知识块真题补充，并在题卡上明确标注。"
     : "例题优先使用细分题型直接命中的真题，变式按难度与年份分散。";
-  card.innerHTML = `<div class="workbench-template-head"><div><span class="eyebrow">${escapeHtml(template.subject)} / 细分题型</span><h3>${escapeHtml(template.subtype_name)}</h3><p>${escapeHtml(template.subtype_summary || "")} ${sourceNote}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></div>${summaryMarkup}<div class="workbench-example-section"><div class="workbench-section-head"><div><span class="eyebrow">REAL EXAMPLE</span><h4>典型例题与解析</h4></div><span>答案与解析来自题库来源文件</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</div><div class="workbench-variants-section"><div class="workbench-section-head"><div><span class="eyebrow">PRACTICE VARIANTS</span><h4>变式练习</h4></div><span>${template.variant_count || 0} 道 / 先独立完成，再展开解析</span></div><div class="workbench-variants-grid">${variants || `<div class="loading-card">暂无可用变式题。</div>`}</div></div>`;
+  card.innerHTML = `<header class="workbench-template-head"><div><span class="workbench-template-path">${escapeHtml(template.subject)} / ${escapeHtml(template.concept_name)}</span><h3>${escapeHtml(template.subtype_name)}</h3><p>${escapeHtml(template.subtype_summary || "")} ${sourceNote}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></header>${summaryMarkup}<section class="workbench-example-section"><div class="workbench-section-head"><div><h4>先看一道完整例题</h4><p>题目在左，来源答案与解析在右，可以进入作答区独立完成。</p></div><span>完整题面与来源解析</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</section><section class="workbench-variants-section"><div class="workbench-section-head"><div><h4>再做变式练习</h4><p>一次只展示一道，避免题面堆叠。完成后再展开解析。</p></div><span>${template.variant_count || 0} 道真实题</span></div><div class="workbench-variant-switcher" role="tablist" aria-label="选择变式题">${variantTabs}</div><div class="workbench-variant-viewer">${variantViewer}</div>${variantItems.length > 1 ? `<nav class="workbench-variant-nav" aria-label="切换变式题"><button type="button" class="quiet-button" id="workbench-variant-prev" ${state.workbenchVariantIndex === 0 ? "disabled" : ""}>上一道</button><span>${state.workbenchVariantIndex + 1} / ${variantItems.length}</span><button type="button" class="secondary-button" id="workbench-variant-next" ${state.workbenchVariantIndex === variantItems.length - 1 ? "disabled" : ""}>下一道</button></nav>` : ""}</section>`;
   bindQuestionOpeners(card);
   if (state.workbenchEditingTemplate) bindTemplateEditor(card);
+  $$('[data-workbench-variant]', card).forEach((button) => button.addEventListener("click", () => {
+    state.workbenchVariantIndex = Number(button.dataset.workbenchVariant || 0);
+    renderWorkbenchTemplate();
+  }));
+  $("workbench-variant-prev")?.addEventListener("click", () => { state.workbenchVariantIndex -= 1; renderWorkbenchTemplate(); });
+  $("workbench-variant-next")?.addEventListener("click", () => { state.workbenchVariantIndex += 1; renderWorkbenchTemplate(); });
   $("edit-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = true; renderWorkbenchTemplate(); });
   $("cancel-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = false; renderWorkbenchTemplate(); });
   $("save-workbench-template")?.addEventListener("click", saveWorkbenchTemplate);
@@ -1060,6 +1077,7 @@ async function selectWorkbenchConcept(conceptId) {
   if (!conceptId || conceptId === state.workbenchConceptId) return;
   state.workbenchConceptId = conceptId;
   state.workbenchEditingTemplate = false;
+  state.workbenchVariantIndex = 0;
   renderWorkbenchConcepts();
   renderWorkbenchSubtypeTabs();
   renderWorkbenchProgress();
@@ -1070,6 +1088,7 @@ async function selectWorkbenchSubtype(subtypeId) {
   if (!subtypeId || subtypeId === state.workbenchSubtypeId) return;
   state.workbenchSubtypeId = subtypeId;
   state.workbenchEditingTemplate = false;
+  state.workbenchVariantIndex = 0;
   renderWorkbenchSubtypeTabs();
   await loadWorkbenchTemplate();
 }
@@ -1183,74 +1202,6 @@ function runNoteCommand(command, value = null) {
   $("note-save-state").textContent = "有未保存修改";
 }
 
-function setupHandwritingCanvas(dataUrl = "") {
-  const canvas = $("note-handwriting-canvas");
-  if (!canvas) return;
-  canvas.dataset.handwriting = dataUrl || "";
-  const width = Math.max(260, canvas.clientWidth || 520);
-  const height = 245;
-  const ratio = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-  canvas.width = width * ratio;
-  canvas.height = height * ratio;
-  const context = canvas.getContext("2d");
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  context.lineWidth = 2.2;
-  context.strokeStyle = "#173c3e";
-  context.clearRect(0, 0, width, height);
-  if (dataUrl) {
-    const image = new Image();
-    image.onload = () => context.drawImage(image, 0, 0, width, height);
-    image.src = dataUrl;
-  }
-  let drawing = false;
-  const point = (event) => {
-    const rect = canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  };
-  canvas.onpointerdown = (event) => { drawing = true; canvas.setPointerCapture?.(event.pointerId); const item = point(event); context.globalCompositeOperation = state.handwritingErasing ? "destination-out" : "source-over"; context.beginPath(); context.moveTo(item.x, item.y); };
-  canvas.onpointermove = (event) => { if (!drawing) return; const item = point(event); context.lineTo(item.x, item.y); context.stroke(); };
-  canvas.onpointerup = () => { drawing = false; context.closePath(); $("note-save-state").textContent = "有未保存修改"; };
-  canvas.onpointercancel = () => { drawing = false; };
-}
-
-function renderMindmapFields(nodes = []) {
-  const rootNode = nodes.find((item) => item.parent === "root") || nodes[0] || {};
-  $("note-mindmap-center").value = rootNode.label || "";
-  const branches = nodes.filter((item) => item !== rootNode);
-  const container = $("note-mindmap-branches");
-  container.innerHTML = (branches.length ? branches : [{ id: "branch-1", label: "", parent: "root" }]).map((item, index) => `<div class="mindmap-branch-row"><span>${index + 1}</span><input type="text" value="${escapeAttr(item.label || "")}" data-mindmap-branch /><button type="button" class="text-button" data-mindmap-remove aria-label="删除分支">删除</button></div>`).join("");
-  bindMindmapFields();
-  updateMindmapPreview();
-}
-
-function bindMindmapFields() {
-  $$('[data-mindmap-branch], #note-mindmap-center').forEach((input) => {
-    if (input.dataset.bound === "true") return;
-    input.dataset.bound = "true";
-    input.addEventListener("input", updateMindmapPreview);
-  });
-  $$('[data-mindmap-remove]').forEach((button) => {
-    if (button.dataset.bound === "true") return;
-    button.dataset.bound = "true";
-    button.addEventListener("click", () => { const rows = $$(".mindmap-branch-row", $("note-mindmap-branches")); if (rows.length <= 1) return; button.closest(".mindmap-branch-row")?.remove(); updateMindmapPreview(); });
-  });
-}
-
-function updateMindmapPreview() {
-  const center = $("note-mindmap-center")?.value.trim();
-  const branches = $$('[data-mindmap-branch]').map((input) => input.value.trim()).filter(Boolean);
-  $("note-mindmap-preview").innerHTML = center ? `<div class="mindmap-node center-node">${escapeHtml(center)}</div><div class="mindmap-branch-preview">${branches.map((item) => `<span class="mindmap-node">${escapeHtml(item)}</span>`).join("") || `<span class="mindmap-preview-empty">添加分支</span>`}</div>` : `<span>填写中心和分支后预览</span>`;
-}
-
-function collectMindmap() {
-  const center = $("note-mindmap-center")?.value.trim() || "";
-  const nodes = center ? [{ id: "root", label: center, parent: "root" }] : [];
-  $$('[data-mindmap-branch]').forEach((input, index) => { const label = input.value.trim(); if (label) nodes.push({ id: `branch-${index + 1}`, label, parent: "root" }); });
-  return nodes;
-}
-
 function renderNoteEditor() {
   const note = state.currentNote;
   const empty = $("workbench-note-empty");
@@ -1274,15 +1225,13 @@ function renderNoteEditor() {
   $("note-save-state").textContent = note.id ? "已保存到本机" : "尚未保存";
   state.noteEditorMode = "rich";
   setNoteMode("rich");
-  setupHandwritingCanvas(note.handwriting_data || "");
-  renderMindmapFields(note.mindmap || []);
   if (note.id) loadNoteVersions(note.id);
   else $("note-history-list").innerHTML = `<span class="note-history-empty">保存后可以回溯旧版本</span>`;
   renderWorkbenchNotes();
 }
 
 function newWorkbenchNote() {
-  state.currentNote = { id: "", title: "", concept_id: state.workbenchConceptId, tags: [], content_html: "", content_markdown: "", handwriting_data: "", mindmap: [], favorite: false };
+  state.currentNote = { id: "", title: "", concept_id: state.workbenchConceptId, tags: [], content_html: "", content_markdown: "", favorite: false };
   renderNoteEditor();
   $("note-title")?.focus();
 }
@@ -1303,7 +1252,6 @@ function collectNotePayload() {
   const contentHtml = state.noteEditorMode === "markdown" ? noteMarkdownToHtml(markdown.value) : rich.innerHTML;
   const contentMarkdown = state.noteEditorMode === "markdown" ? markdown.value : (markdown.value.trim() || noteHtmlToMarkdown(rich.innerHTML));
   const tags = $("note-tags").value.split(/[，,]/).map((item) => item.trim()).filter(Boolean);
-  const canvas = $("note-handwriting-canvas");
   return {
     user_id: state.userId,
     title: $("note-title").value.trim() || "未命名笔记",
@@ -1311,8 +1259,6 @@ function collectNotePayload() {
     tags,
     content_html: contentHtml,
     content_markdown: contentMarkdown,
-    handwriting_data: canvas && canvas.width ? canvas.toDataURL("image/png") : "",
-    mindmap: collectMindmap(),
     favorite: $("note-favorite").getAttribute("aria-pressed") === "true",
   };
 }
@@ -1495,29 +1441,6 @@ function bindNoteEditor() {
     } finally {
       input.value = "";
     }
-  });
-  $("handwriting-eraser")?.addEventListener("click", () => {
-    state.handwritingErasing = !state.handwritingErasing;
-    $("handwriting-eraser").classList.toggle("is-active", state.handwritingErasing);
-    $("handwriting-eraser").textContent = state.handwritingErasing ? "画笔" : "橡皮";
-  });
-  $("handwriting-clear")?.addEventListener("click", () => {
-    const canvas = $("note-handwriting-canvas");
-    const context = canvas?.getContext("2d");
-    if (!canvas || !context) return;
-    context.save();
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.restore();
-    canvas.dataset.handwriting = "";
-    $("note-save-state").textContent = "有未保存修改";
-  });
-  $("mindmap-add")?.addEventListener("click", () => {
-    const container = $("note-mindmap-branches");
-    const index = container.querySelectorAll("[data-mindmap-branch]").length + 1;
-    container.insertAdjacentHTML("beforeend", `<div class="mindmap-branch-row"><span>${index}</span><input type="text" value="" data-mindmap-branch placeholder="分支 ${index}" /><button type="button" class="text-button" data-mindmap-remove aria-label="删除分支">删除</button></div>`);
-    bindMindmapFields();
-    container.querySelector("[data-mindmap-branch]:last-of-type")?.focus();
   });
   $("note-save")?.addEventListener("click", saveWorkbenchNote);
   $("note-delete")?.addEventListener("click", deleteWorkbenchNote);

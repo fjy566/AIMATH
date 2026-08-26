@@ -160,8 +160,6 @@ class NoteRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=30)
     content_html: str = Field(default="", max_length=300000)
     content_markdown: str = Field(default="", max_length=300000)
-    handwriting_data: str = Field(default="", max_length=12_000_000)
-    mindmap: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     favorite: bool = False
 
 
@@ -230,16 +228,6 @@ def _normalize_note_payload(payload: NoteRequest, *, user_id: str, note_id: str 
         tag = str(raw_tag).strip()[:40]
         if tag and tag not in tags:
             tags.append(tag)
-    mindmap: list[dict[str, str]] = []
-    for index, raw_node in enumerate(payload.mindmap[:50]):
-        label = str(raw_node.get("label", "")).strip()[:200]
-        if not label:
-            continue
-        mindmap.append({
-            "id": str(raw_node.get("id", f"node-{index + 1}"))[:80],
-            "label": label,
-            "parent": str(raw_node.get("parent", "root"))[:80],
-        })
     item = {
         "id": note_id or uuid.uuid4().hex,
         "user_id": user_id.strip() or "local-user",
@@ -248,8 +236,6 @@ def _normalize_note_payload(payload: NoteRequest, *, user_id: str, note_id: str 
         "tags": tags,
         "content_html": _sanitize_note_html(payload.content_html),
         "content_markdown": payload.content_markdown[:300000],
-        "handwriting_data": payload.handwriting_data[:12_000_000],
-        "mindmap": mindmap,
         "favorite": bool(payload.favorite),
     }
     return item

@@ -144,7 +144,13 @@ def test_learning_analytics_separates_observed_evidence_from_untrained_topics() 
 
 
 def test_workbench_covers_every_math2_block_with_real_examples() -> None:
-    from app.services.workbench import SUBTYPE_CATALOG, build_workbench_template, subtype_count, workbench_catalog
+    from app.services.workbench import (
+        SUBTYPE_CATALOG,
+        build_workbench_template,
+        is_workbench_question_eligible,
+        subtype_count,
+        workbench_catalog,
+    )
 
     questions = load_questions()
     catalog = workbench_catalog(questions)
@@ -165,13 +171,27 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             template = build_workbench_template(questions, concept_id, subtype["id"])
             assert template["has_real_example"] is True
             assert template["example"]["question"]["id"] in {item["id"] for item in questions}
+            assert template["example"]["question"]["question_markdown"].strip()
+            assert template["example"]["analysis"].strip()
             assert template["variant_count"] >= 2
-            assert template["framework"] and template["mistakes"] and template["overview"]
+            assert len(template["framework"]) >= 5
+            assert len(template["mistakes"]) >= 4
+            assert template["formula_sheet"].strip() and "$" in template["formula_sheet"]
+            assert template["overview"]
             assert template["subtype_name"] == subtype["name"]
             assert template["example"]["source_scope"] in {"细分题型命中", "同知识块补充"}
+            assert all(is_workbench_question_eligible(item["question"]) for item in template["variants"])
 
     assert build_workbench_template(questions, "derivative", "rolle-theorem")["matched_question_count"] > 0
     assert build_workbench_template(questions, "derivative", "lagrange-mvt")["matched_question_count"] > 0
+    analysis_fragment = next(item for item in questions if item["id"] == "数学二-2023-02-30")
+    combined_paper = next(item for item in questions if item["id"] == "数学二-2020-01-01")
+    assert is_workbench_question_eligible(analysis_fragment) is False
+    assert is_workbench_question_eligible(combined_paper) is False
+    eigen_template = build_workbench_template(questions, "eigenvalue", "eigen-computation")
+    selected_ids = {eigen_template["example"]["question"]["id"], *(item["question"]["id"] for item in eigen_template["variants"])}
+    assert analysis_fragment["id"] not in selected_ids
+    assert combined_paper["id"] not in selected_ids
 
 
 def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> None:
@@ -214,7 +234,6 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
                     "tags": ["极限", "错题"],
                     "content_html": "<p>先检查定义域</p><script>alert(1)</script>",
                     "content_markdown": "# 极限错题复盘\n\n先检查定义域",
-                    "mindmap": [{"id": "root", "label": "极限", "parent": "root"}],
                     "favorite": True,
                 },
             )
@@ -222,6 +241,8 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
             note = created.json()["note"]
             note_id = note["id"]
             assert "script" not in note["content_html"]
+            assert "handwriting_data" not in note
+            assert "mindmap" not in note
             assert note["favorite"] is True
 
             asset = client.post(

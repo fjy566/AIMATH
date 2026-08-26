@@ -145,8 +145,6 @@ def init_db() -> None:
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 content_html TEXT NOT NULL DEFAULT '',
                 content_markdown TEXT NOT NULL DEFAULT '',
-                handwriting_data TEXT NOT NULL DEFAULT '',
-                mindmap_json TEXT NOT NULL DEFAULT '[]',
                 favorite INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -163,8 +161,6 @@ def init_db() -> None:
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 content_html TEXT NOT NULL DEFAULT '',
                 content_markdown TEXT NOT NULL DEFAULT '',
-                handwriting_data TEXT NOT NULL DEFAULT '',
-                mindmap_json TEXT NOT NULL DEFAULT '[]',
                 favorite INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
@@ -575,7 +571,8 @@ def _json_or_default(value: Any, default: Any) -> Any:
 def _note_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     item["tags"] = _json_or_default(item.pop("tags_json", "[]"), [])
-    item["mindmap"] = _json_or_default(item.pop("mindmap_json", "[]"), [])
+    item.pop("handwriting_data", None)
+    item.pop("mindmap_json", None)
     item["favorite"] = bool(item.get("favorite", 0))
     return item
 
@@ -589,8 +586,6 @@ def _note_snapshot_params(item: dict[str, Any], *, note_id: str, user_id: str, c
         json.dumps(item.get("tags", []), ensure_ascii=False),
         item.get("content_html", ""),
         item.get("content_markdown", ""),
-        item.get("handwriting_data", ""),
-        json.dumps(item.get("mindmap", []), ensure_ascii=False),
         int(bool(item.get("favorite", False))),
         created_at,
     )
@@ -603,9 +598,8 @@ def create_note(payload: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO notes(
                 id, user_id, title, concept_id, tags_json, content_html,
-                content_markdown, handwriting_data, mindmap_json, favorite,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                content_markdown, favorite, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             _note_snapshot_params(payload, note_id=payload["id"], user_id=payload["user_id"], created_at=now) + (now,),
         )
@@ -613,8 +607,8 @@ def create_note(payload: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO note_versions(
                 note_id, user_id, title, concept_id, tags_json, content_html,
-                content_markdown, handwriting_data, mindmap_json, favorite, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                content_markdown, favorite, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             _note_snapshot_params(payload, note_id=payload["id"], user_id=payload["user_id"], created_at=now),
         )
@@ -674,16 +668,15 @@ def update_note(note_id: str, user_id: str, payload: dict[str, Any]) -> dict[str
             """
             INSERT INTO note_versions(
                 note_id, user_id, title, concept_id, tags_json, content_html,
-                content_markdown, handwriting_data, mindmap_json, favorite, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                content_markdown, favorite, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             _note_snapshot_params(current_item, note_id=note_id, user_id=user_id, created_at=now),
         )
         connection.execute(
             """
             UPDATE notes SET title = ?, concept_id = ?, tags_json = ?, content_html = ?,
-                content_markdown = ?, handwriting_data = ?, mindmap_json = ?,
-                favorite = ?, updated_at = ?
+                content_markdown = ?, favorite = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
             (
@@ -692,8 +685,6 @@ def update_note(note_id: str, user_id: str, payload: dict[str, Any]) -> dict[str
                 json.dumps(payload.get("tags", []), ensure_ascii=False),
                 payload.get("content_html", ""),
                 payload.get("content_markdown", ""),
-                payload.get("handwriting_data", ""),
-                json.dumps(payload.get("mindmap", []), ensure_ascii=False),
                 int(bool(payload.get("favorite", False))),
                 now,
                 note_id,
@@ -720,7 +711,8 @@ def list_note_versions(note_id: str, user_id: str) -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["tags"] = _json_or_default(item.pop("tags_json", "[]"), [])
-        item["mindmap"] = _json_or_default(item.pop("mindmap_json", "[]"), [])
+        item.pop("handwriting_data", None)
+        item.pop("mindmap_json", None)
         item["favorite"] = bool(item.get("favorite", 0))
         result.append(item)
     return result
@@ -744,8 +736,6 @@ def restore_note_version(note_id: str, version_id: int, user_id: str) -> dict[st
             "tags": _json_or_default(item.get("tags_json", "[]"), []),
             "content_html": item.get("content_html", ""),
             "content_markdown": item.get("content_markdown", ""),
-            "handwriting_data": item.get("handwriting_data", ""),
-            "mindmap": _json_or_default(item.get("mindmap_json", "[]"), []),
             "favorite": bool(item.get("favorite", 0)),
         },
     )

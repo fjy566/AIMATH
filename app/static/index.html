@@ -96,7 +96,7 @@
 
         <section class="view" id="view-workbench">
           <div class="view-intro workbench-intro">
-            <div><span class="eyebrow">WORKBENCH / ANSWER PATTERNS + NOTES</span><h2>把具体考法整理成自己的得分路径</h2><p>每个数学二知识块都按真实考法继续细分，例如罗尔定理应用、拉格朗日中值定理应用。选择、填空、解答只作为题面形式标签。</p></div>
+            <div><h2>知识点整理与真题精练</h2><p>先掌握一类题的作答顺序，再用完整例题和逐道变式练习巩固。选择、填空、解答只作为题面形式标签。</p></div>
             <div class="workbench-actions">
               <button class="quiet-button" id="workbench-theme-toggle" type="button">切换暗色</button>
               <button class="quiet-button" id="workbench-export" type="button">导出数据</button>
@@ -107,10 +107,10 @@
 
           <div class="workbench-shell">
             <aside class="workbench-sidebar paper-panel" aria-label="工作台导航">
-              <div class="workbench-side-head"><div><span class="eyebrow">KNOWLEDGE MAP</span><h3>知识块</h3></div><span class="workbench-total" id="workbench-total">读取中</span></div>
+              <div class="workbench-side-head"><h3>知识导航</h3><span class="workbench-total" id="workbench-total">读取中</span></div>
               <div class="workbench-concept-list" id="workbench-concept-list"><div class="loading-card">正在读取知识块……</div></div>
               <div class="workbench-notes-nav">
-                <div class="workbench-side-head note-nav-head"><div><span class="eyebrow">MY NOTES</span><h3>我的笔记</h3></div><button class="text-button" id="new-note-button" type="button">新建</button></div>
+                <div class="workbench-side-head note-nav-head"><h3>我的笔记</h3><button class="text-button" id="new-note-button" type="button">新建</button></div>
                 <div class="note-search-row"><input id="note-search" type="search" placeholder="检索标题、正文或标签" aria-label="检索笔记" /><button id="note-favorite-filter" class="note-filter-button" type="button" aria-pressed="false" title="只看收藏">收藏</button></div>
                 <div class="workbench-note-list" id="workbench-note-list"><div class="loading-card">正在读取笔记……</div></div>
               </div>
@@ -118,7 +118,7 @@
 
             <main class="workbench-main">
               <div class="workbench-contextbar">
-                <div><span class="eyebrow">TEMPLATE LIBRARY</span><h3 id="workbench-current-title">选择知识块</h3><p id="workbench-current-meta">每种具体考法都配有框架、易错点和真实题例。</p></div>
+                <div><h3 id="workbench-current-title">选择知识块</h3><p id="workbench-current-meta">每种具体考法都配有框架、易错点和真实题例。</p></div>
               </div>
               <section class="workbench-subtype-browser" aria-label="细分题型选择">
                 <div class="workbench-subtype-head"><strong>细分题型</strong><span id="workbench-subtype-count">读取中</span></div>
@@ -127,13 +127,13 @@
               <article class="workbench-template-card paper-panel" id="workbench-template-card"><div class="loading-card">正在读取答题模板……</div></article>
 
               <section class="workbench-progress-panel paper-panel" aria-labelledby="workbench-progress-title">
-                <div class="workbench-progress-head"><div><span class="eyebrow">STUDY PROGRESS</span><h3 id="workbench-progress-title">学习进度</h3><p>把模板复习、真实作答和笔记沉淀放在同一条轨迹上。</p></div><div class="workbench-progress-actions"><button class="text-button" id="workbench-refresh-progress" type="button">刷新</button><button class="text-button" data-view-target="analytics" type="button">完整分析 ↗</button></div></div>
+                <div class="workbench-progress-head"><div><h3 id="workbench-progress-title">学习进度</h3><p>把模板复习、真实作答和笔记沉淀放在同一条轨迹上。</p></div><div class="workbench-progress-actions"><button class="text-button" id="workbench-refresh-progress" type="button">刷新</button><button class="text-button" data-view-target="analytics" type="button">完整分析</button></div></div>
                 <div class="workbench-progress-grid" id="workbench-progress-grid"><div class="loading-card">正在读取进度……</div></div>
                 <div class="progress-line workbench-progress-line" aria-label="当前知识块题库覆盖进度"><span id="workbench-progress-bar"></span></div>
               </section>
 
               <section class="workbench-notes-panel paper-panel" id="workbench-note-workspace">
-                <div class="workbench-notes-head"><div><span class="eyebrow">NOTE STUDIO</span><h3>把今天的理解留下来</h3><p>支持图文、Markdown、公式文字、图片、手写过程和可展开的思维导图。</p></div><span class="note-save-state" id="note-save-state">未选择笔记</span></div>
+                <div class="workbench-notes-head"><div><h3>把今天的理解留下来</h3><p>支持图文、Markdown、公式文字和图片，把模板、例题解析整理成可复习的卡片。</p></div><span class="note-save-state" id="note-save-state">未选择笔记</span></div>
                 <div class="note-empty-state" id="workbench-note-empty"><div class="note-empty-mark">N</div><h4>从一条小笔记开始</h4><p>新建笔记后，可以把当前模板、例题解析或自己的错题过程整理成可复习的卡片。</p><button class="primary-button" id="empty-new-note" type="button">新建笔记</button></div>
                 <div class="note-editor" id="workbench-note-editor" hidden>
                   <div class="note-editor-top"><input id="note-title" class="note-title-input" type="text" maxlength="200" placeholder="给这条笔记起个标题" /><div class="note-editor-actions"><button class="quiet-button" id="note-favorite" type="button" aria-pressed="false">收藏</button><button class="secondary-button" id="note-delete" type="button">删除</button><button class="primary-button" id="note-save" type="button">保存笔记</button></div></div>
@@ -145,11 +145,7 @@
                     <div class="note-editor-hint">选中文字后使用工具条格式化。图片会保存到本机，公式可以直接输入 $...$ 或从题目解析复制。</div>
                   </div>
                   <div class="note-markdown-pane" id="note-markdown-pane" hidden><div class="markdown-shortcuts"><button type="button" data-markdown-insert="# ">标题</button><button type="button" data-markdown-insert="- ">列表</button><button type="button" data-markdown-insert="**粗体**">粗体</button><button type="button" data-markdown-insert="$$\n\n$$">公式块</button><button type="button" data-markdown-insert="（1） ">小题</button></div><textarea id="note-markdown-editor" rows="10" placeholder="用 Markdown 快速整理。公式使用 $...$ 或 $$...$$。"></textarea></div>
-                  <div class="note-tools-grid">
-                    <section class="note-tool-panel handwriting-panel"><div class="note-tool-head"><div><b>手写过程</b><small>触控笔、手写板和鼠标均可</small></div><div><button class="note-tool-button" id="handwriting-eraser" type="button">橡皮</button><button class="note-tool-button" id="handwriting-clear" type="button">清空</button></div></div><canvas id="note-handwriting-canvas" aria-label="手写笔记画布"></canvas></section>
-                    <section class="note-tool-panel mindmap-panel"><div class="note-tool-head"><div><b>思维导图</b><small>把模板拆成可回忆的节点</small></div><button class="note-tool-button" id="mindmap-add" type="button">添加分支</button></div><div class="mindmap-fields"><label>中心<input id="note-mindmap-center" type="text" placeholder="主题" /></label><div id="note-mindmap-branches"></div></div><div class="mindmap-preview" id="note-mindmap-preview"><span>填写中心和分支后预览</span></div></section>
-                  </div>
-                  <div class="note-history-row"><div><span class="eyebrow">VERSION HISTORY</span><span id="note-history-summary">保存后可以回溯旧版本</span></div><div class="note-history-list" id="note-history-list"></div></div>
+                  <div class="note-history-row"><div><span class="template-section-label">版本历史</span><span id="note-history-summary">保存后可以回溯旧版本</span></div><div class="note-history-list" id="note-history-list"></div></div>
                 </div>
               </section>
             </main>
