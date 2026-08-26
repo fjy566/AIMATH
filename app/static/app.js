@@ -97,13 +97,39 @@ function renderMarkdown(source) {
   });
 
   const inline = (line) => {
-    let html = escapeHtml(line);
+    const media = [];
+    const prepared = String(line || "")
+      .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (raw, alt, url, title) => {
+        const safe = safeNoteUrl(url);
+        if (!safe) return raw;
+        const token = `MARKDOWNMEDIATOKEN${media.length}END`;
+        media.push({
+          token,
+          html: `<img src="${escapeAttr(safe)}" alt="${escapeAttr(alt)}"${title ? ` title="${escapeAttr(title)}"` : ""} />`,
+        });
+        return token;
+      })
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (raw, label, url) => {
+        const safe = safeNoteUrl(url);
+        if (!safe) return raw;
+        const token = `MARKDOWNMEDIATOKEN${media.length}END`;
+        media.push({
+          token,
+          html: `<a href="${escapeAttr(safe)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
+        });
+        return token;
+      });
+    let html = escapeHtml(prepared);
     html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/==(.+?)==/g, "<mark>$1</mark>");
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+    html = html.replace(/__([^_\n]+?)__/g, "<u>$1</u>");
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     for (const formula of formulas) {
       const math = renderFormula(formula.tex, formula.display);
       html = html.replaceAll(formula.token, math);
     }
+    for (const item of media) html = html.replaceAll(item.token, item.html);
     return html;
   };
 
@@ -427,7 +453,7 @@ function answerStructureMarkup(editorId, questionType) {
   </div>`;
 }
 
-function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill") {
+function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill", includeText = true) {
   if (readonly) return `<p class="formula-readonly-note">本题已提交。可查看公式，但不能修改。</p>`;
   return `<div class="answer-toolbox">
     <div class="answer-tool-row">
@@ -437,17 +463,22 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill")
         ${questionType === "solution" ? `<button type="button" class="answer-tool-toggle" data-answer-structure-toggle aria-expanded="false" aria-controls="${escapeAttr(editorId)}-answer-structure"><span>☷</span> 作答结构</button>` : ""}
       </div>
     </div>
-    <div class="answer-format-bar" role="toolbar" aria-label="文字作答工具">
+    ${includeText ? `<div class="answer-format-bar" role="toolbar" aria-label="文字作答工具">
       <button type="button" data-editor-command="bold" title="加粗 Ctrl+B"><b>B</b></button>
       <button type="button" data-editor-command="italic" title="斜体 Ctrl+I"><i>I</i></button>
+      <button type="button" data-editor-command="underline" title="下划线 Ctrl+U"><u>U</u></button>
+      <button type="button" data-editor-command="heading" title="小标题">标题</button>
+      <button type="button" data-editor-command="highlight" title="高亮重点">高亮</button>
       <button type="button" data-editor-command="link" title="插入链接 Ctrl+K">链接</button>
       <button type="button" data-editor-insert="quote" title="插入引用">引用</button>
       <button type="button" data-editor-insert="point" title="插入分点">分点</button>
       <button type="button" data-editor-insert="subquestion" title="插入小题">小题</button>
+      <button type="button" data-editor-insert="unordered" title="插入无序列表">列表</button>
+      <button type="button" data-editor-insert="ordered" title="插入有序列表">编号</button>
       <span class="answer-format-spacer"></span>
       <button type="button" data-editor-command="undo" title="撤销 Ctrl+Z">撤销</button>
       <button type="button" data-editor-command="redo" title="重做 Ctrl+Y">重做</button>
-    </div>
+    </div>` : ""}
     <div class="formula-tools-panel" id="${escapeAttr(editorId)}-formula-tools" data-formula-tools-panel hidden>
       <div class="formula-beginner-head"><strong>先选一类，再插入公式</strong><span>插入后可以继续修改字母和数字</span></div>
       <div role="toolbar" aria-label="常用数学公式工具">${formulaGroupsMarkup(editorId, BEGINNER_FORMULA_GROUPS)}</div>
@@ -527,6 +558,17 @@ function insertFormulaSnippet(field, button) {
   field.focus();
   field.setSelectionRange(insertAt + selectionAt, insertAt + selectionEnd);
   field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function insertFormulaIntoContentEditable(editor, button) {
+  if (!editor) return;
+  const tex = button.dataset.formulaTex || "";
+  const wrapper = button.dataset.formulaWrap === "display" ? "$$" : "$";
+  editor.focus();
+  restoreNoteSelection();
+  document.execCommand("insertText", false, `${wrapper}${tex}${wrapper}`);
+  state.noteSavedRange = null;
+  markNoteDirty();
 }
 
 function nextStructuredNumber(value, pattern) {
@@ -753,6 +795,14 @@ function runTextEditorCommand(field, command) {
     wrapTextareaSelection(field, marks[0], marks[1], marks[2]);
     return;
   }
+  if (command === "heading") {
+    insertTextAtSelection(field, "\n### ");
+    return;
+  }
+  if (command === "highlight") {
+    wrapTextareaSelection(field, "==", "==", "重点内容");
+    return;
+  }
   if (command === "undo" || command === "redo") {
     const history = ensureTextEditorHistory(field);
     if (!history) return;
@@ -807,22 +857,34 @@ function bindAnswerEditors(root = document) {
   $$('[data-formula-editor]', root).forEach((editor) => {
     if (editor.dataset.bound === "true") return;
     editor.dataset.bound = "true";
-    const field = editor.querySelector("[data-formula-input]");
+    const editorId = editor.dataset.formulaEditor || "";
+    const field = editor.querySelector("[data-formula-input]")
+      || (editorId === "note-markdown" ? $("note-markdown-editor") : null);
+    const richNoteTarget = editorId === "note-rich" ? $("note-rich-editor") : null;
     const preview = editor.querySelector("[data-formula-preview]");
     ensureTextEditorHistory(field);
     const update = () => {
-      rememberTextEditorChange(field);
-      if (preview) preview.innerHTML = renderAnswerPreview(field.value);
-      updateEditorCount(editor, field?.value || "");
+      if (field) rememberTextEditorChange(field);
+      if (preview && field) preview.innerHTML = renderAnswerPreview(field.value);
+      if (richNoteTarget) {
+        renderNoteRichPreview();
+        updateNoteEditorStats();
+      }
+      updateEditorCount(editor, field?.value || richNoteTarget?.innerText || "");
       if (state.practiceSession) updatePracticeSessionStatus();
     };
     field?.addEventListener("input", update);
-    $$('[data-formula-tool]', editor).forEach((button) => button.addEventListener("click", () => insertFormulaSnippet(field, button)));
+    $$('[data-formula-tool]', editor).forEach((button) => button.addEventListener("click", () => {
+      if (field) insertFormulaSnippet(field, button);
+      else if (richNoteTarget) insertFormulaIntoContentEditable(richNoteTarget, button);
+    }));
     $$('[data-editor-command]', editor).forEach((button) => button.addEventListener("click", () => runTextEditorCommand(field, button.dataset.editorCommand)));
     $$('[data-editor-insert]', editor).forEach((button) => button.addEventListener("click", () => {
       const action = button.dataset.editorInsert;
       if (action === "point" || action === "subquestion") insertAnswerStructure(field, action);
       else if (action === "quote") insertTextAtSelection(field, "\n> ");
+      else if (action === "unordered") insertTextAtSelection(field, "\n- ");
+      else if (action === "ordered") insertTextAtSelection(field, "\n1. ");
     }));
     field?.addEventListener("keydown", (event) => {
       const handled = handleStructuredTextKeydown(field, event);
@@ -866,6 +928,79 @@ function typeLabel(type) {
 
 function conceptName(id) {
   return state.concepts.find((concept) => concept.id === id)?.name || id;
+}
+
+function workbenchConcept(conceptId) {
+  return (state.workbenchCatalog || []).find((concept) => concept.id === conceptId) || null;
+}
+
+function subtypeDescriptor(subtypeId) {
+  for (const concept of state.workbenchCatalog || []) {
+    const subtype = (concept.subtypes || []).find((item) => item.id === subtypeId);
+    if (subtype) return { ...subtype, concept_id: subtype.concept_id || concept.id, concept_name: concept.name };
+  }
+  return null;
+}
+
+function subtypeName(subtypeId) {
+  return subtypeDescriptor(subtypeId)?.name || subtypeId || "未细分";
+}
+
+function questionSubtypeLabels(question) {
+  if (Array.isArray(question?.subtype_labels) && question.subtype_labels.length) return question.subtype_labels;
+  return (question?.subtype_ids || []).map((id) => ({ id, name: subtypeName(id) }));
+}
+
+function questionSubtypeMarkup(question) {
+  const labels = questionSubtypeLabels(question);
+  if (!labels.length) return `<span class="concept-label classification-unassigned">待纠正分类</span>`;
+  return labels.map((item) => `<span class="concept-label subtype-label" title="${escapeAttr(item.summary || item.name || "")}">${escapeHtml(item.name || subtypeName(item.id))}</span>`).join("");
+}
+
+function math2ConceptOptions(selected = "") {
+  return (state.concepts || []).map((concept) => `<option value="${escapeAttr(concept.id)}" ${concept.id === selected ? "selected" : ""}>${escapeHtml(concept.name)}</option>`).join("");
+}
+
+function subtypeOptionsMarkup(conceptId = "", selected = "", includeAll = false) {
+  const groups = conceptId
+    ? [workbenchConcept(conceptId)].filter(Boolean)
+    : (state.workbenchCatalog || []);
+  const options = groups.flatMap((concept) => (concept.subtypes || []).map((item) => ({ ...item, concept_name: concept.name })));
+  const prefix = includeAll ? `<option value="">全部细分题型</option>` : `<option value="">选择具体题型</option>`;
+  const body = options.map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === selected ? "selected" : ""}>${escapeHtml(conceptId ? item.name : `${item.concept_name} · ${item.name}`)}</option>`).join("");
+  return prefix + body;
+}
+
+function classificationEditorMarkup(question, location = "row") {
+  const concepts = questionConceptLabels(question);
+  const math2Concept = concepts.find((item) => item.scope === "math2")?.id || question.concept_ids?.[0] || "";
+  const subtypeId = questionSubtypeLabels(question)[0]?.id || "";
+  const sourceLabel = question.classification_source === "user-correction" ? "用户纠正" : question.classification_source === "unclassified" ? "待分类" : "规则分类";
+  return `<div class="classification-control ${location === "modal" ? "classification-control-modal" : ""}" data-classification-question="${escapeAttr(question.id)}">
+    <div class="classification-summary"><span class="classification-source">${escapeHtml(sourceLabel)}</span><span class="classification-summary-text">${escapeHtml(subtypeName(subtypeId))}</span><button type="button" class="text-button classification-open" data-open-correction>纠正分类</button></div>
+    <div class="classification-editor" data-correction-panel hidden>
+      <div class="classification-editor-head"><strong>重新归类</strong><span>只影响你的筛选、训练和推荐，不改动原始真题。</span></div>
+      <div class="classification-fields"><label>知识块<select data-correction-concept>${math2ConceptOptions(math2Concept)}</select></label><label>具体题型<select data-correction-subtype>${subtypeOptionsMarkup(math2Concept, subtypeId)}</select></label></div>
+      <textarea data-correction-note rows="2" maxlength="240" placeholder="可选：写下为什么这样归类，方便以后复核。">${escapeHtml(question.classification_note || "")}</textarea>
+      <div class="classification-editor-actions"><button type="button" class="secondary-button classification-cancel" data-cancel-correction>取消</button><button type="button" class="primary-button classification-save" data-save-classification>保存分类</button></div>
+      <p class="classification-status" data-classification-status></p>
+    </div>
+  </div>`;
+}
+
+function populateSubtypeFilter() {
+  const select = $("filter-subtype");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = subtypeOptionsMarkup($("filter-concept")?.value || "", current, true);
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+  else select.value = "";
+}
+
+function populateCorrectionSubtype(select, conceptId, selected = "") {
+  if (!select) return;
+  select.innerHTML = subtypeOptionsMarkup(conceptId, selected, false);
+  if (![...select.options].some((option) => option.value === selected)) select.value = "";
 }
 
 function questionConceptLabels(question) {
@@ -1220,7 +1355,7 @@ function renderWorkbenchSubtypeTabs() {
   const count = $("workbench-subtype-count");
   if (count) count.textContent = `${subtypes.length} 类具体考法`;
   root.innerHTML = subtypes.length
-    ? subtypes.map((item) => `<button type="button" class="workbench-type-tab ${item.id === state.workbenchSubtypeId ? "is-active" : ""}" data-workbench-subtype="${escapeAttr(item.id)}" role="tab" aria-selected="${item.id === state.workbenchSubtypeId ? "true" : "false"}"><strong>${escapeHtml(item.name)}</strong><small>${item.matched_question_count || 0} 道真题命中</small></button>`).join("")
+    ? subtypes.map((item) => `<button type="button" class="workbench-type-tab ${item.id === state.workbenchSubtypeId ? "is-active" : ""}" data-workbench-subtype="${escapeAttr(item.id)}" role="tab" aria-selected="${item.id === state.workbenchSubtypeId ? "true" : "false"}"><strong>${escapeHtml(item.name)}</strong><small>${item.matched_question_count || 0} 道真题命中 · 已做 ${item.attempted_question_count || 0} 道</small></button>`).join("")
     : `<div class="loading-card">当前知识块暂无细分题型。</div>`;
   $$('[data-workbench-subtype]', root).forEach((button) => button.addEventListener("click", () => selectWorkbenchSubtype(button.dataset.workbenchSubtype)));
 }
@@ -1233,9 +1368,9 @@ function workbenchQuestionMarkup(item, label, variant = false) {
   const yearAndNumber = `${question.year} 年第 ${question.number} 题`;
   const solutionHint = variant ? "完成后再展开" : "来源答案与完整解析";
   return `<article class="workbench-question-card ${variant ? "variant-question" : "example-question"}">
-    <header class="workbench-question-head"><div class="workbench-question-identity"><span>${escapeHtml(label)}</span><strong>${escapeHtml(yearAndNumber)}</strong></div><div class="workbench-question-badges"><span class="difficulty-pill ${escapeAttr(question.difficulty_band || "other")}">${escapeHtml(question.difficulty_label || "待分层")}</span><span class="type-pill">${escapeHtml(typeLabel(question.question_type))}</span></div></header>
+    <header class="workbench-question-head"><div class="workbench-question-identity"><span>${escapeHtml(label)}</span><strong>${escapeHtml(yearAndNumber)}</strong></div><div class="workbench-question-badges"><span class="difficulty-pill ${escapeAttr(question.difficulty_band || "other")}">${escapeHtml(question.difficulty_label || "待分层")}</span><span class="type-pill">${escapeHtml(typeLabel(question.question_type))}</span>${questionAttemptMarkup(question, true)}</div></header>
     <div class="workbench-study-grid">
-      <section class="workbench-question-pane" aria-label="${escapeAttr(label)}题目"><div class="workbench-pane-head"><strong>题目</strong><span>完整题面</span></div><div class="workbench-question-body markdown-body">${renderMarkdown(question.question_markdown || "")}</div><footer class="workbench-question-foot"><span>${escapeHtml(item.source_scope || (question.concept_labels || []).map((concept) => concept.name).join("、") || "真实题库")}</span><button type="button" class="text-button" data-question-id="${escapeAttr(question.id)}">进入作答</button></footer></section>
+      <section class="workbench-question-pane" aria-label="${escapeAttr(label)}题目"><div class="workbench-pane-head"><strong>题目</strong><span>完整题面</span></div><div class="workbench-question-body markdown-body">${renderMarkdown(question.question_markdown || "")}</div><footer class="workbench-question-foot"><span>${escapeHtml(item.source_scope || (question.concept_labels || []).map((concept) => concept.name).join("、") || "真实题库")}</span>${questionAttemptMarkup(question, true)}<button type="button" class="text-button" data-question-id="${escapeAttr(question.id)}">进入作答</button></footer></section>
       <aside class="workbench-solution-pane" aria-label="${escapeAttr(label)}答案与解析"><details class="workbench-solution-details" ${variant ? "" : "open"}><summary><span><strong>答案与解析</strong><small>${escapeHtml(solutionHint)}</small></span><b aria-hidden="true">展开</b></summary><div class="workbench-solution-content">${answer ? `<div class="workbench-answer-line"><b>答案</b><span class="markdown-body">${renderMarkdown(answer)}</span></div>` : ""}<div class="workbench-analysis-body markdown-body">${renderMarkdown(analysis)}</div></div></details></aside>
     </div>
   </article>`;
@@ -1271,10 +1406,10 @@ function renderWorkbenchTemplate() {
     return `<button type="button" class="workbench-variant-tab ${index === state.workbenchVariantIndex ? "is-active" : ""}" data-workbench-variant="${index}" role="tab" aria-selected="${index === state.workbenchVariantIndex ? "true" : "false"}"><span>变式 ${index + 1}</span><small>${escapeHtml(question.year || "")} 年第 ${escapeHtml(question.number || "")} 题</small></button>`;
   }).join("");
   const variantViewer = activeVariant ? workbenchQuestionMarkup(activeVariant, `变式 ${state.workbenchVariantIndex + 1}`, true) : `<div class="loading-card">暂无可用变式题。</div>`;
-  const sourceNote = template.example_source === "同知识块补充"
-    ? "当前细分题型的直接命中较少，例题或变式使用同知识块真题补充，并在题卡上明确标注。"
-    : "例题优先使用细分题型直接命中的真题，变式按难度与年份分散。";
-  card.innerHTML = `<header class="workbench-template-head"><div><span class="workbench-template-path">${escapeHtml(template.subject)} / ${escapeHtml(template.concept_name)}</span><h3>${escapeHtml(template.subtype_name)}</h3><p>${escapeHtml(template.subtype_summary || "")} ${sourceNote}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></header>${summaryMarkup}<section class="workbench-example-section"><div class="workbench-section-head"><div><h4>先看一道完整例题</h4><p>题目在左，来源答案与解析在右，可以进入作答区独立完成。</p></div><span>完整题面与来源解析</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</section><section class="workbench-variants-section"><div class="workbench-section-head"><div><h4>再做变式练习</h4><p>一次只展示一道，避免题面堆叠。完成后再展开解析。</p></div><span>${template.variant_count || 0} 道真实题</span></div><div class="workbench-variant-switcher" role="tablist" aria-label="选择变式题">${variantTabs}</div><div class="workbench-variant-viewer">${variantViewer}</div>${variantItems.length > 1 ? `<nav class="workbench-variant-nav" aria-label="切换变式题"><button type="button" class="quiet-button" id="workbench-variant-prev" ${state.workbenchVariantIndex === 0 ? "disabled" : ""}>上一道</button><span>${state.workbenchVariantIndex + 1} / ${variantItems.length}</span><button type="button" class="secondary-button" id="workbench-variant-next" ${state.workbenchVariantIndex === variantItems.length - 1 ? "disabled" : ""}>下一道</button></nav>` : ""}</section>`;
+  const sourceNote = template.example_source === "无直接题目"
+    ? "当前题库没有找到可核验的该细分题型真题，不展示其他题型作为替代。"
+    : "例题与变式只使用细分题型直接命中的真实题目。";
+  card.innerHTML = `<header class="workbench-template-head"><div><span class="workbench-template-path">${escapeHtml(template.subject)} / ${escapeHtml(template.concept_name)}</span><h3>${escapeHtml(template.subtype_name)}</h3><p>${escapeHtml(template.subtype_summary || "")} ${sourceNote}</p></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}<button type="button" class="secondary-button" id="refresh-workbench-variants">换一组题</button><button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></header>${summaryMarkup}<section class="workbench-example-section"><div class="workbench-section-head"><div><h4>先看一道完整例题</h4><p>题目在左，来源答案与解析在右，可以进入作答区独立完成。</p></div><span>完整题面与来源解析</span></div>${workbenchQuestionMarkup(template.example, "典型例题")}</section><section class="workbench-variants-section"><div class="workbench-section-head"><div><h4>再做变式练习</h4><p>一次只展示一道，换题会优先避开当前例题和变式，避免来回重复。</p></div><span>${template.variant_count || 0} 道真实题</span></div><div class="workbench-variant-switcher" role="tablist" aria-label="选择变式题">${variantTabs}</div><div class="workbench-variant-viewer">${variantViewer}</div>${variantItems.length > 1 ? `<nav class="workbench-variant-nav" aria-label="切换变式题"><button type="button" class="quiet-button" id="workbench-variant-prev" ${state.workbenchVariantIndex === 0 ? "disabled" : ""}>上一道</button><span>${state.workbenchVariantIndex + 1} / ${variantItems.length}</span><button type="button" class="secondary-button" id="workbench-variant-next" ${state.workbenchVariantIndex === variantItems.length - 1 ? "disabled" : ""}>下一道</button></nav>` : ""}</section>`;
   bindQuestionOpeners(card);
   if (state.workbenchEditingTemplate) bindTemplateEditor(card);
   $$('[data-workbench-variant]', card).forEach((button) => button.addEventListener("click", () => {
@@ -1283,6 +1418,18 @@ function renderWorkbenchTemplate() {
   }));
   $("workbench-variant-prev")?.addEventListener("click", () => { state.workbenchVariantIndex -= 1; renderWorkbenchTemplate(); });
   $("workbench-variant-next")?.addEventListener("click", () => { state.workbenchVariantIndex += 1; renderWorkbenchTemplate(); });
+  $("refresh-workbench-variants")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      state.workbenchVariantIndex = 0;
+      await loadWorkbenchTemplate(true);
+      showToast("已换一组真实例题与变式题。", false);
+    } catch (error) {
+      showToast(`换题失败：${error.message}`, true);
+      button.disabled = false;
+    }
+  });
   $("edit-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = true; renderWorkbenchTemplate(); });
   $("cancel-workbench-template")?.addEventListener("click", () => { state.workbenchEditingTemplate = false; renderWorkbenchTemplate(); });
   $("save-workbench-template")?.addEventListener("click", saveWorkbenchTemplate);
@@ -1372,12 +1519,18 @@ async function selectWorkbenchSubtype(subtypeId) {
   await loadWorkbenchTemplate();
 }
 
-async function loadWorkbenchTemplate() {
+async function loadWorkbenchTemplate(forceRefresh = false) {
   if (!state.workbenchConceptId || !state.workbenchSubtypeId) return;
   const card = $("workbench-template-card");
   card.innerHTML = `<div class="workbench-template-skeleton"><span></span><span></span><span></span></div>`;
   try {
-    const payload = await fetchJSON(`/api/workbench?concept_id=${encodeURIComponent(state.workbenchConceptId)}&subtype_id=${encodeURIComponent(state.workbenchSubtypeId)}&user_id=${encodeURIComponent(state.userId)}`);
+    const params = new URLSearchParams({ concept_id: state.workbenchConceptId, subtype_id: state.workbenchSubtypeId, user_id: state.userId });
+    if (forceRefresh) {
+      params.set("refresh", "true");
+      const currentIds = [state.workbenchTemplate?.example?.question?.id, ...(state.workbenchTemplate?.variants || []).map((item) => item.question?.id)].filter(Boolean);
+      currentIds.forEach((id) => params.append("exclude_question_ids", id));
+    }
+    const payload = await fetchJSON(`/api/workbench?${params}`);
     state.workbenchTemplate = payload.template;
     renderWorkbenchTemplate();
   } catch (error) {
@@ -1529,7 +1682,7 @@ function noteInlineMarkdownToHtml(value) {
   });
   html = html.replace(/\x60([^\x60]+)\x60/g, "<code>$1</code>");
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/__([^_]+?)__/g, "<strong>$1</strong>");
+  html = html.replace(/__([^_]+?)__/g, "<u>$1</u>");
   html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   return html;
 }
@@ -1854,7 +2007,7 @@ async function loadWorkbench() {
   applyWorkbenchTheme();
   try {
     if (!state.workbenchCatalog.length) {
-      const payload = await fetchJSON("/api/workbench");
+      const payload = await fetchJSON(`/api/workbench?user_id=${encodeURIComponent(state.userId)}`);
       state.workbenchCatalog = payload.concepts || [];
       state.workbenchConceptId = state.workbenchConceptId || state.workbenchCatalog[0]?.id || "";
       renderWorkbenchConcepts();
@@ -1887,6 +2040,13 @@ async function uploadWorkbenchNoteImage(file) {
 }
 
 function bindNoteEditor() {
+  const richFormulaToolbar = $("note-rich-formula-toolbar");
+  const markdownFormulaToolbar = $("note-markdown-formula-toolbar");
+  const sharedFormulaEditor = (editorId) => `<div class="formula-editor note-formula-editor" data-formula-editor="${escapeAttr(editorId)}">${formulaToolbarMarkup(editorId, false, "fill", false)}</div>`;
+  if (richFormulaToolbar) richFormulaToolbar.innerHTML = sharedFormulaEditor("note-rich");
+  if (markdownFormulaToolbar) markdownFormulaToolbar.innerHTML = sharedFormulaEditor("note-markdown");
+  bindAnswerEditors(richFormulaToolbar || document);
+  bindAnswerEditors(markdownFormulaToolbar || document);
   ensureTextEditorHistory($("note-markdown-editor"));
   $$('[data-note-mode]').forEach((button) => button.addEventListener("click", () => setNoteMode(button.dataset.noteMode)));
   $$('[data-note-command]').forEach((button) => button.addEventListener("mousedown", (event) => event.preventDefault()));
@@ -2077,6 +2237,11 @@ function renderAnalytics() {
       </div>`).join("")
     : `<div class="analytics-empty">题型数据读取中……</div>`;
 
+  const subtypeRows = data.subtypes || [];
+  $("analytics-subtypes").innerHTML = subtypeRows.length
+    ? `<div class="analytics-subtype-row analytics-subtype-header"><span>具体考法</span><span>所属知识块</span><span>题库 / 已做</span><span>作答次数</span><span>正确次数</span><span>正确率</span></div>${subtypeRows.map((row) => `<div class="analytics-subtype-row"><span><strong>${escapeHtml(row.name || "未分类")}</strong><small>${escapeHtml(row.summary || "")}</small></span><span>${escapeHtml(conceptName(row.concept_id) || "数学二")}</span><span>${row.question_count || 0} / ${row.attempted_question_count || 0}</span><span>${row.attempts || 0}</span><span>${row.correct || 0}</span><span>${analyticsPercent(row.accuracy)}</span></div>`).join("")}`
+    : `<div class="analytics-empty">完成具体题型训练后，这里会显示每个考法的作答次数和正确次数。</div>`;
+
   const concepts = data.concepts || [];
   $("analytics-concepts").innerHTML = concepts.length
     ? `<div class="analytics-concepts-row analytics-concepts-header"><span>知识块</span><span>掌握度</span><span>题库覆盖</span><span>正确率</span><span>得分率</span><span>平均用时</span></div>${concepts.map((row) => `<div class="analytics-concepts-row"><span class="analytics-concept-name"><strong>${escapeHtml(row.name || "未分类")}</strong><small>${escapeHtml(row.subject || row.scope_label || "")}${row.scope === "out-of-syllabus" ? " · 原题保留" : ""}</small></span><strong>${formatScore(row.mastery)}%</strong><span>${row.attempted_question_count || 0} / ${row.question_count || 0}</span><span>${analyticsPercent(row.accuracy)}</span><span>${analyticsPercent(row.score_rate)}</span><span>${analyticsDuration(row.avg_seconds)}</span></div>`).join("")}`
@@ -2129,12 +2294,28 @@ function questionDifficultyMarkup(question) {
   return `<span class="difficulty-pill ${escapeAttr(band)}">${escapeHtml(label)}</span>`;
 }
 
+function questionAttemptMarkup(question, compact = false) {
+  const summary = question?.attempt_summary || {};
+  const attempts = Number(summary.attempts || 0);
+  const correct = Number(summary.correct || 0);
+  if (!attempts) {
+    return compact
+      ? `<span class="attempt-status attempt-status-unseen">未做</span>`
+      : `<div class="question-attempt-summary attempt-summary-unseen"><span class="attempt-status attempt-status-unseen">未做</span><span>还没有作答记录</span></div>`;
+  }
+  const lastLabel = summary.last_status_label || "已记录";
+  const content = `<span class="attempt-status attempt-status-done">已做</span><span>作答 ${attempts} 次</span><span>正确 ${correct} 次</span><span>最近：${escapeHtml(lastLabel)}</span>`;
+  return compact
+    ? `<span class="question-attempt-summary compact-attempt-summary">${content}</span>`
+    : `<div class="question-attempt-summary">${content}</div>`;
+}
+
 function renderQuestionMini(question) {
   return `<article class="question-mini" data-question-id="${escapeAttr(question.id)}">
     <div class="question-mini-ref"><span>${escapeHtml(question.year)} / Q${escapeHtml(question.number)}</span><span class="question-mini-meta">${questionDifficultyMarkup(question)}<span>${formatScore(question.points)}分</span></span></div>
     <div class="question-mini-preview markdown-body">${renderQuestionPreview(question.question_markdown, 300) || `<p class="muted-copy">完整题目</p>`}</div>
     <p class="question-concepts">${questionConceptMarkup(question)}</p>
-    <div class="question-mini-foot"><span class="type-pill ${question.question_type === "solution" ? "solution" : ""}">${typeLabel(question.question_type)}</span><span>打开作答 →</span></div>
+    <div class="question-mini-foot"><span class="type-pill ${question.question_type === "solution" ? "solution" : ""}">${typeLabel(question.question_type)}</span>${questionAttemptMarkup(question, true)}<span>打开作答 →</span></div>
   </article>`;
 }
 
@@ -2152,6 +2333,7 @@ async function loadBaseData() {
     fetchJSON(`/api/practice/next?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二&limit=8`),
     fetchJSON("/api/concepts"),
     fetchJSON("/api/exams"),
+    fetchJSON(`/api/workbench?user_id=${encodeURIComponent(state.userId)}`),
     fetchJSON("/api/llm/settings"),
     fetchJSON("/api/server/settings"),
   ]);
@@ -2160,8 +2342,9 @@ async function loadBaseData() {
   state.nextQuestions = results[5].items || [];
   state.concepts = results[6] || [];
   state.exams = results[7] || [];
-  state.settings = results[8] || {};
-  state.serverSettings = results[9] || {};
+  state.workbenchCatalog = results[8]?.concepts || [];
+  state.settings = results[9] || {};
+  state.serverSettings = results[10] || {};
   populateFilters();
   renderModelStatus();
   renderOverview();
@@ -2194,6 +2377,7 @@ function populateFilters() {
   const currentConcept = conceptSelect.value;
   conceptSelect.innerHTML = `<option value="">全部知识块</option>${conceptOptions}`;
   conceptSelect.value = currentConcept;
+  populateSubtypeFilter();
 }
 
 async function loadLibrary() {
@@ -2204,23 +2388,78 @@ async function loadLibrary() {
   if ($("filter-year").value) params.set("year", $("filter-year").value);
   if ($("filter-type").value) params.set("question_type", $("filter-type").value);
   if ($("filter-concept").value) params.set("concept_id", $("filter-concept").value);
+  if ($("filter-subtype").value) params.set("subtype_id", $("filter-subtype").value);
   if ($("filter-scope").value) params.set("scope", $("filter-scope").value);
+  params.set("user_id", state.userId);
   $("question-list").innerHTML = `<div class="loading-card">正在加载真题……</div>`;
   try {
     const payload = await fetchJSON(`/api/questions?${params}`);
     $("archive-count").textContent = payload.total;
     $("question-list").innerHTML = payload.items.length ? payload.items.map(renderQuestionRow).join("") : `<div class="loading-card">没有匹配的题目。</div>`;
     bindQuestionOpeners($("question-list"));
+    bindClassificationControls($("question-list"));
     state.libraryLoaded = true;
   } catch (error) {
     $("question-list").innerHTML = `<div class="loading-card">读取失败：${escapeHtml(error.message)}</div>`;
   }
 }
 
+function bindClassificationControls(root = document) {
+  $$('[data-classification-question]', root).forEach((control) => {
+    if (control.dataset.classificationBound === "true") return;
+    control.dataset.classificationBound = "true";
+    const panel = control.querySelector("[data-correction-panel]");
+    const open = control.querySelector("[data-open-correction]");
+    const cancel = control.querySelector("[data-cancel-correction]");
+    const concept = control.querySelector("[data-correction-concept]");
+    const subtype = control.querySelector("[data-correction-subtype]");
+    const status = control.querySelector("[data-classification-status]");
+    open?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (panel) panel.hidden = false;
+      open?.setAttribute("aria-expanded", "true");
+    });
+    cancel?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (panel) panel.hidden = true;
+      open?.setAttribute("aria-expanded", "false");
+    });
+    [concept, subtype].forEach((element) => element?.addEventListener("click", (event) => event.stopPropagation()));
+    concept?.addEventListener("change", (event) => {
+      event.stopPropagation();
+      populateCorrectionSubtype(subtype, concept.value);
+    });
+    status?.addEventListener("click", (event) => event.stopPropagation());
+    control.querySelector("[data-correction-note]")?.addEventListener("click", (event) => event.stopPropagation());
+    control.querySelector("[data-save-classification]")?.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const button = event.currentTarget;
+      if (!concept?.value || !subtype?.value) {
+        if (status) status.textContent = "请先选择知识块和具体题型。";
+        return;
+      }
+      button.disabled = true;
+      if (status) status.textContent = "正在保存分类……";
+      try {
+        await fetchJSON(`/api/questions/${encodeURIComponent(control.dataset.classificationQuestion)}/classification`, {
+          ...jsonOptions({ user_id: state.userId, concept_id: concept.value, subtype_id: subtype.value, note: control.querySelector("[data-correction-note]")?.value || "" }),
+          method: "PUT",
+        });
+        showToast("分类已保存，后续筛选和训练会使用新分类。", false);
+        if (control.closest("#question-list")) await loadLibrary();
+        else if (state.currentQuestion?.id === control.dataset.classificationQuestion) await openQuestion(control.dataset.classificationQuestion);
+      } catch (error) {
+        if (status) status.textContent = `保存失败：${error.message}`;
+        button.disabled = false;
+      }
+    });
+  });
+}
+
 function renderQuestionRow(question) {
   return `<article class="question-row" data-question-id="${escapeAttr(question.id)}">
     <div class="question-row-ref">${escapeHtml(question.year)} 年<br />第 ${escapeHtml(question.number)} 题</div>
-    <div class="question-row-content"><div class="question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 460) || `<p class="muted-copy">完整题目</p>`}</div><p class="question-concepts">${questionConceptMarkup(question)}</p></div>
+    <div class="question-row-content"><div class="question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 460) || `<p class="muted-copy">完整题目</p>`}</div><p class="question-concepts">${questionConceptMarkup(question)}${questionSubtypeMarkup(question)}</p>${questionAttemptMarkup(question)}${classificationEditorMarkup(question)}</div>
     <div class="question-row-meta"><span class="type-pill ${question.question_type === "solution" ? "solution" : ""}">${typeLabel(question.question_type)}</span><small>${formatScore(question.points)} 分</small></div>
   </article>`;
 }
@@ -2242,6 +2481,20 @@ async function loadBlocks() {
 function renderFullBlock(block) {
   const concept = block.concept || {};
   const value = Math.max(2, Math.min(98, Number(concept.mastery ?? 22)));
+  const subtypeCards = (block.subtypes || []).map((item) => {
+    const available = Number(item.question_count || 0);
+    const attempted = Number(item.attempted_question_count || 0);
+    const correct = Number(item.correct || 0);
+    const sizeLabel = available >= 15 ? "15 题" : `全部 ${available} 题`;
+    const accuracy = item.accuracy == null ? "暂无正确率" : `${formatScore(item.accuracy)}% 正确`;
+    const formats = Object.entries(item.question_format_counts || {}).filter(([, count]) => count).map(([format, count]) => `${typeLabel(format)} ${count}`).join(" · ");
+    return `<article class="block-type-card block-subtype-card">
+      <div class="block-type-head"><div><span class="eyebrow">具体考法</span><h4>${escapeHtml(item.name)}</h4></div><span class="block-type-count">${available}题库</span></div>
+      <p class="block-subtype-summary">${escapeHtml(item.summary || "按这个具体考法集中训练")} </p>
+      <p class="block-subtype-stats"><strong>${attempted} / ${available} 题已做</strong> · ${item.attempts || 0} 次作答 · ${correct} 次正确 · ${escapeHtml(item.status || "待训练")}<br />${escapeHtml(accuracy)} · ${escapeHtml(formats || "题型待标注")}</p>
+      <button class="secondary-button block-start-button" data-start-practice data-concept-id="${escapeAttr(concept.id || "")}" data-question-type="" data-subtype-id="${escapeAttr(item.id)}">开始${escapeHtml(sizeLabel)}训练 →</button>
+    </article>`;
+  }).join("");
   const typeCards = (block.question_types || []).map((item) => {
     const available = Number(item.question_count || 0);
     const sizeLabel = available >= 15 ? "15 题" : `全部 ${available} 题`;
@@ -2252,19 +2505,19 @@ function renderFullBlock(block) {
       <button class="secondary-button block-start-button" data-start-practice data-concept-id="${escapeAttr(concept.id || "")}" data-question-type="${escapeAttr(item.question_type)}">开始${escapeHtml(sizeLabel)}训练 →</button>
     </article>`;
   }).join("");
-  const samples = (block.questions || []).slice(0, 3).map((question, index) => `<div class="block-question" data-question-id="${escapeAttr(question.id)}"><span class="block-question-number">0${index + 1}</span><div class="block-question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 260)}</div><small>${questionDifficultyMarkup(question)} ${formatScore(question.points)}分 · ${question.year}</small></div>`).join("");
+  const samples = (block.questions || []).slice(0, 3).map((question, index) => `<div class="block-question" data-question-id="${escapeAttr(question.id)}"><span class="block-question-number">0${index + 1}</span><div class="block-question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 260)}</div><small>${questionDifficultyMarkup(question)} ${formatScore(question.points)}分 · ${question.year}</small>${questionAttemptMarkup(question, true)}</div>`).join("");
   return `<article class="full-block-card">
     <div class="full-block-head"><div><span class="eyebrow">${escapeHtml(concept.subject || "知识块")}</span><h3>${escapeHtml(concept.name || "未分类")}</h3><p>${concept.attempts || 0} 次作答 · ${concept.accuracy == null ? "暂无正确率" : `${formatScore(concept.accuracy)}% 正确`}</p></div><div class="mastery-number">${formatScore(concept.mastery ?? 22)}%</div></div>
     <div class="progress-line"><span style="--progress:${(value / 100).toFixed(3)}"></span></div>
     <div class="block-reason">${escapeHtml(block.reason || "根据当前掌握度安排训练")}</div>
-    <div class="block-type-grid">${typeCards || `<p class="muted-copy">该知识块暂时没有可用的题型子块。</p>`}</div>
+    <div class="block-type-grid">${subtypeCards || typeCards || `<p class="muted-copy">该知识块暂时没有可用的细分题型。</p>`}</div>
     <div class="block-sample-head"><span class="eyebrow">题目预览</span><span>点击题目可直接作答</span></div>
     <div class="block-question-list">${samples || `<p class="muted-copy">暂无推荐题目。</p>`}</div>
   </article>`;
 }
 
 function bindPracticeStarters(root) {
-  $$('[data-start-practice]', root).forEach((button) => button.addEventListener("click", () => startPracticeSession(button.dataset.conceptId, button.dataset.questionType)));
+  $$('[data-start-practice]', root).forEach((button) => button.addEventListener("click", () => startPracticeSession(button.dataset.conceptId, button.dataset.questionType || "", button.dataset.subtypeId || "")));
 }
 
 function practiceGradeValue(value) {
@@ -2283,6 +2536,7 @@ function renderPracticeSession() {
   const finished = session.status === "finished";
   const questions = session.questions || [];
   const countLabel = session.question_count >= session.requested_count ? `${session.question_count} 题` : `题库仅有 ${session.question_count} 题`;
+  const sessionSubtypeName = session.subtype_id ? subtypeName(session.subtype_id) : (session.question_type ? `${typeLabel(session.question_type)}题` : "混合题型");
   const cards = questions.map((question, index) => {
     const answerState = question.answer_state || {};
     const answer = answerState.answer || "";
@@ -2295,7 +2549,9 @@ function renderPracticeSession() {
     const answerArea = renderAnswerEditor(question, { mode: "practice", value: answer, readonly: finished });
     const uploadArea = finished ? renderPracticeAttachments(answerState.attachments || []) : `<div class="practice-upload-row"><label class="upload-button small-upload" for="practice-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="practice-image-${escapeAttr(question.id)}" type="file" data-practice-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span data-practice-image-status="${escapeAttr(question.id)}">支持图片，单张不超过 8 MB</span></div>${renderPracticeAttachments(answerState.attachments || [])}`;
     const selfGrade = question.question_type === "solution" ? `<label class="practice-grade-label">解答题自评<select data-practice-grade="${escapeAttr(question.id)}" ${finished ? "disabled" : ""}>${gradeOptions}</select></label>` : "";
-    return `<article class="practice-session-question" data-practice-question="${escapeAttr(question.id)}"><div class="practice-question-head"><span>${String(index + 1).padStart(2, "0")} / ${typeLabel(question.question_type)}</span><b>${formatScore(question.points)} 分</b></div><div class="practice-question-body markdown-body">${renderMarkdown(question.question_markdown)}</div><div class="practice-answer-grid">${answerArea}</div>${uploadArea}${selfGrade}${resultMarkup}</article>`;
+    const subtypeLine = questionSubtypeLabels(question).map((item) => item.name || subtypeName(item.id)).join(" · ");
+    const assistMarkup = `<div class="practice-assist-actions"><span class="practice-assist-label">卡住了？</span><button type="button" class="text-button" data-practice-hint="${escapeAttr(question.id)}">问问 AI</button><button type="button" class="text-button" data-practice-source="${escapeAttr(question.id)}">查看解析</button></div><div class="practice-assist-panel" data-practice-assist="${escapeAttr(question.id)}" hidden></div>`;
+    return `<article class="practice-session-question" data-practice-question="${escapeAttr(question.id)}"><div class="practice-question-head"><span>${String(index + 1).padStart(2, "0")} / ${escapeHtml(subtypeLine || typeLabel(question.question_type))}</span><span class="practice-question-history">${questionAttemptMarkup(question, true)}</span><b>${formatScore(question.points)} 分</b></div><div class="practice-question-body markdown-body">${renderMarkdown(question.question_markdown)}</div><div class="practice-question-tags">${questionSubtypeMarkup(question)}</div><div class="practice-answer-grid">${answerArea}</div>${uploadArea}${selfGrade}${assistMarkup}${resultMarkup}</article>`;
   }).join("");
   const answeredCount = questions.filter((question) => {
     const state = question.answer_state || {};
@@ -2303,7 +2559,7 @@ function renderPracticeSession() {
   }).length;
   const statusLabel = finished ? `已提交 · 得分 ${formatScore(session.score)} / ${formatScore(session.max_score)} 分` : `已填写 ${answeredCount} / ${questions.length} 题 · 可随时保存草稿`;
   $("blocks-container").classList.add("practice-active");
-  $("blocks-container").innerHTML = `<section class="practice-session-shell"><header class="practice-session-header"><div><span class="eyebrow">TRAINING SESSION / ${escapeHtml(typeLabel(session.question_type))}</span><h3>${escapeHtml(conceptName(session.concept_id))} · ${escapeHtml(typeLabel(session.question_type))}题训练</h3><p>随机抽取 ${escapeHtml(countLabel)} · 真实题库 · ${finished ? "本次已完成" : "提交后统一判题"}</p></div><div class="practice-session-actions"><button class="text-button" id="leave-practice-session">返回分块</button>${finished ? "" : `<button class="secondary-button" id="save-practice-session">保存草稿</button><button class="primary-button" id="submit-practice-session">提交训练</button>`}</div></header><div class="practice-session-status"><span>${escapeHtml(statusLabel)}</span><span class="practice-session-id">${escapeHtml(session.id.slice(0, 8))}</span></div><div class="practice-session-list">${cards}</div>${finished ? `<footer class="practice-session-footer"><p>本次结果已经写入学习记录，可以返回分块继续训练。</p><button class="primary-button" id="back-after-practice">返回分块训练</button></footer>` : `<footer class="practice-session-footer"><p>草稿只保存到本机，不会改变掌握度；点击提交后才会计入统计。</p><button class="primary-button" id="submit-practice-session-bottom">提交 15 题训练</button></footer>`}</section>`;
+  $("blocks-container").innerHTML = `<section class="practice-session-shell"><header class="practice-session-header"><div><span class="eyebrow">TRAINING SESSION / ${escapeHtml(sessionSubtypeName)}</span><h3>${escapeHtml(conceptName(session.concept_id))} · ${escapeHtml(sessionSubtypeName)}训练</h3><p>随机抽取 ${escapeHtml(countLabel)} · 真实题库 · ${finished ? "本次已完成" : "提交后统一判题"}</p></div><div class="practice-session-actions"><button class="text-button" id="leave-practice-session">返回分块</button><button class="secondary-button" id="refresh-practice-session">换一组题</button>${finished ? "" : `<button class="secondary-button" id="save-practice-session">保存草稿</button><button class="primary-button" id="submit-practice-session">提交训练</button>`}</div></header><div class="practice-session-status"><span>${escapeHtml(statusLabel)}</span><span class="practice-session-id">${escapeHtml(session.id.slice(0, 8))}</span></div><div class="practice-session-list">${cards}</div>${finished ? `<footer class="practice-session-footer"><p>本次结果已经写入学习记录，可以返回分块继续训练。</p><button class="primary-button" id="back-after-practice">返回分块训练</button></footer>` : `<footer class="practice-session-footer"><p>草稿只保存到本机，不会改变掌握度；点击提交后才会计入统计。</p><button class="primary-button" id="submit-practice-session-bottom">提交 15 题训练</button></footer>`}</section>`;
   typeset($("blocks-container"));
   bindAnswerEditors($('blocks-container'));
   bindPracticeSession();
@@ -2333,9 +2589,62 @@ function bindPracticeSession() {
   }));
   $("leave-practice-session")?.addEventListener("click", () => { state.practiceSession = null; loadBlocks(); });
   $("back-after-practice")?.addEventListener("click", () => { state.practiceSession = null; loadBlocks(); });
+  $("refresh-practice-session")?.addEventListener("click", refreshPracticeSession);
   $("save-practice-session")?.addEventListener("click", savePracticeSession);
   $("submit-practice-session")?.addEventListener("click", () => submitPracticeSession(false));
   $("submit-practice-session-bottom")?.addEventListener("click", () => submitPracticeSession(false));
+  $$('[data-practice-hint]', root).forEach((button) => button.addEventListener("click", () => requestPracticeHint(button.dataset.practiceHint, root)));
+  $$('[data-practice-source]', root).forEach((button) => button.addEventListener("click", () => revealPracticeSource(button.dataset.practiceSource, root)));
+}
+
+function practiceAssistPanel(questionId, root) {
+  return $$('[data-practice-assist]', root).find((panel) => panel.dataset.practiceAssist === questionId);
+}
+
+function practiceAnswerValue(questionId, root) {
+  return $$('[data-practice-answer]', root).find((field) => field.dataset.practiceAnswer === questionId)?.value || "";
+}
+
+async function requestPracticeHint(questionId, root = document) {
+  const button = $$('[data-practice-hint]', root).find((item) => item.dataset.practiceHint === questionId);
+  const panel = practiceAssistPanel(questionId, root);
+  if (!button || !panel) return;
+  button.disabled = true;
+  panel.hidden = false;
+  panel.innerHTML = '<p class="muted-copy">AI 正在根据题面和你的当前作答整理第一步思路……</p>';
+  try {
+    const payload = await fetchJSON(`/api/questions/${encodeURIComponent(questionId)}/hint`, jsonOptions({
+      user_id: state.userId,
+      answer: practiceAnswerValue(questionId, root),
+      request: "请先给我解题方向和第一步，最多给三层递进提示，不要直接给最终答案；如果来源没有解析，请明确说明。",
+    }));
+    panel.innerHTML = `<div class="practice-assist-head"><strong>解题思路提示</strong><span>${escapeHtml(payload.model || "已配置模型")}</span></div><div class="markdown-body">${renderMarkdown(payload.content || "模型没有返回提示。")}</div>`;
+    typeset(panel);
+  } catch (error) {
+    panel.innerHTML = `<p class="error-copy">AI 提示失败：${escapeHtml(error.message)}</p>`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function revealPracticeSource(questionId, root = document) {
+  const button = $$('[data-practice-source]', root).find((item) => item.dataset.practiceSource === questionId);
+  const panel = practiceAssistPanel(questionId, root);
+  if (!button || !panel) return;
+  button.disabled = true;
+  panel.hidden = false;
+  panel.innerHTML = '<p class="muted-copy">正在读取来源答案与解析……</p>';
+  try {
+    const question = await fetchJSON(`/api/questions/${encodeURIComponent(questionId)}?reveal=true&user_id=${encodeURIComponent(state.userId)}`);
+    const answer = question.answer_markdown ? `<h4>来源答案</h4><div class="markdown-body">${renderMarkdown(question.answer_markdown)}</div>` : '<p class="muted-copy">当前来源没有提供标准答案。</p>';
+    const solution = question.solution_markdown ? `<h4>来源解析</h4><div class="markdown-body">${renderMarkdown(question.solution_markdown)}</div>` : '<p class="muted-copy">当前来源文件没有提供该题解析。</p>';
+    panel.innerHTML = `<div class="practice-assist-head"><strong>来源解析</strong><span>${escapeHtml(question.source_path || "本地题库")}</span></div>${answer}${solution}`;
+    typeset(panel);
+  } catch (error) {
+    panel.innerHTML = `<p class="error-copy">解析读取失败：${escapeHtml(error.message)}</p>`;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function collectPracticeSessionPayload() {
@@ -2361,12 +2670,23 @@ async function collectPracticeSessionPayload() {
   return { user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds };
 }
 
-async function startPracticeSession(conceptId, questionType) {
-  const button = $$('[data-start-practice]').find((item) => item.dataset.conceptId === conceptId && item.dataset.questionType === questionType);
+async function refreshPracticeSession() {
+  const session = state.practiceSession;
+  const button = $("refresh-practice-session");
+  if (!session) return;
+  const hasDraft = $$('[data-practice-answer]').some((field) => field.value.trim()) || $$('[data-practice-grade]').some((field) => field.value !== "") || $$('[data-practice-image]').some((input) => input.files?.length);
+  if (hasDraft && !window.confirm("换一组题会丢弃当前未提交的草稿，已提交的历史记录不会丢失。确定换题吗？")) return;
+  const currentIds = (session.questions || []).map((question) => question.id).filter(Boolean);
+  await startPracticeSession(session.concept_id, session.question_type || "", session.subtype_id || "", currentIds, button);
+}
+
+async function startPracticeSession(conceptId, questionType = "", subtypeId = "", excludeQuestionIds = [], triggerButton = null) {
+  const button = triggerButton || $$('[data-start-practice]').find((item) => item.dataset.conceptId === conceptId && (item.dataset.subtypeId || "") === subtypeId && (item.dataset.questionType || "") === questionType);
   if (button) button.disabled = true;
   try {
-    state.practiceSession = await fetchJSON("/api/practice/sessions", jsonOptions({ user_id: state.userId, exam_type: "数学二", concept_id: conceptId, question_type: questionType, count: 15 }));
+    state.practiceSession = await fetchJSON("/api/practice/sessions", jsonOptions({ user_id: state.userId, exam_type: "数学二", concept_id: conceptId, question_type: questionType, subtype_id: subtypeId, count: 15, exclude_question_ids: excludeQuestionIds }));
     renderPracticeSession();
+    if (excludeQuestionIds.length) showToast("已优先避开上一组题；题库较小时会保留少量旧题。", false);
     $("blocks-container").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     showToast(`生成训练失败：${error.message}`, true);
@@ -2410,12 +2730,15 @@ async function submitPracticeSession(confirmSubmit = false) {
 
 async function openQuestion(questionId) {
   try {
-    const question = await fetchJSON(`/api/questions/${encodeURIComponent(questionId)}`);
+    const question = await fetchJSON(`/api/questions/${encodeURIComponent(questionId)}?user_id=${encodeURIComponent(state.userId)}`);
     state.currentQuestion = question;
     $("modal-question-ref").textContent = `${question.exam_type} · ${question.year} 年 · 第 ${question.number} 题`;
     $("modal-question-type").textContent = `${typeLabel(question.question_type)}题 · ${formatScore(question.points)} 分`;
     $("question-modal-title").textContent = `${question.year} 年真题 / Q${question.number}`;
-    $("modal-question-tags").innerHTML = questionConceptLabels(question).map((concept) => `<span class="tag ${concept.scope === "out-of-syllabus" ? "out-of-syllabus" : ""}">${escapeHtml(concept.scope === "out-of-syllabus" ? `${concept.scope_label} · ${concept.name}` : concept.name)}</span>`).join("");
+    $("modal-question-tags").innerHTML = questionConceptLabels(question).map((concept) => `<span class="tag ${concept.scope === "out-of-syllabus" ? "out-of-syllabus" : ""}">${escapeHtml(concept.scope === "out-of-syllabus" ? `${concept.scope_label} · ${concept.name}` : concept.name)}</span>`).join("") + questionSubtypeLabels(question).map((item) => `<span class="tag subtype-tag">${escapeHtml(item.name || subtypeName(item.id))}</span>`).join("");
+    $("modal-question-attempts").innerHTML = questionAttemptMarkup(question);
+    $("modal-classification").innerHTML = classificationEditorMarkup(question, "modal");
+    bindClassificationControls($("modal-classification"));
     $("modal-question-body").innerHTML = renderMarkdown(question.question_markdown);
     typeset($("modal-question-body"));
     $("modal-answer-editor").innerHTML = renderAnswerEditor(question, { mode: "modal" });
@@ -2885,6 +3208,7 @@ async function init() {
   $("refresh-button").addEventListener("click", () => loadOverview());
   $("start-recommended").addEventListener("click", () => state.nextQuestions[0] ? openQuestion(state.nextQuestions[0].id) : navigate("library"));
   $("apply-filters").addEventListener("click", loadLibrary);
+  $("filter-concept")?.addEventListener("change", populateSubtypeFilter);
   $("reload-blocks").addEventListener("click", loadBlocks);
   $("create-simulation").addEventListener("click", createSimulation);
   $("submit-answer").addEventListener("click", submitAnswer);

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -18,7 +19,7 @@ MATH2_CONCEPTS: list[dict[str, Any]] = [
         "id": "derivative",
         "name": "一元函数微分学",
         "subject": "高等数学",
-        "keywords": ["导数", "微分", "切线", "单调", "极值", "凹凸", "曲率"],
+        "keywords": ["导数", "可导", "可微", "切线", "单调", "极值", "凹凸", "曲率"],
     },
     {
         "id": "integral",
@@ -42,7 +43,11 @@ MATH2_CONCEPTS: list[dict[str, Any]] = [
         "id": "differential-equation",
         "name": "常微分方程",
         "subject": "高等数学",
-        "keywords": ["微分方程", "特征根", "通解", "齐次方程", "可降阶"],
+        # Do not use generic words such as "通解" or "齐次方程" here:
+        # linear-algebra questions also ask for a general solution and use
+        # the phrase "齐次线性方程组".  The explicit chapter phrase is the
+        # reliable boundary for source-level concept tagging.
+        "keywords": ["微分方程"],
     },
     {
         "id": "matrix",
@@ -178,6 +183,9 @@ def concept_descriptor(concept_id: str) -> dict[str, str]:
 
 
 def infer_concepts(text: str, section: str) -> list[str]:
+    text = str(text or "")
+    section = str(section or "")
+    compact = re.sub(r"\s+", "", text.lower())
     active: list[str] = []
     extra: list[str] = []
     integral_core = ["原函数", "不定积分", "定积分", "反常积分", "变限积分", "积分上限", "积分中值定理", "牛顿-莱布尼茨", "换元积分", "分部积分", "旋转体", "平面图形的面积", "弧长"]
@@ -187,6 +195,54 @@ def infer_concepts(text: str, section: str) -> list[str]:
             continue
         if any(keyword in text for keyword in concept["keywords"]):
             active.append(concept["id"])
+
+    # Older source pages often put the entire stem in a formula and therefore
+    # do not contain the Chinese word "极限" or "导数".  Add only high-signal
+    # structural cues here so the chapter filter is not driven by the source
+    # section heading alone.
+    if ("\\lim" in compact or "lim_{" in compact or "趋于" in text or "趋近" in text or re.search(r"[a-z]_\{?n\}?", text, re.IGNORECASE)) and "limit-continuity" not in active:
+        active.append("limit-continuity")
+    if ("\\iint" in compact or "\\int\\int" in compact or "二重积分" in text) and "multiple-integral" not in active:
+        active.append("multiple-integral")
+    if ("\\begin{pmatrix}" in compact or "\\begin{bmatrix}" in compact or "行列式" in text or "矩阵" in text) and "matrix" not in active:
+        active.append("matrix")
+    if ("\\partial" in compact or "偏导" in text or "全微分" in text) and "multivariable" not in active:
+        active.append("multivariable")
+    if ("线性方程组" in text or "齐次线性方程组" in text or "非齐次线性方程组" in text) and "linear-equation" not in active:
+        active.append("linear-equation")
+    if ("特征值" in text or "特征向量" in text or "二次型" in text) and "eigenvalue" not in active:
+        active.append("eigenvalue")
+    if any(marker in text for marker in ("有界函数", "无界函数", "周期函数", "奇函数", "偶函数", "定义域", "函数关系")) and "limit-continuity" not in active:
+        active.append("limit-continuity")
+    if re.search(r"(?:y|f)\s*\^\s*\{?\\?prime", text, re.IGNORECASE) and "derivative" not in active:
+        active.append("derivative")
+    if any(marker in text for marker in ("速度", "路程", "距离", "运动的路程", "平均值", "功", "压力", "质心", "形心", "面积", "弧长", "极坐标方程")) and "integral" not in active:
+        active.append("integral")
+    if any(marker in text for marker in ("f[x]", "f[f(", "f\\left[f", "f\\left\\{", "f(-x)", "f\\left(-x", "分段函数", "复合函数", "函数复合")) and "limit-continuity" not in active:
+        active.append("limit-continuity")
+    if any(marker in text for marker in ("f'_x", "f'_y", "偏导", "二元函数", "f(x,y)", "f(x, y)")) and "multivariable" not in active:
+        active.append("multivariable")
+    if any(marker in text for marker in ("合同", "正交矩阵", "正交变换")) and "eigenvalue" not in active:
+        active.append("eigenvalue")
+    if any(marker in text for marker in ("变化率与", "成正比", "冷却", "减速", "人口模型")) and "differential-equation" not in active:
+        active.append("differential-equation")
+    if any(marker in text for marker in ("向量", "向量组", "线性表示", "线性相关", "线性无关")) and "vector-space" not in active:
+        active.append("vector-space")
+    if any(marker in text for marker in ("质量", "油罐", "速率", "曲线所围成的图形", "曲线的面积")) and "integral" not in active:
+        active.append("integral")
+    if any(marker in text for marker in ("速率", "变化率", "dy", "d}y", "导数")) and "derivative" not in active:
+        active.append("derivative")
+    if any(marker in text for marker in ("最长距离", "最短距离", "最大距离", "最小距离")) and "multivariable" not in active:
+        active.append("multivariable")
+    if "相似" in text and "eigenvalue" not in active:
+        active.append("eigenvalue")
+    if "方程组" in text and "linear-equation" not in active:
+        active.append("linear-equation")
+    if re.search(r"(?:\\boldsymbol\{?a|a)_\{?\d", text, re.IGNORECASE) or "\\boldsymbol{a}_{" in text:
+        if "vector-space" not in active:
+            active.append("vector-space")
+    if re.search(r"\\mathrm\{?d\}?", text) and "derivative" not in active:
+        active.append("derivative")
     for concept in OUT_OF_SYLLABUS_CONCEPTS:
         if any(keyword in text for keyword in concept["keywords"]):
             extra.append(concept["id"])

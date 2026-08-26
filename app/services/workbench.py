@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import random
 from typing import Any, Iterable
 
 from app.services.concepts import CONCEPT_META, MATH2_CONCEPTS, MATH2_CONCEPT_IDS, concept_descriptor
@@ -119,6 +120,7 @@ SUBTYPE_CATALOG: dict[str, list[dict[str, Any]]] = {
         _topic("function-properties", "函数性质与函数关系建立", "判断定义域、奇偶性、周期性、单调性并建立函数关系", "定义域、对应法则和自变量范围", "先化简解析式或按区间拆分，再逐项验证函数性质；应用题先定义变量并写出约束。", "把结论代回原定义域，并检查分段点和端点", ("定义域", "奇函数", "偶函数", "周期", "单调", "函数关系"), "性质判断先回到定义，不能只看图像印象。"),
         _topic("sequence-limit", "数列极限与递推数列", "求数列极限或证明递推数列收敛", "单调性、有界性和极限方程可解性", "显式数列先做等价变形；递推数列先证单调有界，再令极限为 A 解极限方程。", "排除极限方程中的增根，并验证初值所在区间", ("数列", "a_n", "x_n", "递推", "单调有界", "数项"), "递推极限：先证存在，再解方程。"),
         _topic("function-limit", "函数极限与左右极限", "计算函数极限或依据左右极限判定极限存在", "趋近方向、定义域和分母非零条件", "先判型，再选择约分、有理化、变量替换或左右分开计算。", "左右极限一致且结果满足原趋近条件", ("左极限", "右极限", "x\\to", "趋于", "函数极限", "极限存在"), "先判型，后变形；分段点必须看左右。"),
+        _topic("lhopital-limit", "洛必达法则求未定式极限", "把极限化为允许的未定式并通过分子分母求导求值", "确为 0/0 或无穷/无穷型，邻域内分母导数不为零", "先判未定式，乘积、差式或幂指式先改写成商，再逐次使用洛必达。", "每次求导后仍核对型，不能对和式逐项使用法则", ("洛必达", "l'hospital", "0/0", "无穷/无穷", "未定式"), "洛必达先验型，幂指式先取对数。"),
         _topic("equivalent-infinitesimal", "等价无穷小与阶的比较", "用等价替换或阶数比较化简极限", "各因子都处于同一极限过程且替换位置允许", "把基本等价无穷小拆成乘除因子，必要时先提取主部，再比较阶数。", "替换没有发生在加减项内部，并核对常数系数", ("等价无穷小", "无穷小", "高阶", "低阶", "同阶", "o(", "主部"), "乘除可替换，加减先提主部。"),
         _topic("important-limits", "重要极限与夹逼准则", "识别标准结构并用重要极限、夹逼或单调有界准则求极限", "变量确实趋于标准点且底数保持有意义", "把表达式改造成正弦型或 1 的无穷次幂型；不便改造时寻找上下界夹逼。", "指数、底数和替换变量的趋向全部一致", ("重要极限", "夹逼", "单调有界", "sin x", "1+", "无穷次幂"), "标准结构要完整，底数和指数一起看。"),
         _topic("continuity-discontinuity", "连续性与间断点分类", "确定连续参数、判别间断点并区分类型", "函数值、左右极限及极限与函数值的关系", "在可疑点分别求左极限、右极限和函数值，按三者关系分类。", "列出全部间断点并写明可去、跳跃或无穷等类型", ("连续", "间断点", "可去", "跳跃", "左连续", "右连续"), "三件套：左极限、右极限、函数值。"),
@@ -132,7 +134,6 @@ SUBTYPE_CATALOG: dict[str, list[dict[str, Any]]] = {
         _topic("rolle-theorem", "罗尔定理的应用", "构造端点等值的辅助函数并证明区间内导数为零", "闭区间连续、开区间可导、两端函数值相等", "把待证等式整理成 F'(ξ)=0，反推辅助函数 F，再验证罗尔定理三项条件。", "ξ 位于指定开区间，辅助函数端点确实相等", ("罗尔", "rolle", "导数为0", "导数为零", "f'(ξ)=0"), "端点等值找罗尔，目标导数反推辅助函数。"),
         _topic("lagrange-mvt", "拉格朗日中值定理的应用", "把函数增量表示成某点导数乘区间长度并用于估值或证明", "闭区间连续、开区间可导", "选定两个端点，写 f(b)-f(a)=f'(ξ)(b-a)，再结合导数范围或目标式变形。", "区间方向、ξ 的范围和导数估计方向一致", ("拉格朗日", "lagrange", "中值定理", "f(b)-f(a)", "函数增量"), "函数差配导数，两个端点定区间。"),
         _topic("cauchy-taylor", "柯西中值定理与泰勒公式", "处理两个函数增量之比、带余项展开或高阶局部估计", "柯西定理的分母导数不为零，泰勒展开点和阶数明确", "比值问题构造两个函数用柯西定理；局部高阶问题选展开点并保留足够阶的余项。", "余项阶数足够且展开范围覆盖目标点", ("柯西", "cauchy", "泰勒", "taylor", "余项", "麦克劳林", "展开"), "两个增量用柯西，局部高阶用泰勒。"),
-        _topic("lhopital-limit", "洛必达法则求未定式极限", "把极限化为允许的未定式并通过分子分母求导求值", "确为 0/0 或无穷/无穷型，邻域内分母导数不为零", "先判未定式，乘积、差式或幂指式先改写成商，再逐次使用洛必达。", "每次求导后仍核对型，不能对和式逐项使用法则", ("洛必达", "l'hospital", "0/0", "无穷/无穷", "未定式"), "洛必达先验型，幂指式先取对数。"),
         _topic("monotonicity-extrema", "单调性、极值与最值", "用导数符号划分单调区间并求极值或最值", "驻点、不可导点和区间端点完整", "求导并列出临界点，制作符号表；最值题还要比较端点和所有候选值。", "区间开闭、极值点与极值、最值点与最值不混淆", ("单调区间", "单调性", "极值", "最大值", "最小值", "驻点"), "单调看符号，极值看变号，最值还比端点。"),
         _topic("concavity-asymptote", "凹凸、拐点、渐近线与图形", "利用一二阶导数和极限分析函数图形", "定义域、不可导点和无穷远行为完整", "先定定义域和渐近线，再用一阶导数判增减、二阶导数判凹凸，最后汇总关键点。", "拐点要求函数连续且凹凸性改变，斜渐近线同时求斜率和截距", ("凹凸", "拐点", "渐近线", "函数图形", "斜渐近线", "描绘"), "先定义域和渐近线，再一阶增减、二阶凹凸。"),
         _topic("zeros-differential-inequality", "零点问题与微分不等式", "证明方程根的个数、导数零点关系或函数不等式", "连续性、可导性以及端点或初值条件", "存在性用零点或罗尔，唯一性用单调性；不等式构造差函数后研究导数符号。", "存在与唯一分别证明，不等号方向覆盖整个目标区间", ("零点", "根的个数", "唯一根", "微分不等式", "证明不等式", "至多"), "存在看端点，唯一看单调，不等式看差函数。"),
@@ -141,7 +142,7 @@ SUBTYPE_CATALOG: dict[str, list[dict[str, Any]]] = {
         _topic("antiderivative-basic", "原函数与基本不定积分", "依据导数反查原函数并完成基本积分", "被积函数在讨论区间有意义", "先拆项和提常数，再套基本积分公式，必要时配凑微分。", "不定积分补常数 C，并回求导核验", ("原函数", "不定积分", "积分常数", "+c", "基本积分"), "不定积分最后一定写 C。"),
         _topic("substitution-integration", "换元积分法", "通过第一类或第二类换元把积分化为基本型", "换元关系单调可逆或微分替换完整", "识别复合内层或根式结构，选择变量替换并同步替换微分与定积分上下限。", "所有旧变量消失，定积分不用重复换回原变量", ("换元", "令", "代换", "变量替换", "作变换"), "变量、微分、上下限三项一起换。"),
         _topic("integration-by-parts", "分部积分与递推积分", "降低乘积中某一因子的复杂度或建立积分递推式", "u 与 dv 的选择能使后续积分更简单", "按反对幂三指的优先次序选 u，写出 uv-∫vdu；重复型积分可设元并移项。", "边界项、负号和重复积分移项系数正确", ("分部积分", "递推公式", "积分递推", "uv", "反对幂三指"), "分部积分看降阶，边界项先代再减。"),
-        _topic("special-integrals", "有理式、三角有理式与根式积分", "把特殊被积函数化成可积的部分分式或标准三角形式", "分母分解、根式定义域和三角替换范围正确", "有理式先因式分解并作部分分式；三角有理式用万能代换；根式按标准结构选换元。", "拆分系数和换元后的定义域没有改变", ("有理函数", "部分分式", "三角有理", "万能代换", "根式积分"), "先识别结构，再选专用换元。"),
+        _topic("special-integrals", "有理式、三角有理式与根式积分", "把特殊被积函数化为可积的部分分式或标准三角形式", "分母分解、根式定义域和三角替换范围正确", "有理式先因式分解并作部分分式；三角有理式用万能代换；根式按标准结构选换元。", "拆分系数和换元后的定义域没有改变", ("有理函数", "部分分式", "三角有理", "万能代换", "根式积分", r"\arctan"), "先识别结构，再选专用换元。"),
         _topic("definite-properties", "定积分性质、对称性与周期性", "利用区间、奇偶、周期或积分中值性质简化定积分", "积分区间和函数对称中心明确", "先画区间关系，检查奇偶与 f(a+b-x) 型对称，再决定换元、拆区间或使用周期。", "换元后上下限和符号正确，不能把局部对称当全局对称", ("定积分性质", "奇函数", "偶函数", "周期函数", "对称", "积分中值"), "对称积分先看区间中心，再看函数变换。"),
         _topic("variable-upper-limit", "变限积分与积分上限函数", "求变限积分的导数、极限、单调性或相关方程", "被积函数连续且上下限函数可导", "先用链式法则求导，双变限写成两个单上限积分之差；综合题再研究所得导数。", "上下限贡献的正负号和内层导数完整", ("变限积分", "积分上限", "上限函数", "\\int_0^x", "f(t)"), "上限正、下限负，变限还乘内层导数。"),
         _topic("improper-integral", "反常积分计算与敛散性", "判断无穷区间或无界函数积分是否收敛并求值", "所有瑕点和无穷端点分别处理", "拆开每个反常端点，写成极限；敛散判断可用比较、等价或 p 型积分。", "每一段都收敛才可合并，参数范围取所有条件交集", ("反常积分", "广义积分", "敛散", "收敛", "+\\infty", "瑕点"), "反常积分分端点，全部收敛才收敛。"),
@@ -163,9 +164,12 @@ SUBTYPE_CATALOG: dict[str, list[dict[str, Any]]] = {
         _topic("double-application", "二重积分的几何与物理应用", "计算平面薄片质量、质心或曲顶柱体体积", "区域、密度函数和高度函数明确", "先确定面积微元，再分别列质量、一阶矩或体积积分，必要时利用对称性。", "质心分母为总质量，密度和高度没有混用", ("曲顶柱体", "质量", "质心", "薄片", "体积", "二重积分"), "面积元乘什么，取决于要求的物理量。"),
     ],
     "differential-equation": [
-        _topic("separable-homogeneous-ode", "可分离变量与齐次一阶方程", "识别并求解可分离变量或可化齐次的一阶方程", "分离过程中没有除掉可能的常值解", "可分离方程把 y 项与 x 项分居两侧；齐次方程令 y=ux 后化为可分离形式。", "补回被除掉的特解，并用初值确定常数", ("可分离", "分离变量", "齐次方程", "y/x", "y=ux"), "能分则分，齐次一阶先令 y=ux。"),
+        _topic("separable-homogeneous-ode", "可分离变量与齐次一阶方程", "识别并求解可分离变量或可化齐次的一阶方程", "分离过程中没有除掉可能的常值解", "可分离方程把 y 项与 x 项分居两侧；齐次方程令 y=ux 后化为可分离形式。", "补回被除掉的特解，并用初值确定常数", ("可分离", "分离变量", "齐次一阶", "y/x", "y=ux"), "能分则分，齐次一阶先令 y=ux。"),
         _topic("first-order-linear-ode", "一阶线性微分方程", "用通解公式或常数变易法求一阶线性方程", "方程已化为 y'+P(x)y=Q(x) 标准形", "求积分因子 e^{∫Pdx}，将左端化为乘积导数后积分。", "P 的符号、积分因子和积分常数正确", ("一阶线性", "积分因子", "y'+", "常数变易", "通解公式"), "先标准化，再找积分因子。"),
-        _topic("bernoulli-ode", "伯努利方程", "通过幂代换把非线性一阶方程化为线性方程", "方程具有 y'+P(x)y=Q(x)y^n 且 n 不为 0、1", "除以 y^n 后令 z=y^{1-n}，化成关于 z 的一阶线性方程。", "代换指数、常值解和还原 y 的范围正确", ("伯努利", "bernoulli", "y^n", "非线性"), "伯努利的目的只有一个：幂代换化线性。"),
+        _topic("exact-ode", "全微分方程", "识别恰当微分结构并求势函数或积分因子", "M(x,y)dx+N(x,y)dy=0 且 M_y=N_x，或可先求积分因子", "先核对恰当条件，再对 M 关于 x 积分并用 N 补齐只含 y 的函数；最后写势函数等于常数。", "偏导次序、补函数和定义域条件正确", ("全微分方程", "恰当方程", "恰当微分", "M_y=N_x", "势函数"), "先验恰当条件，再积分补项。"),
+        _topic("first-order-substitution-ode", "一阶可化简方程", "通过代换把含 x+y、x-y 或其他组合的一阶方程化为可分离或线性形式", "方程中反复出现同一个组合变量或可识别的齐次结构", "先令 u 为重复出现的组合，写清 du 与 dx、dy 的关系，再求解 u 并回代。", "代换后的初值、积分常数和回代定义域正确", ("代换", "令 u", "x+y", "x-y", "可化为", "换元"), "看到重复组合先设新变量，回代前查定义域。"),
+        _topic("linear-ode-structure", "线性微分方程解的结构", "利用线性叠加、齐次解与特解的关系判断方程解的性质", "题目给出多个特解、齐次解或要求判断解的线性组合", "先写算子线性关系，分离齐次部分与非齐次部分，再比较给定组合是否消去了右端项。", "不要把非齐次方程的任意线性组合误当成解，系数关系要逐项核验", ("两个特解", "齐次方程", "线性组合", "非齐次线性", "叠加原理"), "非齐次解之差属于对应齐次解。"),
+        _topic("bernoulli-ode", "伯努利方程", "通过幂代换把非线性一阶方程化为线性方程", "方程具有 y'+P(x)y=Q(x)y^n 且 n 不为 0、1", "除以 y^n 后令 z=y^{1-n}，化成关于 z 的一阶线性方程。", "代换指数、常值解和还原 y 的范围正确", ("伯努利", "bernoulli", "y^n", "非线性", "p^2", r"z=\frac1p", "p=y'"), "伯努利的目的只有一个：幂代换化线性。"),
         _topic("reducible-higher-ode", "可降阶高阶微分方程", "对不显含 y、x 或特定导数的高阶方程降阶", "方程缺失变量的结构识别正确", "不含 y 时令 p=y'；不含 x 时令 p(y)=y' 并用 y''=p dp/dy；逐次积分恢复 y。", "每降一阶都补一个积分常数", ("可降阶", "不含y", "不含x", "p=y'", "高阶微分方程"), "缺谁就围绕谁换元，降几阶补几个常数。"),
         _topic("constant-coefficient-ode", "常系数线性微分方程", "求二阶常系数齐次或非齐次方程通解", "特征方程和非齐次项类型识别正确", "先由特征根写齐次通解，再按指数、多项式、三角型设特解；共振时乘足够次 x。", "重根、复根和共振次数正确，通解为齐次解加特解", ("常系数", "特征方程", "特征根", "非齐次", "二阶线性", "共振"), "先齐次后特解，共振就乘 x。"),
         _topic("ode-modeling", "微分方程建模与综合应用", "根据变化率、几何关系或物理过程建立并求解方程", "状态量、独立变量、初值和单位明确", "把题目中的变化率关系翻译成微分方程，求通解后利用初值或边界条件定常数。", "解满足原模型范围、初值和单位", ("建立微分方程", "变化率", "初始条件", "初值问题", "应用问题"), "先列变化率关系，再解方程和代初值。"),
@@ -399,6 +403,58 @@ $$\lim_{u\to0}(1+u)^{1/u}=e,\qquad \lim_{x\to0}(1+\varphi(x))^{1/\varphi(x)}=e.$
             "把存在性定理当成唯一性结论，未用单调性或反证排除第二个根。",
         ),
         "闭区间连续给存在，端点关系定位置，单调性定唯一。",
+    ),
+})
+
+
+_DETAILED_TEMPLATES.update({
+    "exact-ode": _detailed_topic(
+        "全微分方程先判断微分形式是否恰当，再构造势函数。若不恰当，只有在题目能识别出积分因子时才先求积分因子，不能把任意一阶方程都称为全微分方程。",
+        (
+            "把方程整理为 $M(x,y)dx+N(x,y)dy=0$，写出 $M,N$ 的定义域并计算 $M_y,N_x$。",
+            "若 $M_y=N_x$，先对 $M$ 关于 $x$ 积分得到 $\\Phi(x,y)=\\int Mdx+g(y)$，再用 $\\Phi_y=N$ 求 $g'(y)$。",
+            "若只含 $x$ 或只含 $y$ 的积分因子可行，分别检验 $(M_y-N_x)/N$ 或 $(N_x-M_y)/M$ 是否为单变量函数。",
+            "求得势函数后写 $\\Phi(x,y)=C$，代入初值确定常数；若题目求显式解，再按定义域选取分支。",
+            "最后对隐式结果求全微分并代回，检查积分因子没有改变原方程的解域和被除掉的特殊解。",
+        ),
+        r"""**核心公式**
+
+恰当条件：$M_y=N_x$。
+
+势函数：$\displaystyle \Phi(x,y)=\int M(x,y)\,dx+g(y)$，再由 $\Phi_y=N$ 求 $g$。
+
+通解：$\Phi(x,y)=C$；若存在初值 $(x_0,y_0)$，则 $C=\Phi(x_0,y_0)$。""",
+        (
+            "没有先写 $M,N$ 就直接积分，导致 $dx,dy$ 对应错位。",
+            "只验证了一个偏导相等，漏写 $M_y=N_x$ 的完整条件。",
+            "补函数 $g(y)$ 时把 $g'(y)$ 误写成 $g(y)$，或忘记再积分。",
+            "使用积分因子后没有检查定义域、初值和被除掉的特殊解。",
+        ),
+        "先写 M、N，验恰当；积分补项，势函数等常数。",
+    ),
+    "first-order-substitution-ode": _detailed_topic(
+        "一阶可化简方程的关键不是背某个结果，而是找重复组合。令 $u=\\varphi(x,y)$ 后必须同步写出 $du$，把初值和定义域一起转换，再求解并回代。",
+        (
+            "通读方程，圈出反复出现的 $x+y$、$x-y$、$ax+by+c$ 或 $y/x$，判断新变量是否能降低结构。",
+            "写出 $u=\\varphi(x,y)$ 及 $du$；例如 $u=x+y$ 时 $du=(1+y')dx$，不能只替换分母。",
+            "将方程完全改写成 $u$ 与 $x$（或 $y$）的方程，避免新旧变量混在同一行。",
+            "用可分离、线性或其他已识别的一阶模板求 $u$，再用初值确定常数。",
+            "回代 $u=\\varphi(x,y)$，检查解的定义域、初值和可能因除法漏掉的特殊解。",
+        ),
+        r"""**核心公式**
+
+组合代换：$u=x+y\Rightarrow du=(1+y')\,dx$；$u=x-y\Rightarrow du=(1-y')\,dx$。
+
+齐次代换：$u=y/x$、$y=ux$，则 $\displaystyle y'=u+x\frac{du}{dx}$。
+
+完成代换后，必须得到只含新变量和自变量的一阶方程，再选择分离变量或积分因子。""",
+        (
+            "只把 $x+y$ 换成 $u$，漏掉 $du$ 中的 $y'$ 或常数系数。",
+            "代换后仍保留旧变量，导致积分步骤实际上没有完成。",
+            "初值仍用原变量直接代入，忘记先转换成 $u(x_0)$。",
+            "回代时没有恢复解的定义域，或除法漏掉特殊解。",
+        ),
+        "先找重复组合，再写 du；全式换元，解完回代查定义域。",
     ),
 })
 
@@ -1304,6 +1360,30 @@ _DETAILED_TEMPLATES.update({
 
 
 _DETAILED_TEMPLATES.update({
+    "linear-ode-structure": _detailed_topic(
+        "线性微分方程题先区分同一个非齐次方程的特解、对应齐次方程的解和通解。核心是线性算子作用后的右端项是否相互抵消。",
+        (
+            "记线性算子为 $L$，若 $L(y_1)=L(y_2)=g$，则 $L(y_1-y_2)=0$，所以两个特解之差是齐次解。",
+            "若 $y_p$ 是一个非齐次特解、$y_h$ 是齐次解，则 $y_p+y_h$ 仍是原非齐次方程的解；任意两个特解之差都属于齐次解空间。",
+            "题目给出 $\\lambda y_1+\\mu y_2$ 时，直接计算 $L$ 作用后的右端，不要把系数当成普通方程的常数随意合并。",
+            "判断解的个数或线性无关性时，分清函数线性无关与方程右端相同这两个条件。",
+            "结论写成题目要求的参数范围或解的形式，并回代验证右端项与初始条件。",
+        ),
+        r"""**核心公式**
+
+线性算子：$L(ay+bz)=aL(y)+bL(z)$。
+
+若 $L(y_1)=L(y_2)=g$，则 $L(y_1-y_2)=0$。
+
+非齐次通解：$y=y_p+y_h$，其中 $L(y_p)=g$、$L(y_h)=0$。""",
+        (
+            "把两个非齐次特解直接相加，忘记右端项会变成 $2g$。",
+            "把非齐次方程的任意解当成齐次解，遗漏右端项。",
+            "只比较系数不计算线性算子，导致参数条件方向写反。",
+            "没有区分一个特解、全部特解和对应齐次方程的通解。",
+        ),
+        "先写 L 的右端，再看相减是否消掉 g；非齐次通解是特解加齐次解。",
+    ),
     "determinant-properties": _detailed_topic(
         "行列式计算先利用性质把矩阵化成三角形或稀疏形式，再展开。参数题要记录每次交换行、倍乘行和加法对行列式的影响。",
         (
@@ -1866,6 +1946,351 @@ SUBTYPES_BY_ID = {
 }
 
 
+def subtype_descriptor(subtype_id: str) -> dict[str, Any] | None:
+    subtype = SUBTYPES_BY_ID.get(subtype_id)
+    if subtype is None:
+        return None
+    return {
+        "id": subtype["id"],
+        "name": subtype["name"],
+        "concept_id": subtype["concept_id"],
+        "summary": subtype.get("summary", ""),
+    }
+
+
+def subtypes_for_concept(concept_id: str) -> list[dict[str, Any]]:
+    return [subtype_descriptor(item["id"]) for item in SUBTYPE_CATALOG.get(concept_id, []) if subtype_descriptor(item["id"])]
+
+
+# The imported source files use several different headings for the same
+# syllabus item (for example, "微分方程" and "一阶线性方程").  Keyword
+# matching against the whole block is therefore not enough: it can put a
+# matrix question on an ODE page simply because both records belong to a
+# broad source section.  These rules are deliberately question-stem-first
+# and concept-scoped.  They are used for filtering and for the user-visible
+# classification; the looser `signals` on a template remain only a fallback
+# for finding source-backed examples when a stem is unusually terse.
+_COMPACT_SPACE_RE = re.compile(r"\s+")
+
+
+def _classification_text(question: dict[str, Any]) -> tuple[str, str]:
+    fields = (
+        question.get("label", ""),
+        question.get("section", ""),
+        question.get("question_markdown", ""),
+    )
+    raw = " ".join(str(value or "").lower() for value in fields)
+    return raw, _COMPACT_SPACE_RE.sub("", raw)
+
+
+def _has(text: str, *signals: str) -> bool:
+    return any(str(signal).lower() in text for signal in signals if signal)
+
+
+def _has_compact(compact: str, *signals: str) -> bool:
+    return any(_COMPACT_SPACE_RE.sub("", str(signal).lower()) in compact for signal in signals if signal)
+
+
+def _question_subtype_scores(question: dict[str, Any]) -> dict[str, int]:
+    """Return high-confidence subtype scores for one imported question.
+
+    A question may legitimately touch more than one syllabus subtype (for
+    instance, an ODE followed by an area calculation).  We keep those tags,
+    but only when the stem contains a concrete signal for that subtype.  The
+    result is intentionally deterministic so a correction can be explained
+    and reproduced later.
+    """
+    raw, compact = _classification_text(question)
+    concepts = set(question.get("concept_ids") or [])
+    scores: dict[str, int] = {}
+
+    def add(subtype_id: str, score: int = 8) -> None:
+        subtype = SUBTYPES_BY_ID.get(subtype_id)
+        if subtype and subtype.get("concept_id") in concepts:
+            scores[subtype_id] = max(scores.get(subtype_id, 0), score)
+
+    # Limit, continuity and function properties.
+    if "limit-continuity" in concepts:
+        if _has(raw, "间断点", "连续性", "连续条件", "连续，则", "可去间断", "跳跃间断", "第二类间断"):
+            add("continuity-discontinuity", 12)
+        if _has(raw, "闭区间", "零点定理", "介值定理", "至少存在", "最大值和最小值", "最小值和最大值"):
+            add("closed-interval-theorems", 12)
+        if _has(raw, "洛必达", "l'hospital", "未定式", "0/0", "∞/∞", "无穷/无穷"):
+            add("lhopital-limit", 14)
+        if _has(raw, "等价无穷小", "高阶无穷小", "低阶无穷小", "同阶无穷小", "主部", "o("):
+            add("equivalent-infinitesimal", 14)
+        if _has(raw, "数列", "递推数列", "单调有界", "a_n", "a_{n", "x_n", "x_{n", "n→∞") or _has_compact(compact, r"n\to\infty", r"\lim_{n", "a_n", "x_n"):
+            add("sequence-limit", 13)
+        if _has(raw, "重要极限", "夹逼准则", "夹逼定理", "1+", "sin x", "tan x") and _has(raw, "极限", "趋于", "趋近"):
+            add("important-limits", 10)
+        if _has(raw, "定义域", "奇函数", "偶函数", "周期函数", "周期性", "有界函数", "无界函数", "函数关系"):
+            add("function-properties", 11)
+        if _has(raw, r"f\left[f", r"f\left\{", r"f\left(-x", "f[f(", "分段函数"):
+            add("function-properties", 12)
+        if _has(raw, "极限", "趋于", "趋近", "x\\to", "x→"):
+            add("function-limit", 7)
+
+    # One-variable differential calculus.  "微分方程" is explicitly
+    # excluded here unless the stem also asks for a local calculus property.
+    if "derivative" in concepts:
+        ode_context = _has(raw, "微分方程", "常微分方程")
+        if _has(raw, "有界函数", "无界函数", "周期函数", "奇函数", "偶函数", "定义域", "函数复合", "分段函数", "f[f(", r"f\left[f", r"f\left\{", "f(-x)", r"\left(-x"):
+            # Function properties are catalogued under the limit/continuity
+            # block, but older imports occasionally also carry derivative.
+            # Add the cross-tag only when the catalog contains it.
+            add("function-properties", 11)
+        if _has(raw, "罗尔定理", "罗尔", "rolle", "f'(ξ)=0", "f'(\\xi)=0"):
+            add("rolle-theorem", 15)
+        if _has(raw, "拉格朗日中值", "拉格朗日定理", "中值定理", "lagrange", "函数增量") and not _has(raw, "积分中值"):
+            add("lagrange-mvt", 14)
+        if _has(raw, "柯西中值", "cauchy", "泰勒公式", "泰勒展开", "麦克劳林", "余项", "展开式"):
+            add("cauchy-taylor", 14)
+        if _has(raw, "切线", "法线", "曲率", "曲率半径", "切点"):
+            add("tangent-normal-curvature", 13)
+        if _has(raw, "凹凸", "凸区间", "凹区间", "拐点", "渐近线", "斜渐近线", "描绘函数图形"):
+            add("concavity-asymptote", 13)
+        if _has(raw, "单调区间", "单调性", "极大值", "极小值", "极值点", "驻点", "函数最值"):
+            add("monotonicity-extrema", 12)
+        if _has(raw, "零点", "根的个数", "唯一根", "至多一个根", "有实根", "根", "证明不等式", "微分不等式", "不等式证明") and not ode_context:
+            add("zeros-differential-inequality", 11)
+        if _has(raw, "高阶导数", "n阶导数", "莱布尼茨", "f^{(n", "f^{(", "y^{(n", r"y^{\left(n", "二阶导数", "三阶导数", r"y^{\prime\prime}", r"y^{\prime}"):
+            add("higher-derivative", 12)
+        if _has(raw, "导数定义", "差商", "左右导数", "可导性"):
+            add("derivative-definition", 14)
+        if _has(raw, "隐函数", "参数方程", "反函数", "复合函数", "链式法则", "dy/dx", "d y/d x"):
+            add("differentiation-techniques", 12)
+        # Formula-only derivative questions are common in the older papers.
+        # y' and y'' together are a reliable higher-derivative cue; a lone
+        # derivative request belongs to the ordinary differentiation subtype.
+        if _has(raw, "y'", "y′", "求导", "导数", "微分", r"y^{\prime}", r"f^{\prime}", r"d}y", r"d}^{2}y", r"d}z", r"dy") and not ode_context:
+            add("higher-derivative" if _has(raw, "y''", "y″", "二阶") else "differentiation-techniques", 6)
+        if _has(raw, "由方程", "所确定") and _has(raw, "y=y", r"y\left(x", "d^2y", r"d}^{2}y", r"y^{\prime\prime}"):
+            add("differentiation-techniques", 13)
+        if _has(raw, "速率", "变化率", "增加的速率", "减少的速率"):
+            add("differentiation-techniques", 10)
+        if _has(raw, "f\\left\\{", r"f\left[f", "f(-x)"):
+            add("function-properties", 12)
+        if _has(raw, "证明") and _has(raw, "≥", "≤", "\\ge", "\\le", "不等式", "<", ">") and not ode_context:
+            add("zeros-differential-inequality", 10)
+        if ode_context and _has(raw, "极值", "单调", "驻点", "邻域"):
+            add("monotonicity-extrema", 8)
+
+    # Integral calculus.  Multiple integrals are handled in their own block;
+    # here we keep only one-dimensional integral signals.
+    if "integral" in concepts:
+        if _has(raw, "面积", "平面图形", "旋转体", "体积", "弧长", "旋转曲面"):
+            add("geometric-integral", 13)
+        if _has(raw, "功", "压力", "质心", "形心", "平均值", "引力", "速度", "路程", "质量", "油罐") or (
+            _has(raw, "距离") and _has(raw, "速度", "运动", "时刻", "时间")
+        ):
+            add("physical-average-integral", 14)
+        if _has(raw, "反常积分", "广义积分", "敛散", "收敛性", "瑕点", "+\\infty", "+∞"):
+            add("improper-integral", 14)
+        if _has(raw, "变限积分", "积分上限", "上限函数", "下限函数", "f(t)") and _has(raw, "导数", "微分", "极限"):
+            add("variable-upper-limit", 12)
+        if _has(raw, "分部积分", "递推积分", "积分递推", "uv"):
+            add("integration-by-parts", 14)
+        if _has(raw, "换元积分", "换元法", "变量替换", "作变换", "代换"):
+            add("substitution-integration", 13)
+        if _has(raw, "部分分式", "有理函数", "三角有理", "万能代换", "根式积分", "\\arctan", "arctan"):
+            add("special-integrals", 13)
+        if _has(raw, "积分不等式", "积分等式", "积分估计", "证明") and _has(raw, "积分", "∫"):
+            add("integral-identity-inequality", 8)
+        if _has(raw, "奇函数", "偶函数", "周期函数", "对称性", "对称") and _has(raw, "定积分", "积分"):
+            add("definite-properties", 10)
+        if _has(raw, "原函数", "不定积分", "积分常数", "+c", "基本积分"):
+            add("antiderivative-basic", 13)
+        # A bounded one-variable definite integral with no more specific cue
+        # is a properties/definition exercise rather than a geometric one.
+        if _has(raw, "∫", "\\int", "积分") and not any(item in scores for item in (
+            "geometric-integral", "physical-average-integral", "improper-integral",
+            "variable-upper-limit", "integration-by-parts", "substitution-integration",
+            "special-integrals", "integral-identity-inequality", "antiderivative-basic",
+        )):
+            add("definite-properties", 5)
+
+    if "multivariable" in concepts:
+        if _has(raw, "隐函数", "隐式函数", "偏导数", "偏导", r"f'_x", r"f'_y") and _has(raw, "隐函数", "偏导", r"f'_x", r"f'_y"):
+            add("implicit-partial", 13)
+        if _has(raw, "复合函数", "链式法则", "z=f(", "z = f", "u=", "v=") and _has(raw, "偏导", "全微分", "dz"):
+            add("multivariable-chain", 12)
+        if _has(raw, "全微分", "可微", "偏导数", "偏导", r"f'_x", r"f'_y"):
+            add("partial-full-differential", 8)
+        if _has(raw, "极大值", "极小值", "极值点", "驻点", "最值", "最长距离", "最短距离", "最大距离", "最小距离") and _has(raw, "二元", "多元", "椭圆域", "f(x,y)", "f(x, y)", "x^3", "x^{3}"):
+            add("multivariable-extrema", 13)
+
+    if "multiple-integral" in concepts:
+        if _has(raw, "极坐标", "rdr", "r dr", "极径", "θ", "theta"):
+            add("double-polar", 14)
+        if _has(raw, "换序", "积分次序", "先对", "后对", "直角坐标系"):
+            add("double-region-order", 13)
+        if _has(raw, "对称性", "关于x轴", "关于y轴", "关于原点", "象限", "奇偶"):
+            add("double-symmetry", 12)
+        if _has(raw, "面积", "质量", "质心", "形心", "物理应用") and _has(raw, "二重积分", "二重"):
+            add("double-application", 12)
+        if _has(raw, "二重积分", "二重积分") or _has_compact(compact, r"\iint", r"\int\int"):
+            add("double-cartesian", 7)
+
+    # Ordinary differential equations are a closed classification family.
+    # A mixed source block may also mention an integral or a matrix, but that
+    # must never leak a calculus/linear-algebra subtype into the ODE selector.
+    ode_context = "differential-equation" in concepts
+    if ode_context:
+        ode_ids = {
+            "separable-homogeneous-ode",
+            "first-order-linear-ode",
+            "exact-ode",
+            "first-order-substitution-ode",
+            "bernoulli-ode",
+            "reducible-higher-ode",
+            "constant-coefficient-ode",
+            "linear-ode-structure",
+            "ode-modeling",
+        }
+        for subtype_id in list(scores):
+            if subtype_id not in ode_ids:
+                scores.pop(subtype_id, None)
+        second_order = _has(raw, "y''", "y^{\\prime\\prime}", "y′′", "二阶", "三阶", "高阶")
+        nonlinear_higher = _has(raw, "(y')^2", "(y^{\\prime})^2", "(y′)^2", "yy''", "y y''", "p=y'", "p=y′")
+        if _has(raw, "伯努利", "bernoulli", "y^n", "y^{n}", "y的n次方"):
+            add("bernoulli-ode", 18)
+        if _has(raw, "全微分方程", "恰当方程", "恰当微分", "势函数", "m_y=n_x"):
+            add("exact-ode", 18)
+        if _has(raw, "可降阶", "不显含y", "不显含 y", "不显含x", "不显含 x", "p=y'", "p=y′", "降阶") or (
+            second_order and nonlinear_higher
+        ):
+            add("reducible-higher-ode", 17)
+        if _has(raw, "两个特解", "三个解", "线性组合", "叠加原理", "对应齐次方程") and _has(raw, "非齐次线性", "线性微分方程"):
+            add("linear-ode-structure", 19)
+        if _has(raw, "二阶常系数", "三阶常系数", "常系数线性", "特征根", "特征方程", "特征多项式", "特解形式", "特解可设"):
+            add("constant-coefficient-ode", 17)
+        elif second_order and _has(raw, "y''", "y^{\\prime\\prime}", "y′′") and not _has(raw, "x^2", "x^", "xy''", "x y''", "(y')^2", "p=y'", "p=y′", "yy''", "y y''", "[x+", "2x-", "x-1", "y''\\cos", "y^{\\prime\\prime}\\cos", "y''\\sin", "y^{\\prime\\prime}\\sin"):
+            add("constant-coefficient-ode", 10)
+        nonlinear_first_order = _has(
+            raw, "y^2", "y^{2}", "y²", "y^3", "y^{3}", "y³", "y^n", "y^{n}",
+            "(y')^2", "(y^{\\prime})^2", "y^2y'", "x+y)^", "x-y)^", "sin y", "e^y",
+        )
+        derivative_token = r"(?:y\s*\^\s*\{?\\?prime|y'|y′|d\}\s*y|dy/dx|dy)"
+        first_order_linear_shape = bool(
+            re.search(derivative_token, raw, flags=re.IGNORECASE)
+            and re.search(r"\by\b", raw, flags=re.IGNORECASE)
+            and "=" in raw
+            and not nonlinear_first_order
+            and not _has(raw, "x+y", "x + y", "x/y", "x / y", "y/x", "y / x")
+        )
+        if not second_order and not _has(raw, "伯努利", "bernoulli", "非线性") and (
+            _has(raw, "一阶线性", "线性微分方程", "积分因子", "常数变易", "通解公式") or (first_order_linear_shape and not nonlinear_first_order)
+        ):
+            add("first-order-linear-ode", 16)
+        if _has(raw, "可分离", "分离变量", "齐次一阶", "y/x", "y = ux", "y=ux"):
+            add("separable-homogeneous-ode", 15)
+        if not second_order and _has(raw, "x+y", "x + y", "令 u", "令\\,u", "代换") and not any(
+            item in scores for item in ("exact-ode", "bernoulli-ode", "constant-coefficient-ode", "reducible-higher-ode")
+        ):
+            add("first-order-substitution-ode", 15)
+        if _has(raw, "应用", "运动", "变化率", "初值问题", "模型", "冷却", "减速", "飞机") and not any(
+            item in scores for item in (
+                "bernoulli-ode", "separable-homogeneous-ode", "first-order-linear-ode",
+                "exact-ode", "first-order-substitution-ode", "reducible-higher-ode", "constant-coefficient-ode",
+            )
+        ):
+            add("ode-modeling", 14)
+        if not any(item in scores for item in ode_ids):
+            add("first-order-substitution-ode" if not second_order else "reducible-higher-ode", 5)
+    if "differential-equation" in concepts and _has(raw, "变化率与", "成正比", "冷却", "减速", "飞机"):
+        add("ode-modeling", 12)
+
+    # Linear algebra.  Eigenvalues and quadratic forms are given precedence
+    # over generic matrix/determinant words; a mixed question may still carry
+    # both a primary matrix subtype and an eigen/quadratic subtype.
+    if "eigenvalue" in concepts:
+        if _has(raw, "二次型") and _has(raw, "最大值", "最小值", "最值", "单位球"):
+            add("quadratic-extrema", 15)
+        if _has(raw, "正定", "正定二次型", "正惯性指数", "负惯性指数"):
+            add("positive-definite", 15)
+        if _has(raw, "二次型") and _has(raw, "标准形", "规范形", "正交变换", "合同变换"):
+            add("quadratic-standard-form", 14)
+        if _has(raw, "实对称", "对称矩阵", "正交矩阵", "正交对角化", "施密特"):
+            add("symmetric-orthogonal", 14)
+        if _has(raw, "相似对角化", "可对角化", "相似矩阵", "相似的", "相似", "p^{-1}ap", "二重根"):
+            add("similar-diagonalization", 15)
+        if _has(raw, "特征值性质", "特征值之和", "特征值之积", "迹", "tr("):
+            add("eigen-properties", 13)
+        if _has(raw, "特征值", "特征向量", "特征方程", "特征多项式", "非零特征值", "|λe-a|"):
+            add("eigen-computation", 10)
+
+    if "matrix" in concepts:
+        if _has(raw, "初等变换", "行变换", "列变换", "等价矩阵", "交换第", "行加到", "列加到"):
+            add("elementary-transform", 14)
+        if _has(raw, "伴随矩阵", "逆矩阵", "可逆", "a^{-1}", "aa^*", "}^{-1}", "^{-1}"):
+            add("inverse-adjugate", 13)
+        if _has(raw, "秩", "rank", "r(a)", "秩的"):
+            add("matrix-rank", 13)
+        if _has(raw, "分块矩阵", "矩阵方程", "AX=", "XA=", "AXB=", "存在矩阵", "矩阵 B 满足", "矩阵 X 满足"):
+            add("block-matrix-equation", 13)
+        if _has(raw, "矩阵乘法", "矩阵的幂", "a^n", "转置", "矩阵运算", "幂", "P^T", "P^{T}", "AC-CA", "CA=", r"A}^{3}", r"A}^{2}", r"\boldsymbol{C}"):
+            add("matrix-operations-powers", 10)
+        if _has(raw, "行列式", "det", "|a|", "展开"):
+            add("determinant-properties", 8)
+
+    if "vector-space" in concepts and _has(raw, r"\alpha", r"\boldsymbol{\alpha}", "α", "向量"):
+        if _has(raw, "=", "+", "矩阵") and not any(item in scores for item in ("linear-dependence", "max-independent-rank", "vector-relations")):
+            add("linear-combination", 8)
+
+    if "linear-equation" in concepts:
+        if _has(raw, "齐次线性方程组", "AX=0", "ax=0", "非零解", "基础解系"):
+            add("homogeneous-system", 14)
+        if _has(raw, "非齐次线性方程组", "AX=b", "ax=b", "有解", "无解", "唯一解", "无穷多解"):
+            add("nonhomogeneous-system", 11)
+        if _has(raw, "参数", "a取何值", "λ取何值", "讨论") and _has(raw, "方程组", "线性方程组"):
+            add("parameter-system", 13)
+        if _has(raw, "公共解", "同解", "解集相同", "同时满足"):
+            add("common-equivalent-systems", 14)
+
+    if "vector-space" in concepts:
+        if _has(raw, "线性表示", "表示为", "表示系数", "可由"):
+            add("linear-combination", 14)
+        if _has(raw, "线性相关", "线性无关", "相关性", "无关"):
+            add("linear-dependence", 13)
+        if _has(raw, "极大线性无关组", "最大线性无关组", "向量组的秩", "秩为"):
+            add("max-independent-rank", 14)
+        if _has(raw, "向量关系", "相互表示", "等价", "α", "β") and _has(raw, "向量组", "向量"):
+            add("vector-relations", 8)
+        if _has(raw, "等价") and _has(raw, r"\boldsymbol{a}_{", r"\alpha_{", "向量"):
+            add("linear-dependence", 9)
+
+    return scores
+
+
+def question_subtype_ids(question: dict[str, Any]) -> list[str]:
+    """Return the concrete syllabus subtypes supported by the question stem."""
+    override = question.get("_classification_override")
+    if isinstance(override, dict) and override.get("subtype_id") in SUBTYPES_BY_ID:
+        return [str(override["subtype_id"])]
+    scores = _question_subtype_scores(question)
+    if scores:
+        highest = max(scores.values())
+        # Keep a secondary tag only when it is a real mixed-topic cue, not a
+        # generic fallback.  A four-point gap is enough to retain deliberate
+        # cross-topic questions while suppressing noisy ties.
+        selected = [item for item, score in scores.items() if score >= max(5, highest - 4)]
+        return sorted(selected, key=lambda item: (-scores[item], item))
+
+    # Very short formula-only records still need a stable category.  Use the
+    # existing subtype signals only within the question's own concept block;
+    # never search another block and never synthesize a same-block example.
+    fallback: list[tuple[int, str]] = []
+    for concept_id in question.get("concept_ids") or []:
+        for subtype in SUBTYPE_CATALOG.get(concept_id, []):
+            score = _legacy_subtype_score(question, subtype)
+            if score:
+                fallback.append((score, subtype["id"]))
+    if fallback:
+        best = max(score for score, _ in fallback)
+        return [subtype_id for score, subtype_id in sorted(fallback, key=lambda item: (-item[0], item[1])) if score >= best]
+    return []
+
+
 def _difficulty_label(year: Any) -> tuple[str, str]:
     try:
         value = int(year)
@@ -1920,13 +2345,13 @@ def _unique_questions(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _question_text(question: dict[str, Any], *, include_solution: bool) -> str:
-    fields = ["question_markdown", "answer_markdown"]
+    fields = ["label", "section", "question_markdown", "answer_markdown"]
     if include_solution:
         fields.append("solution_markdown")
     return " ".join(str(question.get(field, "")).lower() for field in fields)
 
 
-def _subtype_score(question: dict[str, Any], subtype: dict[str, Any]) -> int:
+def _legacy_subtype_score(question: dict[str, Any], subtype: dict[str, Any]) -> int:
     question_text = _question_text(question, include_solution=False)
     full_text = _question_text(question, include_solution=True)
     score = 0
@@ -1937,6 +2362,14 @@ def _subtype_score(question: dict[str, Any], subtype: dict[str, Any]) -> int:
         elif normalized in full_text:
             score += 1
     return score
+
+
+def _subtype_score(question: dict[str, Any], subtype: dict[str, Any]) -> int:
+    """Compatibility score used by older callers and the example fallback."""
+    classified = question_subtype_ids(question)
+    if subtype.get("id") in classified:
+        return 100
+    return _legacy_subtype_score(question, subtype)
 
 
 def is_workbench_question_eligible(question: dict[str, Any]) -> bool:
@@ -1966,10 +2399,22 @@ def _concept_questions(questions: list[dict[str, Any]], concept_id: str) -> list
 
 def _question_pool(questions: list[dict[str, Any]], concept_id: str, subtype: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     concept_pool = _concept_questions(questions, concept_id)
-    scored = [(item, _subtype_score(item, subtype)) for item in concept_pool]
-    matched = [item for item, score in sorted(scored, key=lambda pair: (-pair[1], _question_sort_key(pair[0]))) if score > 0]
-    supplements = [item for item in sorted(concept_pool, key=_question_sort_key) if item not in matched]
-    return _unique_questions(matched), _unique_questions(supplements)
+    matched = [
+        item for item in concept_pool
+        if subtype["id"] in question_subtype_ids(item)
+    ]
+    # Preserve source-backed examples for a terse legacy stem only when the
+    # fallback signal is inside this exact concept and not another block.
+    if not matched:
+        scored = [(item, _legacy_subtype_score(item, subtype)) for item in concept_pool]
+        matched = [
+            item for item, score in sorted(scored, key=lambda pair: (-pair[1], _question_sort_key(pair[0])))
+            if score > 0 and subtype["id"] in question_subtype_ids(item)
+        ]
+    # A same-block question is not a valid substitute for a different
+    # subtype.  Returning it here made a Bernoulli page display matrix and
+    # determinant questions whenever no Bernoulli signal was found.
+    return _unique_questions(matched), []
 
 
 def _copy_template(concept_id: str, subtype: dict[str, Any]) -> dict[str, Any]:
@@ -2007,7 +2452,13 @@ def is_valid_subtype(concept_id: str, subtype_id: str) -> bool:
 
 
 def build_workbench_template(
-    questions: list[dict[str, Any]], concept_id: str, subtype_id: str, override: dict[str, Any] | None = None,
+    questions: list[dict[str, Any]],
+    concept_id: str,
+    subtype_id: str,
+    override: dict[str, Any] | None = None,
+    *,
+    refresh: bool = False,
+    exclude_question_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if concept_id not in MATH2_CONCEPT_IDS:
         raise ValueError("Workbench 只支持数学二大纲内知识块。")
@@ -2015,7 +2466,19 @@ def build_workbench_template(
         raise ValueError("无效的细分题型。")
     subtype = SUBTYPES_BY_ID[subtype_id]
     matched, supplements = _question_pool(questions, concept_id, subtype)
-    selected = _unique_questions(matched + supplements)[:4]
+    excluded = {str(item) for item in (exclude_question_ids or ()) if str(item)}
+    if refresh:
+        fresh = [item for item in matched if str(item.get("id")) not in excluded]
+        previous = [item for item in matched if str(item.get("id")) in excluded]
+        requested = min(4, len(matched))
+        # Keep the current example/variants out completely when enough real
+        # alternatives exist. Only use the previous set to fill the short
+        # tail of a genuinely small subtype pool.
+        candidates = fresh if len(fresh) >= requested else fresh + previous
+        random.SystemRandom().shuffle(candidates)
+    else:
+        candidates = matched
+    selected = _unique_questions(candidates + supplements)[:4]
     example = selected[0] if selected else None
     variants = selected[1:4]
     matched_ids = {item.get("id") for item in matched}
@@ -2032,7 +2495,7 @@ def build_workbench_template(
     )
     template["matched_question_count"] = len(matched)
     template["available_count"] = len(matched) + len(supplements)
-    template["example_source"] = "细分题型命中" if example and example.get("id") in matched_ids else "同知识块补充"
+    template["example_source"] = "细分题型命中" if example and example.get("id") in matched_ids else "无直接题目"
     template["question_format_counts"] = {
         question_type: sum(1 for item in matched if item.get("question_type") == question_type)
         for question_type in QUESTION_TYPES
@@ -2059,7 +2522,10 @@ def build_workbench_template(
     return template
 
 
-def workbench_catalog(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def workbench_catalog(
+    questions: list[dict[str, Any]],
+    attempt_stats: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for concept in MATH2_CONCEPTS:
         concept_id = concept["id"]
@@ -2067,11 +2533,17 @@ def workbench_catalog(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         subtypes = []
         for subtype in SUBTYPE_CATALOG[concept_id]:
             matched, _ = _question_pool(questions, concept_id, subtype)
+            matched_ids = [str(item["id"]) for item in matched]
+            matched_attempts = [attempt_stats.get(question_id, {}) for question_id in matched_ids] if attempt_stats else []
             subtypes.append({
                 "id": subtype["id"],
                 "name": subtype["name"],
                 "summary": subtype["summary"],
                 "matched_question_count": len(matched),
+                "attempted_question_count": sum(1 for item in matched_attempts if item.get("attempts", 0)),
+                "unseen_question_count": sum(1 for item in matched_attempts if not item.get("attempts", 0)) if attempt_stats else len(matched),
+                "attempts": sum(int(item.get("attempts", 0)) for item in matched_attempts),
+                "correct": sum(int(item.get("correct", 0)) for item in matched_attempts),
                 "question_format_counts": {
                     question_type: sum(1 for item in matched if item.get("question_type") == question_type)
                     for question_type in QUESTION_TYPES

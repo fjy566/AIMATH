@@ -29,6 +29,7 @@ from app.database import (
     get_note,
     get_simulation,
     get_practice_session,
+    get_question_classification_override,
     get_template_override,
     init_db,
     insert_attempt,
@@ -36,6 +37,7 @@ from app.database import (
     list_notes,
     list_template_overrides,
     list_template_versions,
+    list_question_classification_overrides,
     link_attachments,
     note_asset_path,
     restore_note_version,
@@ -43,10 +45,11 @@ from app.database import (
     update_note,
     upsert_template_override,
     upsert_practice_session_answer,
+    upsert_question_classification,
     upsert_simulation_answer,
 )
 from app.services.content import question_store
-from app.services.concepts import concept_descriptor
+from app.services.concepts import MATH2_CONCEPT_IDS, concept_descriptor
 from app.services.grading import grade_question
 from app.services.learner import (
     CONCEPT_META,
@@ -54,16 +57,19 @@ from app.services.learner import (
     learning_analytics,
     difficulty_descriptor,
     progress_summary,
+    question_attempt_summaries,
     randomized_practice_questions,
     recommended_questions,
     study_blocks,
 )
-from app.services.llm import LLMError, fetch_models, public_settings, save_settings, tutor_response
+from app.services.llm import LLMError, fetch_models, hint_response, public_settings, save_settings, tutor_response
 from app.services.server import ServerSettingsError, save_server_settings, server_settings
 from app.services.workbench import (
     build_workbench_template,
     is_valid_subtype,
+    question_subtype_ids,
     subtype_count,
+    subtype_descriptor,
     workbench_catalog,
 )
 
@@ -118,8 +124,17 @@ class PracticeSessionCreateRequest(BaseModel):
     user_id: str = "local-user"
     exam_type: str = "数学二"
     concept_id: str
-    question_type: str
+    question_type: str = ""
+    subtype_id: str = ""
     count: int = Field(default=15, ge=1, le=15)
+    exclude_question_ids: list[str] = Field(default_factory=list, max_length=30)
+
+
+class ClassificationCorrectionRequest(BaseModel):
+    user_id: str = "local-user"
+    concept_id: str
+    subtype_id: str
+    note: str = Field(default="", max_length=500)
 
 
 class PracticeSessionDataRequest(BaseModel):
@@ -177,18 +192,101 @@ class WorkbenchImportRequest(BaseModel):
     template_overrides: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
 
 
-def _question_public(question: dict[str, Any], reveal: bool = False) -> dict[str, Any]:
+def _question_override(question: dict[str, Any], user_id: str = "local-user", overrides: dict[str, dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    question_id = str(question.get("id", ""))
+    if overrides is not None:
+        return overrides.get(question_id)
+    return get_question_classification_override(user_id, question_id)
+
+
+def _effective_question(question: dict[str, Any], override: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not override:
+        return question
+    item = dict(question)
+    original_concepts = list(question.get("concept_ids") or [])
+    item["concept_ids"] = [override["concept_id"]] + [
+        concept_id for concept_id in original_concepts if concept_id not in MATH2_CONCEPT_IDS
+    ]
+    item["_classification_override"] = override
+    return item
+
+
+def _questions_for_user(user_id: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    normalized_user = user_id.strip() or "local-user"
+    overrides = list_question_classification_overrides(normalized_user)
+    return [
+        _effective_question(question, overrides.get(str(question.get("id", ""))))
+        for question in question_store.list()
+    ], overrides
+
+
+def _question_attempt_stats(user_id: str = "local-user") -> dict[str, dict[str, Any]]:
+    return question_attempt_summaries(fetch_attempts(user_id.strip() or "local-user"))
+
+
+def _empty_attempt_summary() -> dict[str, Any]:
+    return {
+        "attempted": False,
+        "attempts": 0,
+        "correct": 0,
+        "incorrect": 0,
+        "partial": 0,
+        "manual": 0,
+        "accuracy": None,
+        "last_status": "",
+        "last_status_label": "",
+        "last_score": 0,
+        "last_max_score": 0,
+        "last_attempt_at": None,
+    }
+
+
+def _attach_workbench_attempt_stats(template: dict[str, Any], attempt_stats: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Add the same per-question history used by the library to Workbench."""
+    containers = [template.get("example"), *(template.get("variants") or [])]
+    for container in containers:
+        question = container.get("question") if isinstance(container, dict) else None
+        if not isinstance(question, dict):
+            continue
+        summary = dict(attempt_stats.get(str(question.get("id", "")), _empty_attempt_summary()))
+        question["attempt_summary"] = summary
+        question["attempted"] = bool(summary.get("attempts"))
+    return template
+
+
+def _question_public(
+    question: dict[str, Any],
+    reveal: bool = False,
+    *,
+    user_id: str = "local-user",
+    classification_overrides: dict[str, dict[str, Any]] | None = None,
+    attempt_stats: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    override = _question_override(question, user_id, classification_overrides)
+    effective = _effective_question(question, override)
     result = {key: value for key, value in question.items() if key not in {"raw_markdown", "answer_markdown", "solution_markdown"}}
-    difficulty_band, difficulty_label = difficulty_descriptor(question.get("year"))
+    result["concept_ids"] = list(effective.get("concept_ids") or [])
+    difficulty_band, difficulty_label = difficulty_descriptor(effective.get("year"))
     result["difficulty_band"] = difficulty_band
     result["difficulty_label"] = difficulty_label
-    result["answer_available"] = bool(question.get("has_answer"))
-    result["solution_available"] = bool(question.get("has_solution"))
-    result["concept_labels"] = [concept_descriptor(item) for item in question.get("concept_ids", [])]
+    result["answer_available"] = bool(effective.get("has_answer"))
+    result["solution_available"] = bool(effective.get("has_solution"))
+    result["concept_labels"] = [concept_descriptor(item) for item in effective.get("concept_ids", [])]
     result["has_out_of_syllabus_concepts"] = any(item["scope"] == "out-of-syllabus" for item in result["concept_labels"])
+    subtype_ids = [override["subtype_id"]] if override else question_subtype_ids(question)
+    subtype_items = [descriptor for item in subtype_ids if (descriptor := subtype_descriptor(item))]
+    result["subtype_ids"] = subtype_ids
+    result["subtype_labels"] = subtype_items
+    result["classification_source"] = "user-correction" if override else ("rule" if subtype_ids else "unclassified")
+    result["classification_updated_at"] = override.get("updated_at", "") if override else ""
+    result["classification_note"] = override.get("note", "") if override else ""
+    if attempt_stats is None:
+        attempt_stats = _question_attempt_stats(user_id)
+    result["attempt_summary"] = dict(attempt_stats.get(str(question.get("id", "")), _empty_attempt_summary()))
+    result["attempted"] = bool(result["attempt_summary"].get("attempts"))
     if reveal:
-        result["answer_markdown"] = question.get("answer_markdown", "")
-        result["solution_markdown"] = question.get("solution_markdown", "")
+        result["answer_markdown"] = effective.get("answer_markdown", "")
+        result["solution_markdown"] = effective.get("solution_markdown", "")
     return result
 
 
@@ -301,18 +399,28 @@ def get_workbench_catalog(
     concept_id: str = Query(default=""),
     subtype_id: str = Query(default=""),
     user_id: str = Query(default="local-user"),
+    refresh: bool = Query(default=False),
+    exclude_question_ids: list[str] = Query(default=[]),
 ) -> dict[str, Any]:
-    questions = question_store.list()
+    questions, _ = _questions_for_user(user_id)
+    attempt_stats = _question_attempt_stats(user_id)
     if concept_id or subtype_id:
         if not concept_id or not subtype_id:
             raise HTTPException(status_code=400, detail="选择知识块和细分题型后才能读取模板。")
         override = get_template_override(user_id.strip() or "local-user", concept_id, subtype_id)
         try:
-            template = build_workbench_template(questions, concept_id, subtype_id, override)
+            template = build_workbench_template(
+                questions,
+                concept_id,
+                subtype_id,
+                override,
+                refresh=refresh,
+                exclude_question_ids=exclude_question_ids,
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return {"template": template}
-    catalog = workbench_catalog(questions)
+        return {"template": _attach_workbench_attempt_stats(template, attempt_stats)}
+    catalog = workbench_catalog(questions, attempt_stats=attempt_stats)
     return {
         "concepts": catalog,
         "total_templates": subtype_count(),
@@ -333,7 +441,9 @@ def save_workbench_template(concept_id: str, subtype_id: str, payload: TemplateU
         "mistakes": [item.strip() for item in payload.mistakes if item.strip()],
         "memory_aid": payload.memory_aid.strip(),
     })
-    return {"template": build_workbench_template(question_store.list(), concept_id, subtype_id, saved)}
+    questions, _ = _questions_for_user(payload.user_id)
+    template = build_workbench_template(questions, concept_id, subtype_id, saved)
+    return {"template": _attach_workbench_attempt_stats(template, _question_attempt_stats(payload.user_id))}
 
 
 @app.get("/api/workbench/templates/{concept_id}/{subtype_id}/versions")
@@ -550,41 +660,73 @@ def concepts() -> list[dict[str, str]]:
 
 @app.get("/api/questions")
 def list_questions(
+    user_id: str = "local-user",
     exam_type: str | None = None,
     year: int | None = None,
     question_type: str | None = None,
     concept_id: str | None = None,
+    subtype_id: str | None = None,
     scope: str | None = None,
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
+    normalized_user = user_id.strip() or "local-user"
+    overrides = list_question_classification_overrides(normalized_user)
+    attempt_stats = _question_attempt_stats(normalized_user)
+    if subtype_id and subtype_descriptor(subtype_id) is None:
+        raise HTTPException(status_code=400, detail="无效的细分题型。")
     items = []
     for question in question_store.list():
+        override = overrides.get(str(question.get("id", "")))
+        effective = _effective_question(question, override)
         if exam_type and question.get("exam_type") != exam_type:
             continue
         if year and question.get("year") != year:
             continue
         if question_type and question.get("question_type") != question_type:
             continue
-        if concept_id and concept_id not in question.get("concept_ids", []):
+        if concept_id and concept_id not in effective.get("concept_ids", []):
+            continue
+        if subtype_id and subtype_id not in ([override["subtype_id"]] if override else question_subtype_ids(question)):
             continue
         if scope in {"math2", "out-of-syllabus"}:
-            question_scopes = {concept_descriptor(item)["scope"] for item in question.get("concept_ids", [])}
+            question_scopes = {concept_descriptor(item)["scope"] for item in effective.get("concept_ids", [])}
             if scope not in question_scopes:
                 continue
-        items.append(_question_public(question))
+        items.append(_question_public(question, user_id=normalized_user, classification_overrides=overrides, attempt_stats=attempt_stats))
     items.sort(key=lambda item: (item.get("year", 0), item.get("number", 0), item.get("id", "")), reverse=True)
     return {"items": items[offset : offset + limit], "total": len(items), "offset": offset, "limit": limit}
 
 
 @app.get("/api/questions/{question_id}")
-def get_question(question_id: str, reveal: bool = False) -> dict[str, Any]:
-    return _question_public(_question_or_404(question_id), reveal=reveal)
+def get_question(question_id: str, reveal: bool = False, user_id: str = "local-user") -> dict[str, Any]:
+    return _question_public(_question_or_404(question_id), reveal=reveal, user_id=user_id, attempt_stats=_question_attempt_stats(user_id))
+
+
+@app.put("/api/questions/{question_id}/classification")
+def correct_question_classification(question_id: str, payload: ClassificationCorrectionRequest) -> dict[str, Any]:
+    question = _question_or_404(question_id)
+    user_id = payload.user_id.strip() or "local-user"
+    if payload.concept_id not in MATH2_CONCEPT_IDS:
+        raise HTTPException(status_code=400, detail="纠正分类必须选择数学二大纲内知识块。")
+    if not is_valid_subtype(payload.concept_id, payload.subtype_id):
+        raise HTTPException(status_code=400, detail="所选细分题型不属于该知识块。")
+    saved = upsert_question_classification(
+        {
+            "user_id": user_id,
+            "question_id": question_id,
+            "concept_id": payload.concept_id,
+            "subtype_id": payload.subtype_id,
+            "note": payload.note,
+        }
+    )
+    return {"question": _question_public(question, user_id=user_id, attempt_stats=_question_attempt_stats(user_id)), "override": saved}
 
 
 @app.post("/api/questions/{question_id}/attempts")
 def create_attempt(question_id: str, payload: AttemptRequest) -> dict[str, Any]:
     question = _question_or_404(question_id)
+    effective_question = _effective_question(question, _question_override(question, payload.user_id))
     result = grade_question(question, payload.answer, payload.self_grade)
     error_type = payload.error_type.strip() or result.get("error_type", "")
     attempt_id = insert_attempt(
@@ -598,7 +740,7 @@ def create_attempt(question_id: str, payload: AttemptRequest) -> dict[str, Any]:
             "max_score": result["max_score"],
             "confidence": result["confidence"],
             "error_type": error_type,
-            "concepts": question.get("concept_ids", []),
+            "concepts": effective_question.get("concept_ids", []),
             "duration_seconds": payload.duration_seconds,
             "hints_used": payload.hints_used,
             "mode": payload.mode,
@@ -611,17 +753,21 @@ def create_attempt(question_id: str, payload: AttemptRequest) -> dict[str, Any]:
         attempt_id=attempt_id,
     )
     result["error_type"] = error_type
-    return _attempt_response(question, result, attempt_id)
+    response = _attempt_response(question, result, attempt_id)
+    response["attempt_summary"] = _question_attempt_stats(payload.user_id).get(question_id, _empty_attempt_summary())
+    return response
 
 
 @app.get("/api/progress")
 def progress(user_id: str = "local-user") -> dict[str, Any]:
-    return progress_summary(fetch_attempts(user_id), question_store.list())
+    questions, _ = _questions_for_user(user_id)
+    return progress_summary(fetch_attempts(user_id), questions)
 
 
 @app.get("/api/analytics")
 def analytics(user_id: str = "local-user", exam_type: str = "数学二") -> dict[str, Any]:
-    return learning_analytics(question_store.list(), fetch_attempts(user_id), exam_type=exam_type)
+    questions, _ = _questions_for_user(user_id)
+    return learning_analytics(questions, fetch_attempts(user_id), exam_type=exam_type)
 
 
 @app.get("/api/practice/next")
@@ -629,21 +775,34 @@ def practice_next(
     user_id: str = "local-user",
     exam_type: str = "数学二",
     concept_id: str | None = None,
+    subtype_id: str | None = None,
     limit: int = Query(default=8, ge=1, le=30),
 ) -> dict[str, Any]:
     attempts = fetch_attempts(user_id)
-    items = recommended_questions(question_store.list(), attempts, exam_type=exam_type, concept_id=concept_id, limit=limit)
-    return {"items": [_question_public(item) for item in items], "concept_id": concept_id, "exam_type": exam_type}
+    questions, overrides = _questions_for_user(user_id)
+    attempt_stats = question_attempt_summaries(attempts)
+    items = recommended_questions(questions, attempts, exam_type=exam_type, concept_id=concept_id, limit=limit)
+    if subtype_id:
+        items = [item for item in items if subtype_id in question_subtype_ids(item)]
+    return {
+        "items": [_question_public(item, user_id=user_id, classification_overrides=overrides, attempt_stats=attempt_stats) for item in items],
+        "concept_id": concept_id,
+        "subtype_id": subtype_id,
+        "exam_type": exam_type,
+    }
 
 
 @app.get("/api/study/blocks")
 def study_block_endpoint(user_id: str = "local-user", limit: int = Query(default=6, ge=1, le=12)) -> dict[str, Any]:
-    blocks = study_blocks(question_store.list(), fetch_attempts(user_id), limit=limit)
+    questions, overrides = _questions_for_user(user_id)
+    attempts = fetch_attempts(user_id)
+    attempt_stats = question_attempt_summaries(attempts)
+    blocks = study_blocks(questions, attempts, limit=limit)
     return {
         "blocks": [
             {
                 **block,
-                "questions": [_question_public(item) for item in block["questions"]],
+                "questions": [_question_public(item, user_id=user_id, classification_overrides=overrides, attempt_stats=attempt_stats) for item in block["questions"]],
             }
             for block in blocks
         ]
@@ -654,12 +813,18 @@ def practice_session_view(session: dict[str, Any] | None, *, reveal: bool = Fals
     if session is None:
         raise HTTPException(status_code=404, detail="训练会话不存在。")
     answer_map = {answer["question_id"]: answer for answer in session.get("answers", [])}
+    attempt_stats = _question_attempt_stats(session.get("user_id", "local-user"))
     questions = []
     for question_id in session["question_ids"]:
         question = question_store.get(question_id)
         if question is None:
             continue
-        item = _question_public(question, reveal=reveal)
+        item = _question_public(
+            question,
+            reveal=reveal,
+            user_id=session.get("user_id", "local-user"),
+            attempt_stats=attempt_stats,
+        )
         answer = answer_map.get(question_id)
         if answer:
             item["answer_state"] = {
@@ -700,16 +865,21 @@ def _validate_practice_payload(session: dict[str, Any], payload: PracticeSession
 
 @app.post("/api/practice/sessions")
 def create_practice_session_endpoint(payload: PracticeSessionCreateRequest) -> dict[str, Any]:
-    if payload.question_type not in {"choice", "fill", "solution"}:
+    if payload.question_type and payload.question_type not in {"choice", "fill", "solution"}:
         raise HTTPException(status_code=400, detail="不支持的题型。")
+    if payload.subtype_id and not is_valid_subtype(payload.concept_id, payload.subtype_id):
+        raise HTTPException(status_code=400, detail="所选细分题型不属于该知识块。")
     user_id = payload.user_id.strip() or "local-user"
     attempts = fetch_attempts(user_id)
+    questions, _ = _questions_for_user(user_id)
     selected = randomized_practice_questions(
-        question_store.list(), attempts,
+        questions, attempts,
         exam_type=payload.exam_type,
         concept_id=payload.concept_id,
-        question_type=payload.question_type,
+        question_type=payload.question_type or None,
+        subtype_id=payload.subtype_id or None,
         limit=payload.count,
+        exclude_question_ids=payload.exclude_question_ids,
     )
     if not selected:
         raise HTTPException(status_code=404, detail="该知识块暂时没有对应题型的真实题目。")
@@ -721,6 +891,7 @@ def create_practice_session_endpoint(payload: PracticeSessionCreateRequest) -> d
             "exam_type": payload.exam_type,
             "concept_id": payload.concept_id,
             "question_type": payload.question_type,
+            "subtype_id": payload.subtype_id,
             "question_ids": [question["id"] for question in selected],
             "requested_count": payload.count,
             "max_score": sum(float(question.get("points", 0)) for question in selected),
@@ -772,6 +943,7 @@ def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDa
     total = 0.0
     for question_id in session["question_ids"]:
         question = _question_or_404(question_id)
+        effective_question = _effective_question(question, _question_override(question, session["user_id"]))
         answer = payload.answers.get(question_id, "")
         self_grade = payload.self_grades.get(question_id)
         result = grade_question(question, answer, self_grade)
@@ -787,7 +959,7 @@ def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDa
                 "max_score": result["max_score"],
                 "confidence": result["confidence"],
                 "error_type": result.get("error_type", ""),
-                "concepts": question.get("concept_ids", []),
+                "concepts": effective_question.get("concept_ids", []),
                 "duration_seconds": 0,
                 "hints_used": 0,
                 "mode": "practice-session",
@@ -820,7 +992,8 @@ def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDa
 
 @app.get("/api/forecast")
 def score_forecast(user_id: str = "local-user", exam_type: str = "数学二") -> dict[str, Any]:
-    return forecast_score(question_store.list(), fetch_attempts(user_id), exam_type=exam_type)
+    questions, _ = _questions_for_user(user_id)
+    return forecast_score(questions, fetch_attempts(user_id), exam_type=exam_type)
 
 
 @app.post("/api/simulations")
@@ -854,11 +1027,17 @@ def simulation_view(simulation: dict[str, Any] | None, reveal: bool = False) -> 
         raise HTTPException(status_code=404, detail="模拟考试不存在。")
     questions = []
     answer_map = {answer["question_id"]: answer for answer in simulation.get("answers", [])}
+    attempt_stats = _question_attempt_stats(simulation.get("user_id", "local-user"))
     for question_id in simulation["question_ids"]:
         question = question_store.get(question_id)
         if question is None:
             continue
-        item = _question_public(question, reveal=reveal)
+        item = _question_public(
+            question,
+            reveal=reveal,
+            user_id=simulation.get("user_id", "local-user"),
+            attempt_stats=attempt_stats,
+        )
         if question_id in answer_map:
             item["attempt"] = answer_map[question_id]
         questions.append(item)
@@ -896,6 +1075,7 @@ def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> d
     total = 0.0
     for question_id in simulation["question_ids"]:
         question = _question_or_404(question_id)
+        effective_question = _effective_question(question, _question_override(question, payload.user_id))
         answer = payload.answers.get(question_id, "")
         self_grade = payload.self_grades.get(question_id)
         result = grade_question(question, answer, self_grade)
@@ -921,7 +1101,7 @@ def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> d
                 "max_score": result["max_score"],
                 "confidence": result["confidence"],
                 "error_type": result.get("error_type", ""),
-                "concepts": question.get("concept_ids", []),
+                "concepts": effective_question.get("concept_ids", []),
                 "duration_seconds": 0,
                 "hints_used": 0,
                 "mode": "simulation",
@@ -978,5 +1158,14 @@ async def tutor(question_id: str, payload: TutorRequest) -> dict[str, Any]:
     question = _question_or_404(question_id)
     try:
         return await tutor_response(question, payload.answer, payload.request)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/questions/{question_id}/hint")
+async def question_hint(question_id: str, payload: TutorRequest) -> dict[str, Any]:
+    question = _question_or_404(question_id)
+    try:
+        return await hint_response(question, payload.answer, payload.request or "给我解题思路")
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

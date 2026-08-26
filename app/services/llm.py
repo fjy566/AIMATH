@@ -143,3 +143,37 @@ async def tutor_response(question: dict[str, Any], user_answer: str, request: st
     ]
     content = await chat_completion(messages, temperature=0.15)
     return {"content": content, "model": _settings().get("model", "")}
+
+
+async def hint_response(question: dict[str, Any], user_answer: str = "", request: str = "给我解题思路") -> dict[str, Any]:
+    """Return a progressive hint for an active training question.
+
+    The source answer/solution is supplied as context so the configured model
+    can stay grounded, but the prompt asks it to stop before dumping a full
+    derivation.  The source solution remains separately available through the
+    reveal endpoint, so an unavailable model never blocks reviewing the real
+    answer.
+    """
+    solution = question.get("solution_markdown") or "当前来源没有提供该题解析。"
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是考研数学训练陪练。只依据题目、标准答案和来源解析回答，不得编造题设。"
+                "用户在做题中请求思路：先指出应识别的知识点和第一步，随后给出不超过三步的分层提示，"
+                "不要直接抄出完整答案；若用户已经给出步骤，只指出下一处检查点。"
+                "如果来源没有解析，必须明确说明‘当前来源没有提供解析’，但仍可给出基于题面定义的思路。"
+                "用简体中文，使用清晰的短段落或编号列表。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"请求：{request}\n题目：\n{question.get('question_markdown', '')}\n"
+                f"标准答案（仅供核对方向）：\n{question.get('answer_markdown', '')}\n"
+                f"来源解析：\n{solution}\n我的当前作答：\n{user_answer or '尚未作答'}"
+            ),
+        },
+    ]
+    content = await chat_completion(messages, temperature=0.25)
+    return {"content": content, "model": _settings().get("model", "")}

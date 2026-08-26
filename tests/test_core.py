@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.grading import grade_question
-from app.services.learner import difficulty_descriptor, forecast_score, learning_analytics, mastery_by_concept, progress_summary
+from app.services.learner import difficulty_descriptor, forecast_score, learning_analytics, mastery_by_concept, progress_summary, question_attempt_summaries
 from app.services.llm import _api_root
 
 
@@ -37,6 +37,20 @@ def test_math2_catalog_excludes_other_paper_topics_but_keeps_display_metadata() 
     assert {"series", "probability", "vector-calculus"}.issubset(OUT_OF_SYLLABUS_CONCEPT_IDS)
     assert concept_descriptor("series")["scope"] == "out-of-syllabus"
     assert concept_descriptor("series")["name"] == "无穷级数"
+
+
+def test_concept_inference_does_not_cross_tag_linear_algebra_as_ode() -> None:
+    from app.services.concepts import infer_concepts
+
+    linear_system = "四、线性方程组\n求参数使方程组有唯一解、无解或无穷多解，并写出通解。"
+    assert "differential-equation" not in infer_concepts(linear_system, "四、线性方程组")
+
+    questions = load_questions()
+    assert not any(
+        "differential-equation" in question.get("concept_ids", [])
+        and any(item in question.get("concept_ids", []) for item in ("matrix", "linear-equation", "vector-space", "eigenvalue"))
+        for question in questions
+    )
 
 
 def test_modern_paper_has_real_150_point_total() -> None:
@@ -148,6 +162,7 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
         SUBTYPE_CATALOG,
         build_workbench_template,
         is_workbench_question_eligible,
+        question_subtype_ids,
         subtype_count,
         workbench_catalog,
     )
@@ -155,11 +170,11 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
     questions = load_questions()
     catalog = workbench_catalog(questions)
     assert len(catalog) == 10
-    assert subtype_count() == 65
+    assert subtype_count() == 68
     assert all(item["template_count"] == item["subtype_count"] >= 4 for item in catalog)
     assert all(item["subtypes"] for item in catalog)
     assert all(
-        set(subtype["question_format_counts"]) == {"choice", "fill", "solution"}
+        set(subtype["question_format_counts"]).issubset({"choice", "fill", "solution"})
         for item in catalog
         for subtype in item["subtypes"]
     )
@@ -169,11 +184,21 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
     for concept_id, subtypes in SUBTYPE_CATALOG.items():
         for subtype in subtypes:
             template = build_workbench_template(questions, concept_id, subtype["id"])
-            assert template["has_real_example"] is True
-            assert template["example"]["question"]["id"] in {item["id"] for item in questions}
-            assert template["example"]["question"]["question_markdown"].strip()
-            assert template["example"]["analysis"].strip()
-            assert template["variant_count"] >= 2
+            if template["matched_question_count"]:
+                assert template["has_real_example"] is True
+                assert template["example"]["question"]["id"] in {item["id"] for item in questions}
+                assert template["example"]["question"]["question_markdown"].strip()
+                assert template["example"]["analysis"].strip()
+                assert template["variant_count"] == min(max(template["matched_question_count"] - 1, 0), 3)
+                assert template["example_source"] == "细分题型命中"
+                assert template["example"]["source_scope"] == "细分题型命中"
+                assert all(is_workbench_question_eligible(item["question"]) for item in template["variants"])
+                assert all(item["source_scope"] == "细分题型命中" for item in template["variants"])
+            else:
+                assert template["has_real_example"] is False
+                assert template["example"]["question"] is None
+                assert template["example_source"] == "无直接题目"
+                assert template["variant_count"] == 0
             assert len(template["framework"]) >= 5
             assert len(template["mistakes"]) >= 4
             assert template["formula_sheet"].strip() and "$" in template["formula_sheet"]
@@ -192,11 +217,15 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             assert r"\\end{" not in template["formula_sheet"]
             assert template["overview"]
             assert template["subtype_name"] == subtype["name"]
-            assert template["example"]["source_scope"] in {"细分题型命中", "同知识块补充"}
-            assert all(is_workbench_question_eligible(item["question"]) for item in template["variants"])
 
     assert build_workbench_template(questions, "derivative", "rolle-theorem")["matched_question_count"] > 0
     assert build_workbench_template(questions, "derivative", "lagrange-mvt")["matched_question_count"] > 0
+    bernoulli = build_workbench_template(questions, "differential-equation", "bernoulli-ode")
+    assert bernoulli["example"]["question"] is None
+    reducible = build_workbench_template(questions, "differential-equation", "reducible-higher-ode")
+    q2026 = next(item for item in questions if item["id"] == "数学二-2026-21-21")
+    assert "reducible-higher-ode" in question_subtype_ids(q2026)
+    assert "bernoulli-ode" not in question_subtype_ids(q2026)
     analysis_fragment = next(item for item in questions if item["id"] == "数学二-2023-02-30")
     combined_paper = next(item for item in questions if item["id"] == "数学二-2020-01-01")
     assert is_workbench_question_eligible(analysis_fragment) is False
@@ -217,6 +246,9 @@ def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
     assert "function renderInlineFormulaText" in source
     assert "function renderNoteMarkdownPreview" in source
     assert "function handleStructuredTextKeydown" in source
+    assert "const sharedFormulaEditor" in source
+    assert "MARKDOWNMEDIATOKEN" in source
+    assert "<u>$1</u>" in source
     assert "data-editor-count" in source
     assert "function renderNoteRichPreview" in source
     assert "note-rich-preview-body" in markup
@@ -256,7 +288,7 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
             catalog = client.get("/api/workbench")
             assert catalog.status_code == 200
             assert len(catalog.json()["concepts"]) == 10
-            assert catalog.json()["total_templates"] == 65
+            assert catalog.json()["total_templates"] == 68
             assert catalog.json()["taxonomy_version"] == "math2-subtypes-v1"
             template = client.get("/api/workbench", params={"concept_id": "derivative", "subtype_id": "rolle-theorem"})
             assert template.status_code == 200
@@ -264,7 +296,7 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
             assert template_json["subtype_name"] == "罗尔定理的应用"
             assert template_json["has_real_example"] is True
             assert template_json["example"]["question"]["solution_markdown"]
-            assert len(template_json["variants"]) >= 2
+            assert len(template_json["variants"]) == min(max(template_json["matched_question_count"] - 1, 0), 3)
 
             created = client.post(
                 "/api/workbench/notes",
@@ -338,6 +370,194 @@ def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> 
         database.UPLOADS_DIR = original_uploads_dir
         main_module.ROOT_DIR = original_main_root
         main_module.UPLOADS_DIR = original_main_uploads
+
+
+def test_question_classification_override_flows_through_library_and_practice(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    from app.main import app
+
+    original_db_path = database.DB_PATH
+    database.DB_PATH = tmp_path / "classification.sqlite3"
+    user_id = "classification-user"
+    question_id = "数学二-2026-21-21"
+    try:
+        with TestClient(app) as client:
+            before = client.get(
+                "/api/questions",
+                params={"user_id": user_id, "exam_type": "数学二", "subtype_id": "reducible-higher-ode", "limit": 200},
+            )
+            assert before.status_code == 200
+            assert question_id in {item["id"] for item in before.json()["items"]}
+
+            corrected = client.put(
+                f"/api/questions/{question_id}/classification",
+                json={
+                    "user_id": user_id,
+                    "concept_id": "matrix",
+                    "subtype_id": "determinant-properties",
+                    "note": "测试用户覆盖分类，不改动原始题库",
+                },
+            )
+            assert corrected.status_code == 200
+            corrected_question = corrected.json()["question"]
+            assert corrected_question["classification_source"] == "user-correction"
+            assert corrected_question["concept_ids"] == ["matrix"]
+            assert corrected_question["subtype_ids"] == ["determinant-properties"]
+
+            after_ode = client.get(
+                "/api/questions",
+                params={"user_id": user_id, "exam_type": "数学二", "subtype_id": "reducible-higher-ode", "limit": 200},
+            )
+            assert question_id not in {item["id"] for item in after_ode.json()["items"]}
+            after_matrix = client.get(
+                "/api/questions",
+                params={"user_id": user_id, "exam_type": "数学二", "concept_id": "matrix", "subtype_id": "determinant-properties", "limit": 200},
+            )
+            assert question_id in {item["id"] for item in after_matrix.json()["items"]}
+
+            practice = client.post(
+                "/api/practice/sessions",
+                json={
+                    "user_id": user_id,
+                    "exam_type": "数学二",
+                    "concept_id": "matrix",
+                    "subtype_id": "determinant-properties",
+                    "count": 15,
+                },
+            )
+            assert practice.status_code == 200
+            assert practice.json()["subtype_id"] == "determinant-properties"
+            assert all("determinant-properties" in item["subtype_ids"] for item in practice.json()["questions"])
+
+            progress = client.get("/api/progress", params={"user_id": user_id})
+            assert progress.status_code == 200
+            assert next(item for item in progress.json()["concepts"] if item["id"] == "matrix")["question_count"] > 0
+
+            source = client.get(f"/api/questions/{question_id}", params={"user_id": user_id, "reveal": "true"})
+            assert source.status_code == 200
+            assert "solution_markdown" in source.json()
+
+            hint = client.post(
+                f"/api/questions/{question_id}/hint",
+                json={"user_id": user_id, "answer": "", "request": "请给我第一步思路"},
+            )
+            assert hint.status_code == 502
+            assert "Base URL" in hint.json()["detail"]
+    finally:
+        database.DB_PATH = original_db_path
+
+
+def test_question_history_and_practice_refresh_use_all_attempts(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    from app.main import app
+    from app.services.workbench import SUBTYPES_BY_ID, question_subtype_ids
+
+    original_db_path = database.DB_PATH
+    database.DB_PATH = tmp_path / "history.sqlite3"
+    questions = load_questions()
+    pools: dict[tuple[str, str], list[dict]] = {}
+    for question in questions:
+        if question["exam_type"] != "数学二":
+            continue
+        for subtype_id in question_subtype_ids(question):
+            subtype = SUBTYPES_BY_ID.get(subtype_id)
+            if subtype:
+                pools.setdefault((subtype["concept_id"], subtype_id), []).append(question)
+    concept_id, subtype_id = max(pools, key=lambda key: len(pools[key]))
+    pool = pools[(concept_id, subtype_id)]
+    assert len(pool) >= 16
+    question = next(item for item in pool if item.get("has_answer") and item.get("answer_markdown"))
+    user_id = "history-user"
+    try:
+        with TestClient(app) as client:
+            for _ in range(2):
+                response = client.post(
+                    f"/api/questions/{question['id']}/attempts",
+                    json={"user_id": user_id, "answer": question["answer_markdown"], "mode": "practice"},
+                )
+                assert response.status_code == 200
+
+            public = client.get(f"/api/questions/{question['id']}", params={"user_id": user_id})
+            assert public.status_code == 200
+            summary = public.json()["attempt_summary"]
+            assert public.json()["attempted"] is True
+            assert summary["attempts"] == 2
+            assert summary["correct"] == 2
+
+            first = client.post(
+                "/api/practice/sessions",
+                json={"user_id": user_id, "exam_type": "数学二", "concept_id": concept_id, "subtype_id": subtype_id, "count": 15},
+            )
+            assert first.status_code == 200
+            first_ids = {item["id"] for item in first.json()["questions"]}
+            second = client.post(
+                "/api/practice/sessions",
+                json={
+                    "user_id": user_id,
+                    "exam_type": "数学二",
+                    "concept_id": concept_id,
+                    "subtype_id": subtype_id,
+                    "count": 15,
+                    "exclude_question_ids": sorted(first_ids),
+                },
+            )
+            assert second.status_code == 200
+            second_ids = {item["id"] for item in second.json()["questions"]}
+            assert second_ids != first_ids
+            assert second_ids - first_ids
+
+            workbench_first = client.get(
+                "/api/workbench",
+                params={"user_id": user_id, "concept_id": concept_id, "subtype_id": subtype_id},
+            )
+            assert workbench_first.status_code == 200
+            first_workbench_ids = {
+                workbench_first.json()["template"]["example"]["question"]["id"],
+                *(item["question"]["id"] for item in workbench_first.json()["template"]["variants"]),
+            }
+            workbench_second = client.get(
+                "/api/workbench",
+                params=[
+                    ("user_id", user_id),
+                    ("concept_id", concept_id),
+                    ("subtype_id", subtype_id),
+                    ("refresh", "true"),
+                    *(('exclude_question_ids', question_id) for question_id in first_workbench_ids),
+                ],
+            )
+            assert workbench_second.status_code == 200
+            second_workbench_ids = {
+                workbench_second.json()["template"]["example"]["question"]["id"],
+                *(item["question"]["id"] for item in workbench_second.json()["template"]["variants"]),
+            }
+            assert not first_workbench_ids & second_workbench_ids
+            assert workbench_second.json()["template"]["example"]["question"]["attempt_summary"]["attempts"] >= 0
+
+            analytics = client.get("/api/analytics", params={"user_id": user_id, "exam_type": "数学二"})
+            assert analytics.status_code == 200
+            subtype_row = next(item for item in analytics.json()["subtypes"] if item["id"] == subtype_id)
+            assert subtype_row["attempts"] >= 2
+            assert subtype_row["correct"] >= 2
+    finally:
+        database.DB_PATH = original_db_path
+
+
+def test_question_attempt_summary_counts_repeated_submissions() -> None:
+    summaries = question_attempt_summaries(
+        [
+            {"question_id": "q1", "status": "incorrect", "correct": 0, "created_at": "2026-08-26T09:00:00+00:00"},
+            {"question_id": "q1", "status": "correct", "correct": 1, "created_at": "2026-08-26T10:00:00+00:00"},
+        ]
+    )
+    assert summaries["q1"]["attempted"] is True
+    assert summaries["q1"]["attempts"] == 2
+    assert summaries["q1"]["correct"] == 1
+    assert summaries["q1"]["incorrect"] == 1
+    assert summaries["q1"]["last_status"] == "correct"
 
 
 def test_server_settings_validate_and_persist(tmp_path: Path) -> None:

@@ -58,6 +58,18 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_attempts_question ON attempts(question_id);
 
+            CREATE TABLE IF NOT EXISTS question_classification_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                question_id TEXT NOT NULL,
+                concept_id TEXT NOT NULL,
+                subtype_id TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, question_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_question_classification_user ON question_classification_overrides(user_id, updated_at);
+
             CREATE TABLE IF NOT EXISTS simulations (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -107,6 +119,7 @@ def init_db() -> None:
                 exam_type TEXT NOT NULL,
                 concept_id TEXT NOT NULL,
                 question_type TEXT NOT NULL,
+                subtype_id TEXT NOT NULL DEFAULT '',
                 question_ids_json TEXT NOT NULL,
                 requested_count INTEGER NOT NULL DEFAULT 15,
                 status TEXT NOT NULL DEFAULT 'active',
@@ -208,6 +221,9 @@ def init_db() -> None:
         attachment_columns = {row["name"] for row in connection.execute("PRAGMA table_info(answer_attachments)").fetchall()}
         if "practice_session_id" not in attachment_columns:
             connection.execute("ALTER TABLE answer_attachments ADD COLUMN practice_session_id TEXT")
+        practice_columns = {row["name"] for row in connection.execute("PRAGMA table_info(practice_sessions)").fetchall()}
+        if "subtype_id" not in practice_columns:
+            connection.execute("ALTER TABLE practice_sessions ADD COLUMN subtype_id TEXT NOT NULL DEFAULT ''")
 
 
 def set_setting(key: str, value: Any) -> None:
@@ -232,6 +248,57 @@ def get_setting(key: str, default: Any = None) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return value
+
+
+def get_question_classification_override(user_id: str, question_id: str) -> dict[str, Any] | None:
+    normalized_user = user_id.strip() or "local-user"
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM question_classification_overrides WHERE user_id = ? AND question_id = ?",
+            (normalized_user, question_id),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_question_classification_overrides(user_id: str) -> dict[str, dict[str, Any]]:
+    normalized_user = user_id.strip() or "local-user"
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM question_classification_overrides WHERE user_id = ? ORDER BY updated_at DESC",
+            (normalized_user,),
+        ).fetchall()
+    return {str(row["question_id"]): dict(row) for row in rows}
+
+
+def upsert_question_classification(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized_user = str(payload.get("user_id") or "local-user").strip() or "local-user"
+    now = utc_now()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO question_classification_overrides(
+                user_id, question_id, concept_id, subtype_id, note, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, question_id) DO UPDATE SET
+                concept_id=excluded.concept_id,
+                subtype_id=excluded.subtype_id,
+                note=excluded.note,
+                updated_at=excluded.updated_at
+            """,
+            (
+                normalized_user,
+                str(payload["question_id"]),
+                str(payload["concept_id"]),
+                str(payload["subtype_id"]),
+                str(payload.get("note") or "")[:500],
+                now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM question_classification_overrides WHERE user_id = ? AND question_id = ?",
+            (normalized_user, str(payload["question_id"])),
+        ).fetchone()
+    return dict(row)
 
 
 def insert_attempt(payload: dict[str, Any]) -> int:
@@ -264,12 +331,18 @@ def insert_attempt(payload: dict[str, Any]) -> int:
         return int(cursor.lastrowid)
 
 
-def fetch_attempts(user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+def fetch_attempts(user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
     with get_connection() as connection:
-        rows = connection.execute(
-            "SELECT * FROM attempts WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit),
-        ).fetchall()
+        if limit is None:
+            rows = connection.execute(
+                "SELECT * FROM attempts WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM attempts WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -369,9 +442,9 @@ def create_practice_session(payload: dict[str, Any]) -> None:
         connection.execute(
             """
             INSERT INTO practice_sessions(
-                id, user_id, exam_type, concept_id, question_type, question_ids_json,
+                id, user_id, exam_type, concept_id, question_type, subtype_id, question_ids_json,
                 requested_count, status, max_score, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
             """,
             (
                 payload["id"],
@@ -379,6 +452,7 @@ def create_practice_session(payload: dict[str, Any]) -> None:
                 payload["exam_type"],
                 payload["concept_id"],
                 payload["question_type"],
+                payload.get("subtype_id", ""),
                 json.dumps(payload["question_ids"], ensure_ascii=False),
                 payload.get("requested_count", 15),
                 payload["max_score"],

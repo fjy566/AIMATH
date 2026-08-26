@@ -10,9 +10,16 @@ from app.services.concepts import (
     CONCEPT_META,
     concept_descriptor,
 )
+from app.services.workbench import SUBTYPES_BY_ID, question_subtype_ids
 
 QUESTION_TYPE_ORDER = ("choice", "fill", "solution")
 QUESTION_TIME_TARGETS = {"choice": 150, "fill": 180, "solution": 600}
+ATTEMPT_STATUS_LABELS = {
+    "correct": "正确",
+    "incorrect": "错误",
+    "partial": "部分得分",
+    "manual": "待自评",
+}
 
 
 def _attempt_datetime(attempt: dict[str, Any]) -> datetime | None:
@@ -31,6 +38,60 @@ def _attempt_score_ratio(attempt: dict[str, Any]) -> float | None:
     if maximum <= 0:
         return None
     return max(0.0, min(1.0, float(attempt.get("score") or 0) / maximum))
+
+
+def question_attempt_summaries(attempts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Aggregate every submitted attempt by question for UI and analytics.
+
+    ``attempts`` is deliberately not de-duplicated: a second or third try is
+    evidence too. The returned ``correct`` value is the number of correct
+    submissions, while callers can use the summary keys for unique coverage.
+    """
+    summaries: dict[str, dict[str, Any]] = {}
+    latest_datetimes: dict[str, datetime | None] = {}
+    for attempt in attempts:
+        question_id = str(attempt.get("question_id") or "").strip()
+        if not question_id:
+            continue
+        status = str(attempt.get("status") or "").strip() or "manual"
+        item = summaries.setdefault(
+            question_id,
+            {
+                "attempted": True,
+                "attempts": 0,
+                "correct": 0,
+                "incorrect": 0,
+                "partial": 0,
+                "manual": 0,
+                "accuracy": None,
+                "last_status": "",
+                "last_status_label": "",
+                "last_score": 0,
+                "last_max_score": 0,
+                "last_attempt_at": None,
+            },
+        )
+        item["attempts"] += 1
+        is_correct = attempt.get("correct") == 1 or status == "correct"
+        if is_correct:
+            item["correct"] += 1
+        elif status in {"incorrect", "partial", "manual"}:
+            item[status] += 1
+        else:
+            item["manual"] += 1
+        current_datetime = _attempt_datetime(attempt)
+        previous_datetime = latest_datetimes.get(question_id)
+        # Database queries are newest-first today, but comparing timestamps
+        # keeps this helper correct for imported/test data as well.
+        if previous_datetime is None or (current_datetime is not None and current_datetime >= previous_datetime):
+            latest_datetimes[question_id] = current_datetime
+            item["last_status"] = status
+            item["last_status_label"] = ATTEMPT_STATUS_LABELS.get(status, status or "未知")
+            item["last_score"] = round(float(attempt.get("score") or 0), 1)
+            item["last_max_score"] = round(float(attempt.get("max_score") or 0), 1)
+            item["last_attempt_at"] = attempt.get("created_at") or None
+        item["accuracy"] = round(item["correct"] / item["attempts"] * 100, 1)
+    return summaries
 
 
 def _question_time_target(question: dict[str, Any]) -> float:
@@ -72,7 +133,30 @@ def mastery_by_concept(attempts: list[dict[str, Any]]) -> dict[str, float]:
     return {key: round(max(0.02, min(0.98, value)), 4) for key, value in states.items()}
 
 
+def _rebind_attempt_concepts(
+    attempts: list[dict[str, Any]], questions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Apply the current question classification to historical attempts.
+
+    Attempts keep a snapshot of the concepts that existed when they were
+    submitted.  A user correction is intentionally a per-user overlay, so
+    analytics must rebind the snapshot through the effective question before
+    calculating mastery; otherwise the correction would affect filtering but
+    not the learner profile.
+    """
+    question_by_id = {str(question.get("id")): question for question in questions}
+    rebound: list[dict[str, Any]] = []
+    for attempt in attempts:
+        item = dict(attempt)
+        question = question_by_id.get(str(attempt.get("question_id")))
+        if question is not None and question.get("concept_ids") is not None:
+            item["concepts"] = list(question.get("concept_ids") or [])
+        rebound.append(item)
+    return rebound
+
+
 def progress_summary(attempts: list[dict[str, Any]], questions: list[dict[str, Any]]) -> dict[str, Any]:
+    attempts = _rebind_attempt_concepts(attempts, questions)
     mastery = mastery_by_concept(attempts)
     counts: dict[str, int] = defaultdict(int)
     correct_counts: dict[str, int] = defaultdict(int)
@@ -123,6 +207,7 @@ def recommended_questions(
     questions: list[dict[str, Any]], attempts: list[dict[str, Any]], *,
     exam_type: str | None = None, concept_id: str | None = None, limit: int = 8,
 ) -> list[dict[str, Any]]:
+    attempts = _rebind_attempt_concepts(attempts, questions)
     mastery = mastery_by_concept(attempts)
     question_by_id = {question.get("id"): question for question in questions}
     attempts_by_question: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -232,6 +317,52 @@ def question_type_breakdown(
     return rows
 
 
+def subtype_breakdown(
+    questions: list[dict[str, Any]], attempts: list[dict[str, Any]], concept_id: str,
+) -> list[dict[str, Any]]:
+    """Build the selectable, concrete training rows for one Math II block."""
+    concept_questions = [
+        question for question in questions
+        if concept_id in question.get("concept_ids", [])
+    ]
+    attempt_summaries = question_attempt_summaries(attempts)
+    rows: list[dict[str, Any]] = []
+    for subtype_id, subtype in SUBTYPES_BY_ID.items():
+        if subtype.get("concept_id") != concept_id:
+            continue
+        matched = [question for question in concept_questions if subtype_id in question_subtype_ids(question)]
+        if not matched:
+            continue
+        question_ids = {question["id"] for question in matched}
+        subtype_attempts = [attempt for attempt in attempts if attempt.get("question_id") in question_ids]
+        attempted_question_ids = {question_id for question_id in question_ids if question_id in attempt_summaries}
+        correct = sum(
+            1 for attempt in subtype_attempts
+            if attempt.get("correct") == 1 or attempt.get("status") == "correct"
+        )
+        accuracy = round(correct / len(subtype_attempts) * 100, 1) if subtype_attempts else None
+        format_counts = {
+            question_type: sum(1 for question in matched if question.get("question_type") == question_type)
+            for question_type in QUESTION_TYPE_ORDER
+        }
+        rows.append({
+            "concept_id": concept_id,
+            "id": subtype_id,
+            "name": subtype.get("name", subtype_id),
+            "summary": subtype.get("summary", ""),
+            "question_count": len(matched),
+            "attempted_question_count": len(attempted_question_ids),
+            "unseen_question_count": max(0, len(matched) - len(attempted_question_ids)),
+            "attempts": len(subtype_attempts),
+            "correct": correct,
+            "accuracy": accuracy,
+            "question_format_counts": format_counts,
+            "status": "待训练" if not subtype_attempts else ("需加强" if (accuracy or 0) < 60 else "继续巩固"),
+        })
+    rows.sort(key=lambda row: (row["accuracy"] is not None, row["accuracy"] if row["accuracy"] is not None else -1, row["name"]))
+    return rows
+
+
 def learning_analytics(
     questions: list[dict[str, Any]],
     attempts: list[dict[str, Any]],
@@ -245,6 +376,7 @@ def learning_analytics(
     as "待训练" instead of being presented as a measured strength.
     """
 
+    attempts = _rebind_attempt_concepts(attempts, questions)
     pool = [question for question in questions if question.get("exam_type") == exam_type]
     question_by_id = {question["id"]: question for question in pool}
     scoped_attempts = sorted(
@@ -407,6 +539,10 @@ def learning_analytics(
             else "继续巩固"
         )
         type_rows.append(row)
+
+    subtype_rows: list[dict[str, Any]] = []
+    for concept_id in CONCEPT_META:
+        subtype_rows.extend(subtype_breakdown(pool, scoped_attempts, concept_id))
 
     years = sorted({int(question["year"]) for question in pool})
     recent_years = years[-3:]
@@ -687,6 +823,7 @@ def learning_analytics(
         "overview": overview,
         "profile": profile,
         "question_types": type_rows,
+        "subtypes": subtype_rows,
         "concepts": concept_rows,
         "weaknesses": weaknesses,
         "strengths": strengths,
@@ -702,25 +839,47 @@ def learning_analytics(
 
 def randomized_practice_questions(
     questions: list[dict[str, Any]], attempts: list[dict[str, Any]], *,
-    exam_type: str = "数学二", concept_id: str, question_type: str,
+    exam_type: str = "数学二", concept_id: str, question_type: str | None = None,
+    subtype_id: str | None = None,
     limit: int = 15,
+    exclude_question_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
-    """Select a shuffled set while giving unseen questions first priority."""
+    """Select a shuffled set while prioritizing unseen and refreshed questions.
+
+    A refresh excludes the currently displayed set first. If the subtype has
+    fewer remaining questions than the requested count, the selector fills
+    from the old set so a small real题库 still produces a usable session; it
+    never fabricates or duplicates questions.
+    """
     pool = [
         question for question in questions
         if question.get("exam_type") == exam_type
         and concept_id in question.get("concept_ids", [])
-        and question.get("question_type") == question_type
+        and (not question_type or question.get("question_type") == question_type)
+        and (not subtype_id or subtype_id in question_subtype_ids(question))
     ]
     if not pool:
         return []
+    desired = max(1, min(limit, len(pool)))
+    excluded = {str(item) for item in (exclude_question_ids or ()) if str(item)}
+    preferred_pool = [question for question in pool if question["id"] not in excluded]
+    fallback_pool = [question for question in pool if question["id"] in excluded]
+    if not preferred_pool:
+        preferred_pool = list(pool)
+        fallback_pool = []
     attempted_ids = {attempt.get("question_id") for attempt in attempts}
-    unseen = [question for question in pool if question["id"] not in attempted_ids]
-    seen = [question for question in pool if question["id"] in attempted_ids]
     rng = random.SystemRandom()
-    rng.shuffle(unseen)
-    rng.shuffle(seen)
-    selected = (unseen + seen)[: max(1, min(limit, len(pool)))]
+
+    def prioritized(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unseen = [question for question in items if question["id"] not in attempted_ids]
+        seen = [question for question in items if question["id"] in attempted_ids]
+        rng.shuffle(unseen)
+        rng.shuffle(seen)
+        return unseen + seen
+
+    selected = prioritized(preferred_pool)[:desired]
+    if len(selected) < desired:
+        selected.extend(prioritized(fallback_pool)[: desired - len(selected)])
     rng.shuffle(selected)
     return selected
 
@@ -736,99 +895,177 @@ def study_blocks(questions: list[dict[str, Any]], attempts: list[dict[str, Any]]
                 "reason": "掌握度较低，优先用基础题建立正确率，再加入迁移题。" if concept["mastery"] < 50 else "掌握度正在形成，安排间隔复习和变式题。",
                 "questions": selected,
                 "question_types": question_type_breakdown(questions, attempts, concept["id"]),
+                "subtypes": subtype_breakdown(questions, attempts, concept["id"]),
             }
         )
     return blocks
 
 
 def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any]], exam_type: str = "数学二") -> dict[str, Any]:
+    """Estimate a score from the recent three real papers.
+
+    The old implementation used 800 random Bernoulli draws and read one
+    sampled item as the median.  That made p50 move when the same attempt log
+    was refreshed and, more seriously, blended the default mastery value into
+    a made-up personal score.  This version uses a conservative Beta-style
+    evidence model and an exact discrete score distribution for every recent
+    paper.  The displayed quantiles are taken from the equal-weight mixture of
+    those three historical papers, so the result is deterministic and the
+    paper-specific point values are preserved.
+    """
     pool = [question for question in questions if question.get("exam_type") == exam_type]
     if not pool:
         return {"available": False, "reason": "当前题库没有该科目数据。"}
     years = sorted({int(question["year"]) for question in pool})
     recent_years = years[-3:]
-    target_year = recent_years[-1]
     papers = {
         year: [question for question in pool if int(question["year"]) == year]
         for year in recent_years
     }
     papers = {year: paper for year, paper in papers.items() if paper}
     recent_years = list(papers)
-    recent_questions = [question for year in recent_years for question in papers[year]]
+    target_year = recent_years[-1]
+    recent_questions = [question for paper in papers.values() for question in paper]
     question_by_id = {question["id"]: question for question in pool}
     scoped_attempts = sorted(
-        (
-            attempt for attempt in attempts
-            if attempt.get("question_id") in question_by_id
-        ),
+        (attempt for attempt in attempts if attempt.get("question_id") in question_by_id),
         key=lambda item: _attempt_datetime(item) or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    mastery = mastery_by_concept(scoped_attempts)
     attempted_count = len(scoped_attempts)
     unique_attempted_count = len({attempt.get("question_id") for attempt in scoped_attempts})
-    rng = random.Random(20260825 + attempted_count + sum(recent_years))
     paper_max_scores = {
         year: sum(float(question.get("points") or 0) for question in paper)
         for year, paper in papers.items()
     }
-    # The national postgraduate mathematics paper is scored on a 150-point
-    # scale. Some source files distribute points slightly differently, so each
-    # recent paper is normalized to that common scale before aggregation.
     max_score = 150.0 if paper_max_scores else 0.0
-    difficulty_center = mean([float(question.get("difficulty") or 3) for question in recent_questions]) if recent_questions else 3.0
+    difficulty_center = mean(
+        [float(question.get("difficulty") or 3) for question in recent_questions]
+    ) if recent_questions else 3.0
     recent_question_ids = {question["id"] for question in recent_questions}
     calibration_attempts = [
-        attempt for attempt in scoped_attempts
-        if attempt.get("question_id") in recent_question_ids
+        attempt for attempt in scoped_attempts if attempt.get("question_id") in recent_question_ids
     ] or scoped_attempts
-
-    difficulty_stats: dict[int, dict[str, int]] = defaultdict(lambda: {"attempts": 0, "correct": 0})
-    for attempt in calibration_attempts:
-        question = question_by_id.get(attempt.get("question_id"), {})
-        difficulty_level = int(question.get("difficulty") or 3)
-        difficulty_stats[difficulty_level]["attempts"] += 1
-        difficulty_stats[difficulty_level]["correct"] += int(
-            attempt.get("correct") == 1 or attempt.get("status") == "correct"
-        )
     prior_probability = 0.30
-    global_attempts = sum(item["attempts"] for item in difficulty_stats.values())
-    global_correct = sum(item["correct"] for item in difficulty_stats.values())
-    global_smoothed = (global_correct + prior_probability * 4) / (global_attempts + 4) if global_attempts else prior_probability
-    difficulty_adjustments: dict[int, float] = {}
-    difficulty_calibration = []
+    prior_strength = 4.0
+
+    def observed_value(attempt: dict[str, Any]) -> float:
+        ratio = _attempt_score_ratio(attempt)
+        if ratio is not None:
+            return ratio
+        if attempt.get("correct") == 1 or attempt.get("status") == "correct":
+            return 1.0
+        return 0.0
+
+    def posterior(items: list[dict[str, Any]], prior: float = prior_probability) -> float:
+        if not items:
+            return prior
+        total = sum(observed_value(item) for item in items)
+        return (total + prior * prior_strength) / (len(items) + prior_strength)
+
+    attempts_by_question: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    attempts_by_concept: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    attempts_by_subtype: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    attempts_by_difficulty: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for attempt in calibration_attempts:
+        question = question_by_id.get(attempt.get("question_id"))
+        if not question:
+            continue
+        attempts_by_question[question["id"]].append(attempt)
+        for concept_id in question.get("concept_ids") or []:
+            attempts_by_concept[concept_id].append(attempt)
+        for subtype_id in question_subtype_ids(question):
+            attempts_by_subtype[subtype_id].append(attempt)
+        attempts_by_difficulty[int(question.get("difficulty") or 3)].append(attempt)
+
+    global_probability = posterior(calibration_attempts)
+    difficulty_stats: dict[int, dict[str, Any]] = {}
     for difficulty_level in sorted({int(question.get("difficulty") or 3) for question in recent_questions}):
         level_questions = [
             question for question in recent_questions
             if int(question.get("difficulty") or 3) == difficulty_level
         ]
-        stats = difficulty_stats[difficulty_level]
-        smoothed_accuracy = (stats["correct"] + prior_probability * 4) / (stats["attempts"] + 4)
-        adjustment = max(-0.06, min(0.06, (smoothed_accuracy - global_smoothed) * 0.25))
-        difficulty_adjustments[difficulty_level] = adjustment
-        difficulty_calibration.append(
-            {
-                "difficulty": difficulty_level,
-                "label": f"难度 {difficulty_level}",
-                "question_count": len(level_questions),
-                "attempts": stats["attempts"],
-                "accuracy": round(smoothed_accuracy * 100, 1) if stats["attempts"] else None,
-                "adjustment": round(adjustment * 100, 1),
-                "years": sorted({int(question["year"]) for question in level_questions}),
-            }
-        )
+        level_attempts = attempts_by_difficulty.get(difficulty_level, [])
+        level_probability = posterior(level_attempts, global_probability)
+        difficulty_stats[difficulty_level] = {
+            "probability": level_probability,
+            "attempts": len(level_attempts),
+            "question_count": len(level_questions),
+            "years": sorted({int(question["year"]) for question in level_questions}),
+        }
+    difficulty_calibration = [
+        {
+            "difficulty": level,
+            "label": f"难度 {level}",
+            "question_count": data["question_count"],
+            "attempts": data["attempts"],
+            "accuracy": round(data["probability"] * 100, 1) if data["attempts"] else None,
+            "adjustment": round((data["probability"] - global_probability) * 100, 1),
+            "years": data["years"],
+        }
+        for level, data in difficulty_stats.items()
+    ]
 
     def probability_for(question: dict[str, Any]) -> float:
-        values = [mastery.get(item, 0.22) for item in question.get("concept_ids") or []]
-        state = mean(values) if values else 0.22
-        # Keep the conservative no-data anchor, then adjust it with the actual
-        # difficulty label from the recent three papers and the learner's
-        # observed performance at that difficulty.
-        probability = prior_probability + (state - 0.22) * (0.82 - prior_probability) / (1.0 - 0.22)
+        direct = attempts_by_question.get(question["id"], [])
+        if direct:
+            probability = posterior(direct, global_probability)
+        else:
+            concept_items = [
+                item for concept_id in question.get("concept_ids") or []
+                for item in attempts_by_concept.get(concept_id, [])
+            ]
+            subtype_items = [
+                item for subtype_id in question_subtype_ids(question)
+                for item in attempts_by_subtype.get(subtype_id, [])
+            ]
+            concept_probability = posterior(concept_items, global_probability)
+            subtype_probability = posterior(subtype_items, global_probability)
+            difficulty_probability = difficulty_stats.get(
+                int(question.get("difficulty") or 3), {"probability": global_probability}
+            )["probability"]
+            evidence = [(global_probability, 0.25), (difficulty_probability, 0.25)]
+            if concept_items:
+                evidence.append((concept_probability, 0.30))
+            if subtype_items:
+                evidence.append((subtype_probability, 0.20))
+            denominator = sum(weight for _, weight in evidence)
+            probability = sum(value * weight for value, weight in evidence) / denominator
         difficulty_level = int(question.get("difficulty") or 3)
-        probability += (difficulty_center - difficulty_level) * 0.07
-        probability += difficulty_adjustments.get(difficulty_level, 0.0)
-        return max(0.05, min(0.90, probability))
+        # The latest three papers' difficulty distribution is the calibration
+        # anchor.  This small adjustment preserves the evidence model while
+        # ensuring a harder paper cannot be predicted above an easier peer
+        # solely because its point total is different.
+        probability += (difficulty_center - difficulty_level) * 0.045
+        return max(0.02, min(0.95, probability))
+
+    def paper_distribution(paper: list[dict[str, Any]], paper_max: float) -> dict[int, float]:
+        # Use tenths of a point so the exact convolution remains compact while
+        # retaining the 150-point normalization and fractional source scores.
+        distribution: dict[int, float] = {0: 1.0}
+        for question in paper:
+            increment = int(round(float(question.get("points") or 0) / paper_max * max_score * 10)) if paper_max else 0
+            probability = probability_for(question)
+            next_distribution: dict[int, float] = defaultdict(float)
+            for score, mass in distribution.items():
+                next_distribution[score] += mass * (1.0 - probability)
+                next_distribution[score + increment] += mass * probability
+            distribution = dict(next_distribution)
+        total_mass = sum(distribution.values()) or 1.0
+        return {score: mass / total_mass for score, mass in distribution.items()}
+
+    def mixture_quantile(distributions: list[dict[int, float]], quantile: float) -> float:
+        mixture: dict[int, float] = defaultdict(float)
+        weight = 1.0 / len(distributions)
+        for distribution in distributions:
+            for score, mass in distribution.items():
+                mixture[score] += mass * weight
+        accumulated = 0.0
+        for score in sorted(mixture):
+            accumulated += mixture[score]
+            if accumulated >= quantile:
+                return score / 10.0
+        return max(mixture, default=0) / 10.0
 
     if not scoped_attempts:
         return {
@@ -846,24 +1083,18 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
             "attempts_used": 0,
             "recent_difficulty_mean": round(difficulty_center, 2),
             "difficulty_calibration": difficulty_calibration,
+            "median_method": "无作答数据时不推断个人分数，初始值固定为 0 分",
             "note": f"尚无真实作答记录，初始预估分按 0 分显示。完成练习后，将用最近三年（{'、'.join(str(year) for year in recent_years)}）真题的难度分布校准；人群中约三成考生能超过 50 分，系统不会把这个比例直接当成你的个人成绩。",
         }
-    scores: list[float] = []
-    for _ in range(800):
-        paper_scores = []
-        for year, paper in papers.items():
-            score = sum(
-                float(question.get("points") or 0)
-                for question in paper
-                if rng.random() < probability_for(question)
-            )
-            paper_max = paper_max_scores[year]
-            paper_scores.append(score / paper_max * max_score if paper_max else 0.0)
-        scores.append(mean(paper_scores) if paper_scores else 0.0)
-    scores.sort()
-    p10 = round(scores[int(len(scores) * 0.10)], 1)
-    p50 = round(scores[int(len(scores) * 0.50)], 1)
-    p90 = round(scores[int(len(scores) * 0.90)], 1)
+
+    distributions = [
+        paper_distribution(papers[year], paper_max_scores[year])
+        for year in recent_years
+        if paper_max_scores.get(year)
+    ]
+    p10 = round(mixture_quantile(distributions, 0.10), 1) if distributions else 0.0
+    p50 = round(mixture_quantile(distributions, 0.50), 1) if distributions else 0.0
+    p90 = round(mixture_quantile(distributions, 0.90), 1) if distributions else 0.0
     confidence = "低" if attempted_count < 10 or unique_attempted_count < 8 else ("中" if attempted_count < 40 or unique_attempted_count < 25 else "较高")
     return {
         "available": True,
@@ -880,5 +1111,6 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
         "attempts_used": attempted_count,
         "recent_difficulty_mean": round(difficulty_center, 2),
         "difficulty_calibration": difficulty_calibration,
-        "note": f"这是基于当前掌握度、最近三年（{'、'.join(str(year) for year in recent_years)}）真实题目难度的模拟区间，不等同于真实考试承诺；低样本阶段仍按约三成考生超过 50 分的保守人群基线校准，完成更多带计时的模拟考后会更可靠。",
+        "median_method": "最近三年真实试卷按 150 分归一化后做精确离散分布，取三年等权混合分布的中位数",
+        "note": f"预估基于当前作答证据与最近三年（{'、'.join(str(year) for year in recent_years)}）真实题目的分值和难度分布，不等同于考试承诺；低样本阶段保留约三成考生超过 50 分的保守基线，数据量增加后区间会收窄。",
     }
