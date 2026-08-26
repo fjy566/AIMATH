@@ -14,6 +14,8 @@ const state = {
   currentSimulation: null,
   simulationTimer: null,
   simulationDeadline: null,
+  simulationCurrentIndex: 0,
+  simulationCardFilter: "all",
   libraryLoaded: false,
 };
 
@@ -210,88 +212,93 @@ const BEGINNER_FORMULA_GROUPS = [
     label: "基础结构",
     items: [
       { label: "分数", symbol: "½", tex: "\\frac{a}{b}", select: "a", title: "插入分数，先填写分子" },
-      { label: "根号", symbol: "√x", tex: "\\sqrt{x}", select: "x", title: "插入根号" },
+      { label: "根号", symbol: "√x", tex: "\\sqrt{x}", select: "x", title: "插入平方根" },
+      { label: "n 次根", symbol: "ⁿ√x", tex: "\\sqrt[n]{x}", select: "n", title: "插入 n 次根式" },
       { label: "次方", symbol: "xⁿ", tex: "x^{n}", select: "n", title: "插入次方" },
       { label: "下标", symbol: "xᵢ", tex: "x_{i}", select: "i", title: "插入下标" },
-      { label: "括号", symbol: "( )", tex: "\\left( x \\right)", select: "x", title: "插入括号" },
-      { label: "矩阵", symbol: "▦", tex: "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}", select: "a", wrap: "display", title: "插入二阶矩阵" },
+      { label: "括号", symbol: "( )", tex: "\\left( x \\right)", select: "x", title: "插入可伸缩括号" },
+      { label: "绝对值", symbol: "|x|", tex: "\\left|x\\right|", select: "x", title: "插入绝对值" },
+      { label: "分段", symbol: "{ x", tex: "\\begin{cases}x,&x\\ge 0\\\\-x,&x<0\\end{cases}", select: "x", wrap: "display", title: "插入分段函数" },
+      { label: "组合数", symbol: "Cⁿₖ", tex: "\\binom{n}{k}", select: "n", title: "插入组合数" },
     ],
   },
   {
     label: "微积分",
     items: [
-      { label: "导数", symbol: "dy/dx", tex: "\\frac{dy}{dx}", select: "dy", title: "插入一阶导数" },
-      { label: "偏导", symbol: "∂f/∂x", tex: "\\frac{\\partial f}{\\partial x}", select: "f", title: "插入偏导数" },
-      { label: "积分", symbol: "∫", tex: "\\int_{a}^{b} f(x)\\,dx", select: "a", wrap: "display", title: "插入定积分" },
-      { label: "二重积分", symbol: "∬", tex: "\\iint_{D} f(x,y)\\,dA", select: "D", wrap: "display", title: "插入二重积分" },
+      { label: "一阶导", symbol: "dy/dx", tex: "\\frac{dy}{dx}", select: "dy", title: "插入一阶导数" },
+      { label: "二阶导", symbol: "d²y", tex: "\\frac{d^2y}{dx^2}", select: "d^2y", title: "插入二阶导数" },
+      { label: "偏导", symbol: "∂f/∂x", tex: "\\frac{\\partial f}{\\partial x}", select: "f", title: "插入一阶偏导数" },
+      { label: "二阶偏导", symbol: "∂²f", tex: "\\frac{\\partial^2 f}{\\partial x^2}", select: "f", title: "插入二阶偏导数" },
+      { label: "微分", symbol: "dx", tex: "\\mathrm{d}x", select: "x", title: "插入微分符号" },
+      { label: "积分", symbol: "∫", tex: "\\int_{a}^{b} f(x)\\,\\mathrm{d}x", select: "a", wrap: "display", title: "插入定积分" },
+      { label: "二重积分", symbol: "∬", tex: "\\iint_{D} f(x,y)\\,\\mathrm{d}A", select: "D", wrap: "display", title: "插入二重积分" },
+      { label: "三重积分", symbol: "∭", tex: "\\iiint_{V} f(x,y,z)\\,\\mathrm{d}V", select: "V", wrap: "display", title: "插入三重积分" },
       { label: "极限", symbol: "lim", tex: "\\lim_{x\\to a} f(x)", select: "x\\to a", wrap: "display", title: "插入极限" },
       { label: "求和", symbol: "Σ", tex: "\\sum_{i=1}^{n} a_i", select: "i=1", wrap: "display", title: "插入求和" },
+      { label: "连乘", symbol: "Π", tex: "\\prod_{i=1}^{n} a_i", select: "i=1", wrap: "display", title: "插入连乘" },
+      { label: "梯度", symbol: "∇f", tex: "\\nabla f", select: "f", title: "插入梯度" },
+      { label: "原函数", symbol: "F(x)", tex: "F(x)=\\int f(x)\\,\\mathrm{d}x", select: "F(x)", wrap: "display", title: "插入原函数关系" },
+      { label: "牛顿莱布尼茨", symbol: "F(b)-F(a)", tex: "\\int_{a}^{b} f(x)\\,\\mathrm{d}x=F(b)-F(a)", select: "a", wrap: "display", title: "插入牛顿莱布尼茨公式" },
+      { label: "泰勒展开", symbol: "f(a)+...", tex: "f(x)=f(a)+f'(a)(x-a)+\\frac{f''(a)}{2!}(x-a)^2+\\cdots", select: "f(a)", wrap: "display", title: "插入二阶泰勒展开模板" },
     ],
   },
   {
-    label: "常用函数和符号",
+    label: "函数与符号",
     items: [
       { label: "正弦", symbol: "sin", tex: "\\sin x", select: "x", title: "插入正弦函数" },
       { label: "余弦", symbol: "cos", tex: "\\cos x", select: "x", title: "插入余弦函数" },
+      { label: "正切", symbol: "tan", tex: "\\tan x", select: "x", title: "插入正切函数" },
+      { label: "反三角", symbol: "arcsin", tex: "\\arcsin x", select: "x", title: "插入反三角函数" },
       { label: "自然对数", symbol: "ln", tex: "\\ln x", select: "x", title: "插入自然对数" },
+      { label: "常用对数", symbol: "log", tex: "\\log_a x", select: "a", title: "插入以 a 为底的对数" },
       { label: "指数", symbol: "eˣ", tex: "e^{x}", select: "x", title: "插入指数函数" },
-      { label: "绝对值", symbol: "|x|", tex: "\\left|x\\right|", select: "x", title: "插入绝对值" },
+      { label: "函数导数", symbol: "f′", tex: "f'(x)", select: "f", title: "插入函数导数记号" },
       { label: "无穷大", symbol: "∞", tex: "\\infty", title: "插入无穷大" },
       { label: "趋于", symbol: "→", tex: "\\to", title: "插入趋于符号" },
-      { label: "不等式", symbol: "≤ ≥", tex: "a \\le b", select: "a", title: "插入小于等于不等式" },
-    ],
-  },
-];
-
-const FORMULA_TOOL_GROUPS = [
-  {
-    label: "结构",
-    items: [
-      { label: "分数", tex: "\\frac{a}{b}", select: "a", title: "插入分数" },
-      { label: "根式", tex: "\\sqrt{x}", select: "x", title: "插入平方根" },
-      { label: "幂", tex: "x^{n}", select: "n", title: "插入幂" },
-      { label: "下标", tex: "x_{i}", select: "i", title: "插入下标" },
-      { label: "绝对值", tex: "\\left|x\\right|", select: "x", title: "插入绝对值" },
-      { label: "矩阵", tex: "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}", select: "a", wrap: "display", title: "插入二阶矩阵" },
+      { label: "正负", symbol: "±", tex: "\\pm", title: "插入正负号" },
+      { label: "近似", symbol: "≈", tex: "\\approx", title: "插入约等于" },
+      { label: "不等式", symbol: "≤ ≥", tex: "a \\le b", select: "a", title: "插入不等式" },
+      { label: "不等于", symbol: "≠", tex: "a \\ne b", select: "a", title: "插入不等于" },
+      { label: "乘号", symbol: "·", tex: "\\cdot", title: "插入点乘号" },
     ],
   },
   {
-    label: "微积分",
+    label: "线性代数",
     items: [
-      { label: "积分", tex: "\\int_{a}^{b} f(x)\\,dx", select: "a", wrap: "display", title: "插入定积分" },
-      { label: "二重积分", tex: "\\iint_{D} f(x,y)\\,dA", select: "D", wrap: "display", title: "插入二重积分" },
-      { label: "求和", tex: "\\sum_{i=1}^{n} a_i", select: "i=1", wrap: "display", title: "插入求和" },
-      { label: "极限", tex: "\\lim_{x\\to a} f(x)", select: "x\\to a", wrap: "display", title: "插入极限" },
-      { label: "导数", tex: "\\frac{dy}{dx}", select: "dy", title: "插入一阶导数" },
-      { label: "偏导", tex: "\\frac{\\partial f}{\\partial x}", select: "f", title: "插入偏导数" },
+      { label: "列向量", symbol: "[x]", tex: "\\begin{bmatrix}x_1\\\\x_2\\\\x_3\\end{bmatrix}", select: "x_1", wrap: "display", title: "插入三维列向量" },
+      { label: "二阶矩阵", symbol: "▦", tex: "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}", select: "a", wrap: "display", title: "插入二阶矩阵" },
+      { label: "矩阵", symbol: "A", tex: "A=(a_{ij})_{m\\times n}", select: "A", wrap: "display", title: "插入一般矩阵记号" },
+      { label: "行列式", symbol: "|A|", tex: "\\begin{vmatrix}a&b\\\\c&d\\end{vmatrix}", select: "a", wrap: "display", title: "插入二阶行列式" },
+      { label: "向量", symbol: "a⃗", tex: "\\vec{a}", select: "a", title: "插入向量记号" },
+      { label: "列向量加粗", symbol: "𝐱", tex: "\\mathbf{x}", select: "x", title: "插入加粗向量" },
+      { label: "转置", symbol: "Aᵀ", tex: "A^{\\mathsf T}", select: "A", title: "插入转置矩阵" },
+      { label: "逆矩阵", symbol: "A⁻¹", tex: "A^{-1}", select: "A", title: "插入逆矩阵" },
+      { label: "单位矩阵", symbol: "Iₙ", tex: "I_n", select: "n", title: "插入 n 阶单位矩阵" },
+      { label: "零矩阵", symbol: "O", tex: "O_{m\\times n}", select: "m", title: "插入零矩阵" },
+      { label: "行列式值", symbol: "det A", tex: "\\det(A)", select: "A", title: "插入行列式函数" },
+      { label: "矩阵秩", symbol: "rank", tex: "\\operatorname{rank}(A)", select: "A", title: "插入矩阵的秩" },
+      { label: "特征方程", symbol: "|A-λI|", tex: "\\det(A-\\lambda I)=0", select: "A", wrap: "display", title: "插入特征方程" },
+      { label: "特征向量", symbol: "Ax=λx", tex: "A\\mathbf{x}=\\lambda\\mathbf{x}", select: "A", wrap: "display", title: "插入特征值特征向量关系" },
+      { label: "向量内积", symbol: "a·b", tex: "\\mathbf{a}\\cdot\\mathbf{b}", select: "a", title: "插入向量内积" },
+      { label: "向量范数", symbol: "‖x‖", tex: "\\left\\|\\mathbf{x}\\right\\|", select: "x", title: "插入向量范数" },
+      { label: "内积括号", symbol: "⟨a,b⟩", tex: "\\langle \\mathbf{a},\\mathbf{b}\\rangle", select: "a", title: "插入内积括号" },
     ],
   },
   {
-    label: "常用符号",
+    label: "集合与关系",
     items: [
-      { label: "α", tex: "\\alpha", title: "希腊字母 alpha" },
-      { label: "β", tex: "\\beta", title: "希腊字母 beta" },
-      { label: "γ", tex: "\\gamma", title: "希腊字母 gamma" },
-      { label: "λ", tex: "\\lambda", title: "希腊字母 lambda" },
-      { label: "∞", tex: "\\infty", title: "无穷大" },
-      { label: "→", tex: "\\to", title: "趋于" },
-      { label: "≤", tex: "\\le", title: "小于等于" },
-      { label: "≥", tex: "\\ge", title: "大于等于" },
-      { label: "≠", tex: "\\ne", title: "不等于" },
-      { label: "±", tex: "\\pm", title: "正负号" },
-      { label: "·", tex: "\\cdot", title: "乘号" },
-      { label: "∈", tex: "\\in", title: "属于" },
-    ],
-  },
-  {
-    label: "函数",
-    items: [
-      { label: "sin", tex: "\\sin x", select: "x", title: "正弦函数" },
-      { label: "cos", tex: "\\cos x", select: "x", title: "余弦函数" },
-      { label: "ln", tex: "\\ln x", select: "x", title: "自然对数" },
-      { label: "eˣ", tex: "e^{x}", select: "x", title: "指数函数" },
-      { label: "f′", tex: "f'(x)", select: "f", title: "函数导数" },
-      { label: "向量", tex: "\\vec{a}", select: "a", title: "向量记号" },
+      { label: "属于", symbol: "∈", tex: "x\\in D", select: "x", title: "插入属于关系" },
+      { label: "不属于", symbol: "∉", tex: "x\\notin D", select: "x", title: "插入不属于关系" },
+      { label: "子集", symbol: "⊂", tex: "A\\subset B", select: "A", title: "插入子集关系" },
+      { label: "任意", symbol: "∀", tex: "\\forall x\\in D", select: "x", title: "插入任意量词" },
+      { label: "存在", symbol: "∃", tex: "\\exists x\\in D", select: "x", title: "插入存在量词" },
+      { label: "实数集", symbol: "ℝ", tex: "\\mathbb{R}", title: "插入实数集" },
+      { label: "自然数集", symbol: "ℕ", tex: "\\mathbb{N}", title: "插入自然数集" },
+      { label: "空集", symbol: "∅", tex: "\\varnothing", title: "插入空集" },
+      { label: "等价", symbol: "⇔", tex: "\\Longleftrightarrow", title: "插入等价关系" },
+      { label: "推出", symbol: "⇒", tex: "\\Longrightarrow", title: "插入推出关系" },
+      { label: "因为所以", symbol: "∵∴", tex: "\\because\\quad \\therefore", title: "插入因为和所以" },
+      { label: "点集坐标", symbol: "(x₀,y₀)", tex: "(x_0,y_0)", select: "x_0", title: "插入坐标点" },
     ],
   },
 ];
@@ -317,18 +324,13 @@ function extractChoiceOptions(source) {
   return options.length ? options : ["A", "B", "C", "D"].map((label) => ({ label, text: `选项 ${label}` }));
 }
 
-function formulaToolMarkup(item, className = "formula-tool", beginner = false) {
-  const content = beginner
-    ? `<span class="formula-tool-glyph">${escapeHtml(item.symbol || item.label)}</span><span class="formula-tool-caption">${escapeHtml(item.label)}</span>`
-    : `<span>${escapeHtml(item.label)}</span>`;
-  return `<button type="button" class="${className}" data-formula-tool data-formula-tex="${escapeAttr(item.tex)}" data-formula-select="${escapeAttr(item.select || "")}" data-formula-wrap="${escapeAttr(item.wrap || "inline")}" title="${escapeAttr(item.title || item.label)}">${content}</button>`;
+function formulaToolMarkup(item) {
+  const content = `<span class="formula-tool-glyph">${escapeHtml(item.symbol || item.label)}</span><span class="formula-tool-caption">${escapeHtml(item.label)}</span>`;
+  return `<button type="button" class="formula-tool beginner-formula-tool" data-formula-tool data-formula-tex="${escapeAttr(item.tex)}" data-formula-select="${escapeAttr(item.select || "")}" data-formula-wrap="${escapeAttr(item.wrap || "inline")}" title="${escapeAttr(item.title || item.label)}">${content}</button>`;
 }
 
-function formulaGroupsMarkup(groups, beginner = false) {
-  const groupClass = beginner ? "formula-beginner-group" : "formula-tool-group";
-  const listClass = beginner ? "formula-beginner-list" : "formula-tool-list";
-  const buttonClass = beginner ? "formula-tool beginner-formula-tool" : "formula-tool";
-  return groups.map((group) => `<div class="${groupClass}"><span class="formula-group-label">${escapeHtml(group.label)}</span><div class="${listClass}">${group.items.map((item) => formulaToolMarkup(item, buttonClass, beginner)).join("")}</div></div>`).join("");
+function formulaGroupsMarkup(groups) {
+  return groups.map((group) => `<div class="formula-beginner-group"><span class="formula-group-label">${escapeHtml(group.label)}</span><div class="formula-beginner-list">${group.items.map((item) => formulaToolMarkup(item)).join("")}</div></div>`).join("");
 }
 
 function answerStructureMarkup(editorId, questionType) {
@@ -356,9 +358,8 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill")
     </div>
     <div class="formula-tools-panel" id="${escapeAttr(editorId)}-formula-tools" data-formula-tools-panel hidden>
       <div class="formula-beginner-head"><strong>直接插入常用公式</strong><span>插入后可以继续修改字母和数字</span></div>
-      <div class="formula-beginner-groups">${formulaGroupsMarkup(BEGINNER_FORMULA_GROUPS, true)}</div>
-      <div class="formula-advanced-toggle-row"><button type="button" class="formula-advanced-toggle" data-formula-advanced-toggle aria-expanded="false">显示高级 LaTeX 工具 <span>适合熟悉公式写法后使用</span></button></div>
-      <div class="formula-advanced-panel" data-formula-advanced-panel hidden><div class="formula-toolbar" data-formula-toolbar="${escapeAttr(editorId)}" role="toolbar" aria-label="高级 LaTeX 公式工具">${formulaGroupsMarkup(FORMULA_TOOL_GROUPS)}</div><p class="formula-helper"><span>高级工具仍然插入模板，不会覆盖你已有的文字</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></p></div>
+      <div class="formula-beginner-groups" role="toolbar" aria-label="常用数学公式工具">${formulaGroupsMarkup(BEGINNER_FORMULA_GROUPS)}</div>
+      <p class="formula-helper"><span>点击按钮插入模板，蓝色文字会自动选中，可直接替换</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></p>
     </div>
     ${answerStructureMarkup(editorId, questionType)}
   </div>`;
@@ -514,9 +515,6 @@ function bindAnswerEditors(root = document) {
     $$('[data-formula-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
       setDisclosure(button, editor.querySelector("[data-formula-tools-panel]"), button.getAttribute("aria-expanded") !== "true");
     }));
-    $$('[data-formula-advanced-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
-      setDisclosure(button, editor.querySelector("[data-formula-advanced-panel]"), button.getAttribute("aria-expanded") !== "true");
-    }));
     $$('[data-answer-structure-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
       setDisclosure(button, editor.querySelector("[data-answer-structure-panel]"), button.getAttribute("aria-expanded") !== "true");
     }));
@@ -641,8 +639,196 @@ async function uploadAnswerImage(file, questionId) {
   return fetchJSON("/api/uploads/answer-image", { method: "POST", body: formData });
 }
 
+function simulationDraftKey(simulationId) {
+  return `ai-math-simulation-draft-${simulationId}`;
+}
+
+function readSimulationDraft(simulation = state.currentSimulation) {
+  const empty = { answers: {}, selfGrades: {} };
+  if (!simulation?.id) return empty;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(simulationDraftKey(simulation.id)) || "{}");
+    return {
+      answers: parsed.answers && typeof parsed.answers === "object" ? parsed.answers : {},
+      selfGrades: parsed.selfGrades && typeof parsed.selfGrades === "object" ? parsed.selfGrades : {},
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function simulationDraftForQuestion(simulation, question, draft = readSimulationDraft(simulation)) {
+  return {
+    answer: draft.answers[question.id] ?? question.attempt?.answer ?? "",
+    selfGrade: draft.selfGrades[question.id] ?? "",
+  };
+}
+
+function simulationDataField(root, attribute, dataKey, questionId) {
+  return $$(`[${attribute}]`, root).find((field) => field.dataset[dataKey] === String(questionId));
+}
+
+function collectSimulationDraft(root = document) {
+  const answers = {};
+  const selfGrades = {};
+  $$('[data-sim-answer]', root).forEach((field) => { answers[field.dataset.simAnswer] = field.value; });
+  $$('[data-sim-grade]', root).forEach((field) => { selfGrades[field.dataset.simGrade] = field.value; });
+  return { answers, selfGrades, updatedAt: new Date().toISOString() };
+}
+
+function saveSimulationDraft(root = document) {
+  const simulation = state.currentSimulation;
+  if (!simulation?.id || simulation.status === "finished") return;
+  const draft = collectSimulationDraft(root);
+  const hasAnswer = Object.values(draft.answers).some((value) => String(value || "").trim());
+  const hasGrade = Object.values(draft.selfGrades).some((value) => String(value || "").trim());
+  if (hasAnswer || hasGrade) localStorage.setItem(simulationDraftKey(simulation.id), JSON.stringify(draft));
+  else localStorage.removeItem(simulationDraftKey(simulation.id));
+}
+
+function simulationQuestionAnswered(simulation, question, root = document, draft = readSimulationDraft(simulation)) {
+  const answerField = simulationDataField(root, "data-sim-answer", "simAnswer", question.id);
+  const gradeField = simulationDataField(root, "data-sim-grade", "simGrade", question.id);
+  const answer = answerField ? answerField.value : draft.answers[question.id] ?? question.attempt?.answer ?? "";
+  const selfGrade = gradeField ? gradeField.value : draft.selfGrades[question.id] ?? "";
+  return Boolean(String(answer || "").trim() || String(selfGrade || "").trim());
+}
+
+function simulationAnsweredCount(simulation = state.currentSimulation, root = document) {
+  if (!simulation) return 0;
+  const draft = readSimulationDraft(simulation);
+  return (simulation.questions || []).filter((question) => simulationQuestionAnswered(simulation, question, root, draft)).length;
+}
+
+function renderSimulationAnswerCard(simulation, finished) {
+  const questions = simulation.questions || [];
+  const draft = readSimulationDraft(simulation);
+  const answered = questions.filter((question) => {
+    const answer = draft.answers[question.id] ?? question.attempt?.answer ?? "";
+    const selfGrade = draft.selfGrades[question.id] ?? "";
+    return Boolean(String(answer || "").trim() || String(selfGrade || "").trim());
+  }).length;
+  const cardMarkup = questions.map((question, index) => {
+    const answer = draft.answers[question.id] ?? question.attempt?.answer ?? "";
+    const selfGrade = draft.selfGrades[question.id] ?? "";
+    const isAnswered = Boolean(String(answer || "").trim() || String(selfGrade || "").trim());
+    const isCurrent = index === state.simulationCurrentIndex;
+    const status = isAnswered ? "已作答" : "未作答";
+    return `<button type="button" class="simulation-card-item ${isAnswered ? "answered" : "unanswered"} ${isCurrent ? "current" : ""}" data-sim-card data-sim-index="${index}" data-sim-question="${escapeAttr(question.id)}" aria-label="第 ${question.number} 题，${status}" ${isCurrent ? 'aria-current="true"' : ""}><span class="simulation-card-number">${String(index + 1).padStart(2, "0")}</span><span class="simulation-card-type">${escapeHtml(typeLabel(question.question_type))}</span></button>`;
+  }).join("");
+  return `<div class="simulation-answer-card ${finished ? "finished" : ""}">
+    <div class="simulation-card-head"><div><span class="simulation-card-kicker">ANSWER MAP</span><h4>答题卡</h4></div><strong><span data-sim-answered-count>${answered}</span><small> / ${questions.length}</small></strong></div>
+    <div class="simulation-card-progress-copy"><span>已完成题目</span><span>点击题号可跳转</span></div>
+    <div class="simulation-card-filters" role="tablist" aria-label="答题卡筛选">
+      <button type="button" class="simulation-card-filter is-active" data-sim-filter="all" role="tab" aria-selected="true"><span>全部</span><b data-sim-filter-count="all">${questions.length}</b></button>
+      <button type="button" class="simulation-card-filter" data-sim-filter="unanswered" role="tab" aria-selected="false"><span>未答</span><b data-sim-filter-count="unanswered">${questions.length - answered}</b></button>
+      <button type="button" class="simulation-card-filter" data-sim-filter="answered" role="tab" aria-selected="false"><span>已答</span><b data-sim-filter-count="answered">${answered}</b></button>
+    </div>
+    <div class="simulation-card-grid">${cardMarkup || `<p class="simulation-card-empty">暂无题目</p>`}</div>
+    <div class="simulation-card-legend"><span><i class="answered"></i>已答</span><span><i class="unanswered"></i>未答</span><span><i class="current"></i>当前</span></div>
+  </div>`;
+}
+
+function applySimulationCardFilter(root = document) {
+  const filter = state.simulationCardFilter;
+  $$('[data-sim-card]', root).forEach((card) => {
+    const hide = filter === "answered" ? !card.classList.contains("answered") : filter === "unanswered" ? !card.classList.contains("unanswered") : false;
+    card.classList.toggle("is-filtered", hide);
+  });
+  $$('[data-sim-filter]', root).forEach((button) => {
+    const active = button.dataset.simFilter === filter;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
+
+function setSimulationCurrent(index, root = document) {
+  const total = state.currentSimulation?.questions?.length || 0;
+  const maxIndex = Math.max(0, total - 1);
+  state.simulationCurrentIndex = Math.max(0, Math.min(Number(index) || 0, maxIndex));
+  $$('[data-sim-card]', root).forEach((card) => {
+    const current = Number(card.dataset.simIndex) === state.simulationCurrentIndex;
+    card.classList.toggle("current", current);
+    if (current) card.setAttribute("aria-current", "true");
+    else card.removeAttribute("aria-current");
+  });
+  $$('.simulation-question[data-sim-index]', root).forEach((question) => question.classList.toggle("is-current", Number(question.dataset.simIndex) === state.simulationCurrentIndex));
+}
+
+function refreshSimulationAnswerCard(root = document) {
+  const simulation = state.currentSimulation;
+  if (!simulation) return;
+  const draft = readSimulationDraft(simulation);
+  let answered = 0;
+  $$('[data-sim-card]', root).forEach((card) => {
+    const index = Number(card.dataset.simIndex);
+    const question = simulation.questions?.[index];
+    if (!question) return;
+    const isAnswered = simulationQuestionAnswered(simulation, question, root, draft);
+    if (isAnswered) answered += 1;
+    card.classList.toggle("answered", isAnswered);
+    card.classList.toggle("unanswered", !isAnswered);
+    card.setAttribute("aria-label", `第 ${question.number} 题，${isAnswered ? "已作答" : "未作答"}`);
+  });
+  $$('[data-sim-answered-count]', root).forEach((element) => { element.textContent = String(answered); });
+  $$('[data-sim-filter-count="all"]', root).forEach((element) => { element.textContent = String(simulation.questions?.length || 0); });
+  $$('[data-sim-filter-count="answered"]', root).forEach((element) => { element.textContent = String(answered); });
+  $$('[data-sim-filter-count="unanswered"]', root).forEach((element) => { element.textContent = String((simulation.questions?.length || 0) - answered); });
+  const bar = $("simulation-progress-bar");
+  if (bar) bar.style.setProperty("--progress", String(answered / Math.max(1, simulation.questions?.length || 1)));
+  setSimulationCurrent(state.simulationCurrentIndex, root);
+  applySimulationCardFilter(root);
+}
+
+function bindSimulationPlatform(root) {
+  if (!root || root.dataset.simPlatformBound === "true") return;
+  root.dataset.simPlatformBound = "true";
+  const updateDraft = () => {
+    saveSimulationDraft(root);
+    refreshSimulationAnswerCard(root);
+  };
+  root.addEventListener("input", (event) => {
+    if (event.target?.matches?.("[data-sim-answer], [data-sim-grade]")) updateDraft();
+  });
+  root.addEventListener("change", (event) => {
+    if (event.target?.matches?.("[data-sim-answer], [data-sim-grade]")) updateDraft();
+  });
+  root.addEventListener("focusin", (event) => {
+    const question = event.target.closest?.(".simulation-question[data-sim-index]");
+    if (question) setSimulationCurrent(question.dataset.simIndex, root);
+  });
+  $$('[data-sim-filter]', root).forEach((button) => button.addEventListener("click", () => {
+    state.simulationCardFilter = button.dataset.simFilter || "all";
+    applySimulationCardFilter(root);
+  }));
+  $$('[data-sim-card]', root).forEach((button) => button.addEventListener("click", () => {
+    const index = Number(button.dataset.simIndex);
+    setSimulationCurrent(index, root);
+    const question = $$('.simulation-question[data-sim-index]', root).find((item) => Number(item.dataset.simIndex) === index);
+    question?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    const focusTarget = question?.querySelector("[data-formula-input], [data-choice-editor]");
+    focusTarget?.focus?.({ preventScroll: true });
+  }));
+  refreshSimulationAnswerCard(root);
+}
+
+function canLeaveSimulation(nextView) {
+  const simulation = state.currentSimulation;
+  if (!simulation || simulation.status === "finished" || state.view !== "simulation" || nextView === "simulation") return true;
+  const answered = simulationAnsweredCount(simulation, $("simulation-container") || document);
+  const total = simulation.questions?.length || 0;
+  return window.confirm(`模拟考尚未交卷，当前已答 ${answered} / ${total} 题。离开后计时仍会继续，已输入的文字答案会保留。确定离开吗？`);
+}
+
+function handleSimulationBeforeUnload(event) {
+  if (!state.currentSimulation || state.currentSimulation.status === "finished") return;
+  event.preventDefault();
+  event.returnValue = "模拟考尚未交卷";
+}
+
 function navigate(view) {
   if (!viewMeta[view]) return;
+  if (!canLeaveSimulation(view)) return;
   state.view = view;
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -1131,6 +1317,8 @@ async function createSimulation() {
       duration_minutes: Number($("simulation-duration").value || 180),
     }));
     state.currentSimulation = payload;
+    state.simulationCurrentIndex = 0;
+    state.simulationCardFilter = "all";
     localStorage.setItem("ai-math-simulation", payload.id);
     renderSimulation();
     startSimulationClock();
@@ -1145,28 +1333,36 @@ async function createSimulation() {
 function renderSimulation() {
   const simulation = state.currentSimulation;
   if (!simulation) return;
+  const container = $("simulation-container");
+  if (!container) return;
+  delete container.dataset.simPlatformBound;
   const finished = simulation.status === "finished";
   const questions = simulation.questions || [];
   if (finished) {
     const score = formatScore(simulation.score);
-    $("simulation-container").innerHTML = `<div class="simulation-result"><div class="simulation-result-score">${score}<span> / ${formatScore(simulation.max_score)} 分</span></div><div><h3>${simulation.year} 年模拟考已完成</h3><p>本次成绩已计入学习记录。你可以回到分块训练查看哪些知识块拉低了得分，并继续做针对性练习。</p></div></div>${renderSimulationPaper(simulation, true)}`;
-    typeset($("simulation-container"));
+    container.innerHTML = `<div class="simulation-result"><div class="simulation-result-score">${score}<span> / ${formatScore(simulation.max_score)} 分</span></div><div><h3>${simulation.year} 年模拟考已完成</h3><p>本次成绩已计入学习记录。你可以回到分块训练查看哪些知识块拉低了得分，并继续做针对性练习。</p></div></div>${renderSimulationPaper(simulation, true)}`;
+    typeset(container);
+    bindSimulationPlatform(container);
+    refreshSimulationAnswerCard(container);
     return;
   }
-  $("simulation-container").innerHTML = renderSimulationPaper(simulation, false);
-  typeset($("simulation-container"));
-  bindAnswerEditors($("simulation-container"));
-  bindSimulationUploads($("simulation-container"));
+  container.innerHTML = renderSimulationPaper(simulation, false);
+  typeset(container);
+  bindAnswerEditors(container);
+  bindSimulationUploads(container);
+  bindSimulationPlatform(container);
 }
 
 function renderSimulationPaper(simulation, finished) {
   const questions = simulation.questions || [];
+  const draft = readSimulationDraft(simulation);
   const questionMarkup = questions.map((question, index) => {
-    const gradeMarkup = question.question_type === "solution" ? `<div class="sim-self-grade"><span>解答题自评</span><select data-sim-grade="${escapeAttr(question.id)}"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></div>` : "";
-    const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation" })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
-    return `<article class="simulation-question"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
+    const draftValue = simulationDraftForQuestion(simulation, question, draft);
+    const gradeMarkup = question.question_type === "solution" ? `<div class="sim-self-grade"><span>解答题自评</span><select data-sim-grade="${escapeAttr(question.id)}"><option value="" ${draftValue.selfGrade === "" ? "selected" : ""}>暂不自评</option><option value="1" ${String(draftValue.selfGrade) === "1" ? "selected" : ""}>完整正确（100%）</option><option value="0.7" ${String(draftValue.selfGrade) === "0.7" ? "selected" : ""}>主要正确（70%）</option><option value="0.4" ${String(draftValue.selfGrade) === "0.4" ? "selected" : ""}>部分得到（40%）</option><option value="0" ${String(draftValue.selfGrade) === "0" ? "selected" : ""}>不会/错误（0%）</option></select></div>` : "";
+    const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
+    return `<article class="simulation-question" data-sim-index="${index}"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
   }).join("");
-  return `<div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "已交卷" : "答案不会自动显示，提交后统一判定"}</p></div><div class="simulation-clock" id="simulation-clock">${finished ? "已完成" : "180:00"}</div></div><div class="simulation-progress"><span id="simulation-progress-bar" style="--progress:0"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div>`;
+  return `<div class="simulation-workspace"><div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "已交卷" : "答案不会自动显示，提交后统一判定"}</p></div><div class="simulation-clock" id="simulation-clock">${finished ? "已完成" : "180:00"}</div></div><div class="simulation-progress"><span id="simulation-progress-bar" style="--progress:0"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div><aside class="simulation-rail" aria-label="模拟考答题辅助栏"><div class="simulation-sticky-timer ${finished ? "finished" : ""}"><span>剩余时间</span><strong id="simulation-sticky-clock">${finished ? "已完成" : "180:00"}</strong><small>${finished ? "本套试卷已提交" : "计时不会因离开页面而暂停"}</small></div>${renderSimulationAnswerCard(simulation, finished)}</aside></div>`;
 }
 
 function bindSimulationUploads(root) {
@@ -1196,10 +1392,14 @@ function startSimulationClock() {
     const display = `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
     const clock = $("simulation-clock");
     if (clock) clock.textContent = display;
-    const answered = $$('[data-sim-answer]').filter((field) => field.value.trim()).length;
+    const stickyClock = $("simulation-sticky-clock");
+    if (stickyClock) stickyClock.textContent = display;
+    const answered = simulationAnsweredCount(simulation, $("simulation-container") || document);
     const total = (simulation.questions || []).length || 1;
     const bar = $("simulation-progress-bar");
     if (bar) bar.style.setProperty("--progress", String(answered / total));
+    refreshSimulationAnswerCard($("simulation-container") || document);
+    $("simulation-sticky-clock")?.closest(".simulation-sticky-timer")?.classList.toggle("warning", remaining <= 5 * 60 * 1000);
     if (remaining <= 0) {
       window.clearInterval(state.simulationTimer);
       showToast("模拟考时间到，正在自动提交。", true);
@@ -1232,6 +1432,7 @@ async function submitSimulation(autoSubmit = false) {
     }
     state.currentSimulation = await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}/submit`, jsonOptions({ user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds }));
     localStorage.setItem("ai-math-simulation", state.currentSimulation.id);
+    localStorage.removeItem(simulationDraftKey(simulation.id));
     window.clearInterval(state.simulationTimer);
     renderSimulation();
     await refreshLearningData();
@@ -1355,4 +1556,5 @@ async function init() {
   await loadOverview();
 }
 
+window.addEventListener("beforeunload", handleSimulationBeforeUnload);
 window.addEventListener("DOMContentLoaded", init);
