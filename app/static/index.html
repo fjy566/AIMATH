@@ -123,6 +123,12 @@
               </div>
               <article class="workbench-template-card paper-panel" id="workbench-template-card"><div class="loading-card">正在读取答题模板……</div></article>
 
+              <section class="workbench-progress-panel paper-panel" aria-labelledby="workbench-progress-title">
+                <div class="workbench-progress-head"><div><span class="eyebrow">STUDY PROGRESS</span><h3 id="workbench-progress-title">学习进度</h3><p>把模板复习、真实作答和笔记沉淀放在同一条轨迹上。</p></div><div class="workbench-progress-actions"><button class="text-button" id="workbench-refresh-progress" type="button">刷新</button><button class="text-button" data-view-target="analytics" type="button">完整分析 ↗</button></div></div>
+                <div class="workbench-progress-grid" id="workbench-progress-grid"><div class="loading-card">正在读取进度……</div></div>
+                <div class="progress-line workbench-progress-line" aria-label="当前知识块题库覆盖进度"><span id="workbench-progress-bar"></span></div>
+              </section>
+
               <section class="workbench-notes-panel paper-panel" id="workbench-note-workspace">
                 <div class="workbench-notes-head"><div><span class="eyebrow">NOTE STUDIO</span><h3>把今天的理解留下来</h3><p>支持图文、Markdown、公式文字、图片、手写过程和可展开的思维导图。</p></div><span class="note-save-state" id="note-save-state">未选择笔记</span></div>
                 <div class="note-empty-state" id="workbench-note-empty"><div class="note-empty-mark">N</div><h4>从一条小笔记开始</h4><p>新建笔记后，可以把当前模板、例题解析或自己的错题过程整理成可复习的卡片。</p><button class="primary-button" id="empty-new-note" type="button">新建笔记</button></div>

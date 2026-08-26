@@ -946,6 +946,17 @@ kbd { padding: 2px 5px; border: 1px solid #b5c9c4; border-bottom-width: 2px; bor
 .workbench-type-tab:hover { color: var(--accent-strong); background: var(--accent-light); transform: translateY(-1px); }
 .workbench-type-tab.is-active { color: #f8fffd; background: var(--accent); box-shadow: 0 5px 11px rgba(13,112,106,.16); }
 .workbench-template-card { padding: 24px; }
+.workbench-progress-panel { margin-top: 12px; padding: 18px 22px 16px; }
+.workbench-progress-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
+.workbench-progress-head h3 { margin: 5px 0 3px; color: var(--ink); font-size: 17px; }
+.workbench-progress-head p { margin: 0; color: var(--muted); font-size: 11px; }
+.workbench-progress-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.workbench-progress-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 15px; }
+.workbench-progress-metric { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(241,248,245,.62); }
+.workbench-progress-metric span, .workbench-progress-metric small { display: block; color: var(--muted); font-size: 10px; }
+.workbench-progress-metric strong { display: block; margin: 5px 0 2px; overflow: hidden; color: var(--ink); font-size: 18px; letter-spacing: -.04em; text-overflow: ellipsis; white-space: nowrap; }
+.workbench-progress-line { margin-top: 13px; }
+.workbench-progress-line > span { width: 100%; }
 .workbench-template-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .workbench-template-head h3 { margin: 6px 0 5px; color: var(--ink); font-size: 24px; letter-spacing: -.04em; }
 .workbench-template-head p { max-width: 680px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
@@ -1079,7 +1090,7 @@ body.theme-dark {
 body.theme-dark .main-content { background: radial-gradient(circle at 90% -10%, rgba(61,137,128,.13), transparent 28rem), #10282c; }
 body.theme-dark .paper-panel, body.theme-dark .metric-card, body.theme-dark .question-mini, body.theme-dark .question-row, body.theme-dark .block-card, body.theme-dark .workbench-type-tabs { background-color: #153236; border-color: var(--line); }
 body.theme-dark .workbench-concept-item:hover, body.theme-dark .workbench-note-item:hover, body.theme-dark .workbench-concept-item.is-active, body.theme-dark .workbench-note-item.is-active { background: #1c4b4b; border-color: #4b837d; }
-body.theme-dark .workbench-question-card, body.theme-dark .note-tool-panel, body.theme-dark .template-copy-grid section, body.theme-dark .note-toolbar { background: #173b3e; border-color: var(--line); }
+body.theme-dark .workbench-question-card, body.theme-dark .note-tool-panel, body.theme-dark .template-copy-grid section, body.theme-dark .note-toolbar, body.theme-dark .workbench-progress-metric { background: #173b3e; border-color: var(--line); }
 body.theme-dark .variant-question, body.theme-dark .note-rich-editor, body.theme-dark .mindmap-preview, body.theme-dark .workbench-question-body { background: #112a2e; }
 body.theme-dark select, body.theme-dark input, body.theme-dark textarea { color: var(--ink); border-color: #47666a; background: #112a2e; }
 body.theme-dark .note-handwriting-canvas { background: repeating-linear-gradient(0deg, rgba(134,196,188,.16) 0 1px, transparent 1px 29px), #10282c; }
@@ -1107,6 +1118,10 @@ body.theme-dark .workbench-solution-details { border-color: var(--line); }
   .workbench-type-tabs { margin-top: 12px; overflow-x: auto; }
   .workbench-type-tab { flex: 1 0 auto; }
   .workbench-template-card { padding: 18px 14px; }
+  .workbench-progress-panel { padding: 16px 14px; }
+  .workbench-progress-head { display: block; }
+  .workbench-progress-actions { justify-content: flex-start; margin-top: 9px; }
+  .workbench-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workbench-template-head, .workbench-notes-head { display: block; }
   .workbench-template-head h3 { font-size: 21px; }
   .template-head-actions { justify-content: flex-start; margin-top: 13px; }

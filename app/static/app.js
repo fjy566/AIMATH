@@ -17,6 +17,7 @@ const state = {
   workbenchQuestionType: "choice",
   workbenchTemplate: null,
   workbenchEditingTemplate: false,
+  workbenchAnalytics: null,
   notes: [],
   currentNote: null,
   noteEditorMode: "rich",
@@ -989,6 +990,27 @@ function renderWorkbenchTemplate() {
   $("save-workbench-template")?.addEventListener("click", saveWorkbenchTemplate);
 }
 
+function renderWorkbenchProgress() {
+  const root = $("workbench-progress-grid");
+  if (!root) return;
+  const data = state.workbenchAnalytics || state.analytics || {};
+  const overview = data.overview || {};
+  const concept = (data.concepts || []).find((item) => item.id === state.workbenchConceptId) || {};
+  const catalogConcept = state.workbenchCatalog.find((item) => item.id === state.workbenchConceptId) || {};
+  const questionCount = Number(concept.question_count || catalogConcept.total_questions || 0);
+  const attempted = Number(concept.attempted_question_count || 0);
+  const coverage = questionCount ? Math.max(0, Math.min(100, attempted / questionCount * 100)) : 0;
+  const metrics = [
+    ["当前块覆盖", `${attempted} / ${questionCount}`, "已完成真实作答"],
+    ["当前块掌握度", `${formatScore(concept.mastery ?? 22)}%`, concept.status || "等待作答证据"],
+    ["全库覆盖", analyticsPercent(overview.coverage_rate, "0%"), `${overview.unique_questions || 0} / ${data.questions_available || 0} 道题`],
+    ["工作台笔记", String(state.notes.length), "当前检索结果"],
+  ];
+  root.innerHTML = metrics.map(([label, value, note]) => `<div class="workbench-progress-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></div>`).join("");
+  const bar = $("workbench-progress-bar");
+  if (bar) bar.style.setProperty("--progress", (coverage / 100).toFixed(3));
+}
+
 function bindTemplateEditor(root) {
   $$('[data-template-add]', root).forEach((button) => {
     if (button.dataset.bound === "true") return;
@@ -1037,6 +1059,7 @@ async function selectWorkbenchConcept(conceptId) {
   state.workbenchConceptId = conceptId;
   state.workbenchEditingTemplate = false;
   renderWorkbenchConcepts();
+  renderWorkbenchProgress();
   await loadWorkbenchTemplate();
 }
 
@@ -1079,6 +1102,7 @@ async function loadWorkbenchNotes() {
     const payload = await fetchJSON(`/api/workbench/notes?${params}`);
     state.notes = payload.items || [];
     renderWorkbenchNotes();
+    renderWorkbenchProgress();
   } catch (error) {
     $("workbench-note-list").innerHTML = `<div class="note-list-empty">笔记读取失败：${escapeHtml(error.message)}</div>`;
   }
@@ -1410,7 +1434,14 @@ async function loadWorkbench() {
       renderWorkbenchConcepts();
       renderWorkbenchTypeTabs();
     }
-    await Promise.all([loadWorkbenchTemplate(), loadWorkbenchNotes()]);
+    await Promise.all([loadWorkbenchTemplate(), loadWorkbenchNotes(), (async () => {
+      try {
+        state.workbenchAnalytics = await fetchJSON(`/api/analytics?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`);
+      } catch {
+        state.workbenchAnalytics = state.analytics || null;
+      }
+      renderWorkbenchProgress();
+    })()]);
   } catch (error) {
     $("workbench-template-card").innerHTML = `<div class="loading-card">工作台读取失败：${escapeHtml(error.message)}</div>`;
     showNotice(`无法读取学习工作台：${error.message}`);
@@ -1509,6 +1540,19 @@ function bindNoteEditor() {
   $("workbench-export")?.addEventListener("click", exportWorkbenchData);
   $("workbench-import")?.addEventListener("click", () => $("workbench-import-input")?.click());
   $("workbench-import-input")?.addEventListener("change", () => importWorkbenchData($("workbench-import-input").files?.[0]));
+  $("workbench-refresh-progress")?.addEventListener("click", async () => {
+    const button = $("workbench-refresh-progress");
+    if (button) button.disabled = true;
+    try {
+      state.workbenchAnalytics = await fetchJSON(`/api/analytics?user_id=${encodeURIComponent(state.userId)}&exam_type=数学二`);
+      renderWorkbenchProgress();
+      showToast("工作台进度已刷新。", false);
+    } catch (error) {
+      showToast(`进度刷新失败：${error.message}`, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
 }
 
 function analyticsPercent(value, fallback = "—") {
