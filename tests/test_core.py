@@ -152,14 +152,27 @@ def test_forecast_ui_renders_interval_instead_of_a_single_p50() -> None:
     assert 'forecast-p50' not in app_source
 
 
-def test_settings_page_does_not_repeat_global_page_heading() -> None:
+def test_secondary_views_do_not_repeat_global_page_heading() -> None:
     html_source = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    settings_markup = html_source.split('<section class="view" id="view-settings">', 1)[1].split("</section>", 1)[0]
+    app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
 
-    assert "SETTINGS / MODEL + SERVER" not in settings_markup
-    assert "<h2>设置</h2>" not in settings_markup
-    assert 'class="settings-contextbar"' in settings_markup
-    assert 'id="connection-badge"' in settings_markup
+    assert 'class="view-intro' not in html_source
+    assert html_source.count('class="view-contextbar"') == 6
+    assert 'id="refresh-analytics"' not in html_source
+    assert 'id="reload-blocks"' not in html_source
+    assert "function refreshCurrentView" in app_source
+    assert 'addEventListener("click", refreshCurrentView)' in app_source
+    assert '`${payload.total} 道真题`' in app_source
+
+
+def test_library_question_preview_keeps_mobile_formulas_inside_the_page() -> None:
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert ".question-preview { max-height: 108px; overflow: hidden; contain: paint;" in styles
+    assert ".question-row-content > p" in styles
+    assert ".question-row-content p {" not in styles
+    assert ".markdown-body .katex-display { overflow-x: auto" in styles
+    assert ".filter-bar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));" in styles
 
 
 def test_learning_analytics_separates_observed_evidence_from_untrained_topics() -> None:

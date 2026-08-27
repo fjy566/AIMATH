@@ -1312,6 +1312,21 @@ function navigate(view) {
   return undefined;
 }
 
+async function refreshCurrentView() {
+  const button = $("refresh-button");
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "刷新中…";
+  try {
+    await navigate(state.view);
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = originalLabel;
+  }
+}
+
 function renderOverview() {
   const stats = state.stats || {};
   const progress = state.progress || {};
@@ -2515,7 +2530,7 @@ async function loadLibrary() {
   $("question-list").innerHTML = `<div class="loading-card">正在加载真题……</div>`;
   try {
     const payload = await fetchJSON(`/api/questions?${params}`);
-    $("archive-count").textContent = payload.total;
+    $("archive-count").textContent = `${payload.total} 道真题`;
     $("question-list").innerHTML = payload.items.length ? payload.items.map(renderQuestionRow).join("") : `<div class="loading-card">没有匹配的题目。</div>`;
     bindQuestionOpeners($("question-list"));
     bindClassificationControls($("question-list"));
@@ -3415,11 +3430,10 @@ async function init() {
   bindWorkbenchControls();
   $$(".nav-item[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
   $$('[data-view-target]').forEach((button) => button.addEventListener("click", () => navigate(button.dataset.viewTarget)));
-  $("refresh-button").addEventListener("click", () => loadOverview());
+  $("refresh-button").addEventListener("click", refreshCurrentView);
   $("start-recommended").addEventListener("click", () => state.nextQuestions[0] ? openQuestion(state.nextQuestions[0].id) : navigate("library"));
   $("apply-filters").addEventListener("click", loadLibrary);
   $("filter-concept")?.addEventListener("change", populateSubtypeFilter);
-  $("reload-blocks").addEventListener("click", loadBlocks);
   $("create-simulation").addEventListener("click", createSimulation);
   $("submit-answer").addEventListener("click", submitAnswer);
   $("answer-image-input").addEventListener("change", () => showImagePreview($("answer-image-input").files?.[0], $("answer-image-preview"), $("answer-image-status")));
@@ -3430,7 +3444,6 @@ async function init() {
   $("model-settings-form").addEventListener("submit", saveModelSettings);
   $("server-settings-form").addEventListener("submit", saveServerSettings);
   $("copy-server-command").addEventListener("click", copyServerCommand);
-  $("refresh-analytics").addEventListener("click", loadAnalytics);
   $("clear-key").addEventListener("click", clearApiKey);
   $("model-select").addEventListener("change", () => { $("model-manual").value = $("model-select").value; });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeQuestion(); });

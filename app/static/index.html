@@ -95,8 +95,8 @@
         </section>
 
         <section class="view" id="view-workbench">
-          <div class="view-intro workbench-intro">
-            <div><h2>知识点整理与真题精练</h2><p>先掌握一类题的作答顺序，再用完整例题和逐道变式练习巩固。选择、填空、解答只作为题面形式标签。</p></div>
+          <div class="view-contextbar">
+            <p>先掌握一类题的作答顺序，再用完整例题和逐道变式练习巩固。选择、填空、解答只作为题面形式标签。</p>
             <div class="workbench-actions">
               <button class="quiet-button" id="workbench-theme-toggle" type="button">切换暗色</button>
               <button class="quiet-button" id="workbench-export" type="button">导出数据</button>
@@ -153,7 +153,7 @@
         </section>
 
         <section class="view" id="view-analytics">
-          <div class="view-intro"><div><span class="eyebrow">ANALYTICS / EVIDENCE</span><h2>学习分析</h2><p>把每一次真实作答拆成掌握度、正确率、覆盖率、题型表现、耗时和错因，帮助你知道下一步练什么。</p></div><button class="quiet-button" id="refresh-analytics">刷新分析</button></div>
+          <div class="view-contextbar"><p>把每一次真实作答拆成掌握度、正确率、覆盖率、题型表现、耗时和错因，帮助你知道下一步练什么。</p></div>
           <div class="analytics-recommendations" id="analytics-recommendations"><span class="eyebrow">NEXT MOVES</span><span>正在读取你的学习证据……</span></div>
           <div class="metric-grid analytics-metrics" id="analytics-metrics">
             <div class="metric-card"><span class="metric-label">有效作答</span><strong id="analytics-attempts">0</strong><small>数学二真实记录</small></div>
@@ -231,7 +231,7 @@
         </section>
 
         <section class="view" id="view-library">
-          <div class="view-intro"><div><span class="eyebrow">ARCHIVE / REAL QUESTIONS</span><h2>真题库</h2><p>来自原始 Markdown/LaTeX 文件的完整题目。知识块按数学二大纲组织；非数学二范围的原题仍保留并单独标记。</p></div><div class="archive-count" id="archive-count">读取中</div></div>
+          <div class="view-contextbar"><p>来自原始 Markdown/LaTeX 文件的完整题目。知识块按数学二大纲组织；非数学二范围的原题仍保留并单独标记。</p><div class="archive-count" id="archive-count">读取中</div></div>
           <div class="filter-bar">
             <label>科目<select id="filter-exam"><option value="数学二">数学二</option></select></label>
             <label>年份<select id="filter-year"><option value="">全部年份</option></select></label>
@@ -255,17 +255,17 @@
         </section>
 
         <section class="view" id="view-blocks">
-          <div class="view-intro"><div><span class="eyebrow">ADAPTIVE PRACTICE / BLOC TRAINING</span><h2>分块训练</h2><p>按知识块和题型细分训练。点击开始随机抽取 15 道真实题，支持 LaTeX 作答、保存草稿和统一提交。</p></div><button class="quiet-button" id="reload-blocks">重新分析</button></div>
+          <div class="view-contextbar"><p>按知识块和题型细分训练。点击开始随机抽取 15 道真实题，支持 LaTeX 作答、保存草稿和统一提交。</p></div>
           <div class="blocks-layout" id="blocks-container"><div class="loading-card">正在分析作答记录……</div></div>
         </section>
 
         <section class="view" id="view-simulation">
-          <div class="view-intro simulation-intro"><div><span class="eyebrow">FULL PAPER / TIMED PRACTICE</span><h2>模拟考</h2><p>按真实年份整卷生成。题目顺序、分值来自题库，不使用占位题。</p></div><div class="simulation-controls"><label>试卷年份<select id="simulation-year"></select></label><label>时长<select id="simulation-duration"><option value="180">180 分钟</option><option value="150">150 分钟</option><option value="120">120 分钟</option></select></label><button class="primary-button" id="create-simulation">生成整卷</button></div></div>
+          <div class="view-contextbar"><p>按真实年份整卷生成。题目顺序、分值来自题库，不使用占位题。</p><div class="simulation-controls"><label>试卷年份<select id="simulation-year"></select></label><label>时长<select id="simulation-duration"><option value="180">180 分钟</option><option value="150">150 分钟</option><option value="120">120 分钟</option></select></label><button class="primary-button" id="create-simulation">生成整卷</button></div></div>
           <div id="simulation-container"><div class="empty-state"><div class="empty-mark">⌁</div><h3>还没有进行中的模拟考</h3><p>选择年份并生成一套完整试卷，提交后结果会回流到你的掌握度和分数预估。</p></div></div>
         </section>
 
         <section class="view" id="view-settings">
-          <div class="settings-contextbar"><p>模型与服务配置保存在本机；监听地址和端口保存后，使用启动脚本重启服务才会生效。</p><div class="connection-badge" id="connection-badge"><span></span>模型未配置</div></div>
+          <div class="view-contextbar"><p>模型与服务配置保存在本机；监听地址和端口保存后，使用启动脚本重启服务才会生效。</p><div class="connection-badge" id="connection-badge"><span></span>模型未配置</div></div>
           <div class="settings-layout">
             <div class="settings-stack">
               <form class="settings-card paper-panel" id="model-settings-form">
