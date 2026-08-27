@@ -59,7 +59,8 @@ def _build_answer_structure(
             {"label": "核心过程", "prompt": "按照题型的标准方法展开计算或证明。", "content": "每一步保留关键等式、变形依据和中间结论。"},
             {"label": "结论复核", "prompt": "最后回到题目要求，写出完整结论。", "content": "检查范围、符号、单位和充分必要性。"},
         ]
-    middle = steps[2:-1] or steps[2:]
+    middle = steps[2:-2] or steps[2:-1] or steps[2:]
+    boundary = steps[-2] if len(steps) >= 4 else "检查参数边界、特殊点和需要分情况讨论的位置。"
     return [
         {
             "label": "题型定位",
@@ -67,7 +68,12 @@ def _build_answer_structure(
             "content": overview,
         },
         {
-            "label": "条件核验",
+            "label": "条件翻译",
+            "prompt": "把题干中的文字和限制改写成可计算、可引用的数学条件。",
+            "content": steps[0],
+        },
+        {
+            "label": "定理核验",
             "prompt": "把能拿到定理分的前提写出来，不用‘显然’带过。",
             "content": steps[1] if len(steps) > 1 else steps[0],
         },
@@ -75,6 +81,11 @@ def _build_answer_structure(
             "label": "核心过程",
             "prompt": "按下面顺序逐步写，公式和关键理由不要省略。",
             "content": "\n".join(middle),
+        },
+        {
+            "label": "边界与分支",
+            "prompt": "处理参数临界值、端点、退化情形和多解分支，避免只覆盖一般情况。",
+            "content": boundary,
         },
         {
             "label": "结论复核",
@@ -1939,6 +1950,83 @@ for _items in SUBTYPE_CATALOG.values():
         _item.update(_DETAILED_TEMPLATES[_item["id"]])
 
 
+_CONCEPT_CONNECTIONS = {
+    "limit-continuity": "可与导数定义、连续性、泰勒展开和定积分存在性串联",
+    "derivative": "可与极限、函数图形、积分不等式和微分方程串联",
+    "integral": "可与导数、二重积分、微分方程和几何物理应用串联",
+    "multivariable": "可与一元微分、隐函数、二重积分和条件极值串联",
+    "multiple-integral": "可与区域作图、定积分、极坐标和多元函数性质串联",
+    "differential-equation": "可与导数、积分、函数性质和实际建模串联",
+    "matrix": "可与行列式、线性方程组、向量组和特征值串联",
+    "linear-equation": "可与矩阵秩、向量组、公共解和特征向量串联",
+    "vector-space": "可与矩阵秩、线性方程组、向量表示和特征向量串联",
+    "eigenvalue": "可与矩阵运算、相似对角化、二次型和正定性串联",
+}
+
+
+def _template_learning_layers(concept_id: str, subtype: dict[str, Any], template: dict[str, Any]) -> dict[str, Any]:
+    """Build consistent, topic-specific study layers without duplicating prose in 68 records."""
+    name = str(subtype["name"])
+    goal = _normalize_template_prose(subtype.get("summary", ""))
+    signals = [_normalize_template_prose(item) for item in subtype.get("signals", ()) if str(item).strip()]
+    framework = [_normalize_template_prose(item) for item in template.get("framework", []) if str(item).strip()]
+    conditions = framework[0] if framework else "先写出定义域、参数范围和定理前提。"
+    method = " ".join(framework[1:4]) if len(framework) > 1 else goal
+    check = framework[-1] if framework else "把结果代回原题并检查边界与符号。"
+    connection = _CONCEPT_CONNECTIONS[concept_id]
+    signal_preview = "、".join(signals[:6]) or name
+
+    return {
+        "recognition": [
+            {"label": "题干信号", "content": f"优先识别：{signal_preview}。同义改写、图形条件和参数限制也要还原到这些核心对象。"},
+            {"label": "任务翻译", "content": f"把题目最终翻译为：{goal}。先确认求值、判定、证明还是反求参数。"},
+            {"label": "方法入口", "content": conditions},
+        ],
+        "exam_directions": [
+            {"title": "直接型", "detail": f"直接给出标准结构，要求{goal}；重点考基本公式、定义和运算准确性。"},
+            {"title": "参数分类型", "detail": f"把系数、区间、初值或矩阵元素设为参数，依据“{check}”求临界值并分区间讨论。"},
+            {"title": "逆向与证明型", "detail": f"给出部分结论，反求条件、构造辅助对象或证明结论成立；完整写出使用定理的前提。"},
+            {"title": "综合串联型", "detail": f"隐藏在另一问的中间结果里，{connection}；先拆出本题型负责的子目标再衔接。"},
+            {"title": "变式与陷阱型", "detail": f"改变表达形式、趋近方向、参数边界或问法来弱化“{signal_preview}”等显式信号；用定义和验算识别。"},
+        ],
+        "question_type_guides": [
+            {
+                "type": "choice",
+                "label": "选择题",
+                "focus": "先判范围与反例，再决定正算、特值或排除。",
+                "steps": f"把选项改写成可检验命题；围绕“{goal}”优先用特值、符号、维数或数量级排除；只在剩余选项间做完整计算。",
+                "finish": f"最终复核：{check}",
+            },
+            {
+                "type": "fill",
+                "label": "填空题",
+                "focus": "答案唯一，过程可以短，但定义域、符号和常数不能省。",
+                "steps": f"沿标准主线计算：{method} 得到结果后再独立验算一次，不把未化简的多值表达式直接填入。",
+                "finish": f"检查数值、区间、单位、积分常数或向量规范是否满足：{check}",
+            },
+            {
+                "type": "solution",
+                "label": "解答题",
+                "focus": "把条件、定理、关键等式和结论写成可逐点给分的链条。",
+                "steps": f"先写目标与条件，再按“{method}”展开；参数、端点、退化和充分必要性单独分支，不跨过核心构造。",
+                "finish": f"用完整陈述收尾，并执行：{check}",
+            },
+        ],
+        "practice_levels": [
+            {"level": "基础识别", "task": f"看到题面后 30 秒内圈出“{signal_preview}”，只判断题型、目标与首个公式。", "standard": "不看解析即可说出使用条件和第一步。"},
+            {"level": "标准执行", "task": f"独立完成一题，严格按条件—方法—计算—复核写出“{goal}”的全过程。", "standard": "步骤完整、运算正确，能指出一个高频失分点。"},
+            {"level": "综合迁移", "task": f"训练参数、逆向或跨章节变式；主动说明它与相邻知识块如何衔接。", "standard": "能在题型信号被隐藏时完成识别，并处理边界或分类讨论。"},
+        ],
+        "exam_checklist": [
+            f"范围：定义域、区间、参数、维数或初值是否完整？",
+            f"前提：{conditions}",
+            "过程：关键公式、定理名称、变形依据和中间结论是否可见？",
+            "分支：端点、零值、退化、重根、多解或不可逆情形是否漏掉？",
+            f"结论：{check}",
+        ],
+    }
+
+
 SUBTYPES_BY_ID = {
     item["id"]: {**item, "concept_id": concept_id}
     for concept_id, items in SUBTYPE_CATALOG.items()
@@ -2488,6 +2576,7 @@ def build_workbench_template(
     template["mistakes"] = [_normalize_template_prose(item) for item in template.get("mistakes", [])]
     template["memory_aid"] = _normalize_template_prose(template.get("memory_aid", ""))
     template["formula_sheet"] = _normalize_template_formula(template.get("formula_sheet", ""))
+    template.update(_template_learning_layers(concept_id, subtype, template))
     template["answer_structure"] = _build_answer_structure(
         template["overview"],
         template["framework"],

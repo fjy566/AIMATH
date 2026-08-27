@@ -104,9 +104,52 @@ def test_initial_forecast_is_zero_until_real_attempts_exist() -> None:
     assert forecast["max_score"] == 150
     assert len(forecast["difficulty_calibration"]) == 4
     assert forecast["attempts_used"] == 0
-    assert forecast["p10"] == 0
-    assert forecast["p50"] == 0
-    assert forecast["p90"] == 0
+    assert forecast["score_range"]["low"] == 0
+    assert forecast["score_range"]["high"] == 0
+    assert forecast["outer_range"]["low"] == 0
+    assert forecast["outer_range"]["high"] == 0
+    assert forecast["population_reference"]["score_tail_observations_percent"]["2019"]["105"] == 5.3
+    assert forecast["population_reference"]["funnel_reference"]["national_line_rate"].startswith("约 20%-30%")
+    assert forecast["population_reference"]["funnel_reference"]["admission_rate"].startswith("约 20%")
+    assert "2025" not in forecast["population_reference"]["score_tail_observations_percent"]
+    assert "p50" not in forecast
+
+
+def test_forecast_shrinks_local_block_evidence_and_returns_an_interval() -> None:
+    questions = load_questions()
+    same_block = [
+        question for question in questions
+        if "limit-continuity" in question.get("concept_ids", [])
+    ][:4]
+    attempts = [
+        {
+            "question_id": question["id"],
+            "status": "correct",
+            "correct": 1,
+            "score": question["points"],
+            "max_score": question["points"],
+            "created_at": f"2026-08-26T{index + 8:02d}:00:00+00:00",
+        }
+        for index, question in enumerate(same_block)
+    ]
+
+    forecast = forecast_score(questions, attempts, exam_type="数学二")
+
+    assert forecast["unique_questions_used"] == 4
+    assert forecast["concepts_used"] >= 1
+    assert forecast["personalization_weight"] < 0.08
+    assert forecast["score_range"]["low"] < forecast["score_range"]["high"]
+    assert forecast["score_range"]["high"] < 100
+
+
+def test_forecast_ui_renders_interval_instead_of_a_single_p50() -> None:
+    app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    html_source = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'forecast.score_range' in app_source
+    assert 'forecast-outer-low' in app_source
+    assert 'id="forecast-score-range"' in html_source
+    assert 'forecast-p50' not in app_source
 
 
 def test_learning_analytics_separates_observed_evidence_from_untrained_topics() -> None:
@@ -202,9 +245,23 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             assert len(template["framework"]) >= 5
             assert len(template["mistakes"]) >= 4
             assert template["formula_sheet"].strip() and "$" in template["formula_sheet"]
-            assert len(template["answer_structure"]) == 4
-            assert [item["label"] for item in template["answer_structure"]] == ["题型定位", "条件核验", "核心过程", "结论复核"]
+            assert len(template["answer_structure"]) == 6
+            assert [item["label"] for item in template["answer_structure"]] == [
+                "题型定位", "条件翻译", "定理核验", "核心过程", "边界与分支", "结论复核",
+            ]
             assert all(item["prompt"].strip() and item["content"].strip() for item in template["answer_structure"])
+            assert [item["label"] for item in template["recognition"]] == ["题干信号", "任务翻译", "方法入口"]
+            assert [item["title"] for item in template["exam_directions"]] == [
+                "直接型", "参数分类型", "逆向与证明型", "综合串联型", "变式与陷阱型",
+            ]
+            assert [item["type"] for item in template["question_type_guides"]] == ["choice", "fill", "solution"]
+            assert [item["level"] for item in template["practice_levels"]] == ["基础识别", "标准执行", "综合迁移"]
+            assert len(template["exam_checklist"]) == 5
+            assert all(item["content"].strip() for item in template["recognition"])
+            assert all(item["detail"].strip() for item in template["exam_directions"])
+            assert all(item["steps"].strip() and item["finish"].strip() for item in template["question_type_guides"])
+            assert all(item["task"].strip() and item["standard"].strip() for item in template["practice_levels"])
+            assert all(item.strip() for item in template["exam_checklist"])
             assert all(
                 value.count("$") % 2 == 0
                 for value in [template["overview"], template["memory_aid"], template["formula_sheet"], *template["framework"], *template["mistakes"]]
@@ -256,6 +313,58 @@ def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
     assert "data-note-command=\"createLink\"" in markup
     assert "renderMarkdown(content)" in source
     assert 'raw.startsWith("\\\\begin")' in source
+
+
+def test_classification_editor_is_shared_by_block_training_surfaces() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'classificationEditorMarkup(question, "block")' in source
+    assert 'classificationEditorMarkup(question, "practice")' in source
+    assert 'bindClassificationControls($("blocks-container"))' in source
+    assert "function practiceQuestionSubtypeLine" in source
+    assert "data-practice-subtype-label" in source
+
+
+def test_workbench_template_navigation_search_and_actions_are_reusable() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="workbench-subtype-search"' in markup
+    assert "function workbenchSectionHeadingMarkup" in source
+    assert "function templateGuideMarkup" in source
+    assert "function bindWorkbenchTemplateActions" in source
+    assert "copy-workbench-answer-template" in source
+    assert "start-workbench-practice" in source
+    assert "state.workbenchCatalog.some((item) => item.id === state.workbenchConceptId)" in source
+    assert "activeConcept?.subtypes?.some((item) => item.id === state.workbenchSubtypeId)" in source
+    assert "template.exam_directions" in source
+    assert "template.question_type_guides" in source
+    assert "template.practice_levels" in source
+    assert "template.exam_checklist" in source
+    assert "function renderLearningText" in source
+    assert 'renderLearningText(item.focus, "template-format-focus")' in source
+    assert 'renderLearningText(item.steps, "template-format-steps")' in source
+    assert 'renderLearningText(item.finish, "template-format-finish")' in source
+    assert 'renderLearningText(item.task, "template-practice-task")' in source
+    assert "renderLearningText(item.standard)" in source
+    assert 'renderLearningText(item, "template-check-item")' in source
+    assert ".template-quick-nav" in styles
+    assert ".template-format-grid" in styles
+
+
+def test_block_training_uses_compact_stack_and_single_question_navigation() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert "data-block-stack" in source
+    assert "function bindBlockStack" in source
+    assert "data-practice-question-card" in source
+    assert "data-practice-question-index" in source
+    assert "function selectPracticeQuestion" in source
+    assert ".block-stack-card" in styles
+    assert ".practice-question-navigator" in styles
+    assert ".practice-session-question[hidden]" in styles
 
 
 def test_tex_normalization_preserves_array_row_break_before_command() -> None:

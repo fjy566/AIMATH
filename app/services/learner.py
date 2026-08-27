@@ -21,6 +21,57 @@ ATTEMPT_STATUS_LABELS = {
     "manual": "待自评",
 }
 
+# Public Math II statistics are sparse and do not provide a national,
+# all-candidate, year-by-year microdata table.  Keep the observed sources
+# separate from admission-candidate score tables: the latter are not valid
+# population priors for this forecast.
+MATH2_ALL_CANDIDATE_MEAN_SCORES: dict[int, float] = {
+    2012: 72.30,
+    2013: 85.80,
+    2014: 77.60,
+    2015: 77.40,
+    2016: 60.60,
+    2017: 81.70,
+    2018: 60.10,
+    2019: 71.87,
+}
+MATH2_ALL_CANDIDATE_TAIL_OBSERVATIONS: dict[int, dict[int, float]] = {
+    # 2018 reports the directly observed share at or above 90 points.
+    2018: {90: 0.1500},
+    # 2019 reports a 137,200-person sample and the high-score tail points.
+    2019: {90: 0.1500, 105: 0.0530, 120: 0.0120, 135: 0.0009},
+}
+MATH2_ALL_CANDIDATE_DEFAULT_YEAR = 2019
+MATH2_SCORE_TAIL_THRESHOLDS = (90, 105, 120, 135)
+MATH2_SCORE_BANDS = (
+    (0.0, 60.0),
+    (60.0, 75.0),
+    (75.0, 90.0),
+    (90.0, 105.0),
+    (105.0, 120.0),
+    (120.0, 135.0),
+    (135.0, 150.0),
+)
+MATH2_LOWER_TAIL_RATIO = 0.60
+
+# These are national funnel estimates, not Math II score percentages.  They
+# are exposed as a scope note so callers do not confuse admission rates with
+# the score distribution used by the forecast.
+MATH2_PUBLIC_FUNNEL_REFERENCE = {
+    "national_line_rate": "约 20%-30%（全国公开汇总估算，年度与分母口径有差异）",
+    "admission_rate": "约 20%（公开汇总约 14%-24%，含推免/统考口径差异）",
+    "scope_note": "全国考研报名/参考者口径，不是数学二单科分布；仅用于解释群体漏斗，不直接换算数学分数。",
+}
+
+# Relative item priors.  The paper-level offset below aligns them to the
+# public score-band anchor for that paper year while preserving difficulty
+# differences between questions.
+MATH2_DIFFICULTY_PRIORS = {1: 0.82, 2: 0.74, 3: 0.60, 4: 0.45, 5: 0.30}
+MATH2_FORECAST_PRIOR_STRENGTH = 36.0
+MATH2_FORECAST_CONCEPT_SATURATION = 8.0
+MATH2_FORECAST_CONCEPT_PRIOR_STRENGTH = 12.0
+MATH2_FORECAST_MAX_PERSONAL_SHIFT = 0.24
+
 
 def _attempt_datetime(attempt: dict[str, Any]) -> datetime | None:
     raw_value = str(attempt.get("created_at") or "").strip()
@@ -901,17 +952,157 @@ def study_blocks(questions: list[dict[str, Any]], attempts: list[dict[str, Any]]
     return blocks
 
 
-def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any]], exam_type: str = "数学二") -> dict[str, Any]:
-    """Estimate a score from the recent three real papers.
+def _math2_reference_year(year: int) -> int:
+    """Use the latest observed all-candidate tail year without future leakage."""
+    known_years = sorted(MATH2_ALL_CANDIDATE_TAIL_OBSERVATIONS)
+    try:
+        normalized_year = int(year)
+    except (TypeError, ValueError):
+        normalized_year = MATH2_ALL_CANDIDATE_DEFAULT_YEAR
+    previous_years = [item for item in known_years if item <= normalized_year]
+    return max(previous_years) if previous_years else known_years[0]
 
-    The old implementation used 800 random Bernoulli draws and read one
-    sampled item as the median.  That made p50 move when the same attempt log
-    was refreshed and, more seriously, blended the default mastery value into
-    a made-up personal score.  This version uses a conservative Beta-style
-    evidence model and an exact discrete score distribution for every recent
-    paper.  The displayed quantiles are taken from the equal-weight mixture of
-    those three historical papers, so the result is deterministic and the
-    paper-specific point values are preserved.
+
+def _math2_reference_mean(year: int) -> float:
+    """Return the latest public all-candidate mean available for this year."""
+    known_years = sorted(MATH2_ALL_CANDIDATE_MEAN_SCORES)
+    try:
+        normalized_year = int(year)
+    except (TypeError, ValueError):
+        normalized_year = MATH2_ALL_CANDIDATE_DEFAULT_YEAR
+    previous_years = [item for item in known_years if item <= normalized_year]
+    reference_year = max(previous_years) if previous_years else known_years[0]
+    return MATH2_ALL_CANDIDATE_MEAN_SCORES[reference_year]
+
+
+def _math2_score_anchor_distribution(
+    tails: dict[int, float], target_mean: float,
+) -> dict[int, float]:
+    """Build an all-candidate prior from observed tails and the public mean.
+
+    The public source does not publish every lower score cut.  The lower two
+    cuts are therefore solved to match the observed mean, while the observed
+    high-score tails are retained.  Missing tail points use the complete 2019
+    shape only as a conservative shape reference, never as admission data.
+    """
+    observed_tail_thresholds = MATH2_SCORE_TAIL_THRESHOLDS
+    fallback_tails = MATH2_ALL_CANDIDATE_TAIL_OBSERVATIONS[MATH2_ALL_CANDIDATE_DEFAULT_YEAR]
+    tail_values = []
+    previous_tail = 1.0
+    for threshold in observed_tail_thresholds:
+        value = tails.get(threshold, fallback_tails.get(threshold, 0.0))
+        value = max(0.0, min(previous_tail, min(1.0, float(value))))
+        tail_values.append(value)
+        previous_tail = value
+
+    p90, p105, p120, p135 = tail_values
+    lower_ratio = MATH2_LOWER_TAIL_RATIO
+    midpoints = [(start + end) / 2 for start, end in MATH2_SCORE_BANDS]
+    high_masses = [p90 - p105, p105 - p120, p120 - p135, p135]
+    high_mean = sum(midpoint * mass for midpoint, mass in zip(midpoints[3:], high_masses))
+    # Let P(score >= 75) = lower_ratio * P(score >= 60), then solve P(score >= 60)
+    # so the resulting piecewise distribution matches the public mean.
+    coefficient = (midpoints[1] - midpoints[0]) + lower_ratio * (midpoints[2] - midpoints[1])
+    constant = midpoints[0] - midpoints[2] * p90 + high_mean
+    p60 = (float(target_mean) - constant) / coefficient if coefficient else 0.0
+    p60 = max(p90 / lower_ratio, min(1.0, p60))
+    p75 = lower_ratio * p60
+    tail_values = [p60, p75, p90, p105, p120, p135]
+    masses = [
+        1.0 - tail_values[0],
+        tail_values[0] - tail_values[1],
+        tail_values[1] - tail_values[2],
+        tail_values[2] - tail_values[3],
+        tail_values[3] - tail_values[4],
+        tail_values[4] - tail_values[5],
+        tail_values[5],
+    ]
+    distribution: dict[int, float] = defaultdict(float)
+    for (start, end), mass in zip(MATH2_SCORE_BANDS, masses):
+        if mass <= 0:
+            continue
+        # Half-point granularity keeps the interval informative without
+        # pretending that the public source contains exact scores.
+        steps = int(round((end - start) * 2))
+        points = [start + index * 0.5 for index in range(steps)]
+        if start == MATH2_SCORE_BANDS[-1][0]:
+            points.append(end)
+        for point in points:
+            distribution[int(round(point * 10))] += mass / len(points)
+    total = sum(distribution.values()) or 1.0
+    return {score: mass / total for score, mass in distribution.items()}
+
+
+def _distribution_quantile(distribution: dict[int, float], quantile: float) -> float:
+    if not distribution:
+        return 0.0
+    target = max(0.0, min(1.0, float(quantile)))
+    accumulated = 0.0
+    total = sum(distribution.values()) or 1.0
+    for score, mass in sorted(distribution.items()):
+        accumulated += mass / total
+        if accumulated >= target:
+            return score / 10.0
+    return max(distribution) / 10.0
+
+
+def _distribution_mean(distribution: dict[int, float]) -> float:
+    total = sum(distribution.values()) or 1.0
+    return sum(score * mass for score, mass in distribution.items()) / total / 10.0
+
+
+def _mix_distributions(
+    population: dict[int, float], personal: dict[int, float], personal_weight: float,
+) -> dict[int, float]:
+    weight = max(0.0, min(1.0, float(personal_weight)))
+    mixed: dict[int, float] = defaultdict(float)
+    for score, mass in population.items():
+        mixed[score] += mass * (1.0 - weight)
+    for score, mass in personal.items():
+        mixed[score] += mass * weight
+    total = sum(mixed.values()) or 1.0
+    return {score: mass / total for score, mass in mixed.items()}
+
+
+def _math2_population_reference() -> dict[str, Any]:
+    return {
+        "mean_score_years": sorted(MATH2_ALL_CANDIDATE_MEAN_SCORES),
+        "mean_scores": {
+            str(year): round(score, 2)
+            for year, score in sorted(MATH2_ALL_CANDIDATE_MEAN_SCORES.items())
+        },
+        "score_tail_observations_percent": {
+            str(year): {
+                str(threshold): round(value * 100, 2)
+                for threshold, value in sorted(observations.items())
+            }
+            for year, observations in sorted(MATH2_ALL_CANDIDATE_TAIL_OBSERVATIONS.items())
+        },
+        "anchor_year": MATH2_ALL_CANDIDATE_DEFAULT_YEAR,
+        "funnel_reference": MATH2_PUBLIC_FUNNEL_REFERENCE,
+        "source_note": "数学二全体考生/大样本公开均分与尾部观测；不使用录取考生分数段，也不是持续发布的官方逐分微观分布。",
+    }
+
+
+def _difficulty_prior_probability(question: dict[str, Any]) -> float:
+    try:
+        difficulty = int(question.get("difficulty") or 3)
+    except (TypeError, ValueError):
+        difficulty = 3
+    return MATH2_DIFFICULTY_PRIORS.get(difficulty, MATH2_DIFFICULTY_PRIORS[3])
+
+
+def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any]], exam_type: str = "数学二") -> dict[str, Any]:
+    """Return a conservative score interval from hierarchical question evidence.
+
+    The forecast has three deliberate safeguards against local overconfidence:
+
+    * repeated attempts are collapsed to one question-level observation;
+    * evidence is shrunk by unique-question count and knowledge-block coverage;
+    * the personalized distribution is mixed with public Math II score bands.
+
+    This keeps a few correct answers in one block from being projected onto a
+    whole paper.  The API exposes an interval rather than a single score.
     """
     pool = [question for question in questions if question.get("exam_type") == exam_type]
     if not pool:
@@ -933,7 +1124,6 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
         reverse=True,
     )
     attempted_count = len(scoped_attempts)
-    unique_attempted_count = len({attempt.get("question_id") for attempt in scoped_attempts})
     paper_max_scores = {
         year: sum(float(question.get("points") or 0) for question in paper)
         for year, paper in papers.items()
@@ -946,8 +1136,6 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
     calibration_attempts = [
         attempt for attempt in scoped_attempts if attempt.get("question_id") in recent_question_ids
     ] or scoped_attempts
-    prior_probability = 0.30
-    prior_strength = 4.0
 
     def observed_value(attempt: dict[str, Any]) -> float:
         ratio = _attempt_score_ratio(attempt)
@@ -957,95 +1145,156 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
             return 1.0
         return 0.0
 
-    def posterior(items: list[dict[str, Any]], prior: float = prior_probability) -> float:
-        if not items:
-            return prior
-        total = sum(observed_value(item) for item in items)
-        return (total + prior * prior_strength) / (len(items) + prior_strength)
-
+    # Build one weighted observation per question.  A repeat is useful as
+    # retention evidence, but it cannot count like a new question forever.
     attempts_by_question: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    attempts_by_concept: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    attempts_by_subtype: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    attempts_by_difficulty: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for attempt in calibration_attempts:
-        question = question_by_id.get(attempt.get("question_id"))
-        if not question:
-            continue
-        attempts_by_question[question["id"]].append(attempt)
-        for concept_id in question.get("concept_ids") or []:
-            attempts_by_concept[concept_id].append(attempt)
-        for subtype_id in question_subtype_ids(question):
-            attempts_by_subtype[subtype_id].append(attempt)
-        attempts_by_difficulty[int(question.get("difficulty") or 3)].append(attempt)
+        question_id = str(attempt.get("question_id") or "")
+        if question_id in question_by_id:
+            attempts_by_question[question_id].append(attempt)
 
-    global_probability = posterior(calibration_attempts)
-    difficulty_stats: dict[int, dict[str, Any]] = {}
-    for difficulty_level in sorted({int(question.get("difficulty") or 3) for question in recent_questions}):
+    evidence_by_question: dict[str, dict[str, Any]] = {}
+    concept_evidence: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for question_id, question_attempts in attempts_by_question.items():
+        ordered = sorted(
+            question_attempts,
+            key=lambda item: _attempt_datetime(item) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        weighted_values = []
+        for index, attempt in enumerate(reversed(ordered)):
+            weight = 1.0 / (1.0 + index * 0.75)
+            weighted_values.append((observed_value(attempt), weight))
+        total_weight = sum(weight for _, weight in weighted_values) or 1.0
+        value = sum(value * weight for value, weight in weighted_values) / total_weight
+        question = question_by_id[question_id]
+        prior = _difficulty_prior_probability(question)
+        item = {
+            "question_id": question_id,
+            "value": value,
+            "prior": prior,
+            "residual": value - prior,
+            "weight": min(1.5, 1.0 + (len(ordered) - 1) * 0.20),
+            "difficulty": int(question.get("difficulty") or 3),
+            "concept_ids": list(question.get("concept_ids") or []),
+            "attempts": len(ordered),
+        }
+        evidence_by_question[question_id] = item
+        concepts = item["concept_ids"]
+        if concepts:
+            concept_weight = item["weight"] / len(concepts)
+            for concept_id in concepts:
+                concept_evidence[concept_id].append((item["residual"], concept_weight))
+
+    unique_attempted_count = len(evidence_by_question)
+    effective_unique_count = sum(item["weight"] for item in evidence_by_question.values())
+    unique_concepts = set(concept_evidence)
+    concept_coverage = min(1.0, len(unique_concepts) / MATH2_FORECAST_CONCEPT_SATURATION)
+    coverage_factor = 0.25 + 0.75 * concept_coverage
+    sample_weight = effective_unique_count / (effective_unique_count + MATH2_FORECAST_PRIOR_STRENGTH)
+    personalization_weight = min(0.82, sample_weight * coverage_factor)
+
+    def weighted_signal(items: list[tuple[float, float]]) -> float:
+        total = sum(weight for _, weight in items)
+        return sum(value * weight for value, weight in items) / total if total else 0.0
+
+    global_signal = weighted_signal([
+        (item["residual"], item["weight"])
+        for item in evidence_by_question.values()
+    ])
+    global_shift = global_signal * personalization_weight
+
+    concept_shifts: dict[str, float] = {}
+    for concept_id, items in concept_evidence.items():
+        concept_signal = weighted_signal(items)
+        concept_weight = sum(weight for _, weight in items)
+        concept_reliability = concept_weight / (concept_weight + MATH2_FORECAST_CONCEPT_PRIOR_STRENGTH)
+        concept_shifts[concept_id] = concept_signal * concept_reliability * personalization_weight
+
+    difficulty_levels = sorted({int(question.get("difficulty") or 3) for question in recent_questions})
+    difficulty_calibration = []
+    for difficulty_level in difficulty_levels:
         level_questions = [
             question for question in recent_questions
             if int(question.get("difficulty") or 3) == difficulty_level
         ]
-        level_attempts = attempts_by_difficulty.get(difficulty_level, [])
-        level_probability = posterior(level_attempts, global_probability)
-        difficulty_stats[difficulty_level] = {
-            "probability": level_probability,
-            "attempts": len(level_attempts),
+        level_evidence = [
+            item for item in evidence_by_question.values()
+            if item["difficulty"] == difficulty_level
+        ]
+        observed = weighted_signal([
+            (item["value"], item["weight"])
+            for item in level_evidence
+        ]) if level_evidence else None
+        prior = MATH2_DIFFICULTY_PRIORS.get(difficulty_level, MATH2_DIFFICULTY_PRIORS[3])
+        difficulty_calibration.append({
+            "difficulty": difficulty_level,
+            "label": f"难度 {difficulty_level}",
             "question_count": len(level_questions),
+            "attempts": sum(item["attempts"] for item in level_evidence),
+            "accuracy": round(observed * 100, 1) if observed is not None else None,
+            "adjustment": round((observed - prior) * 100, 1) if observed is not None else 0.0,
             "years": sorted({int(question["year"]) for question in level_questions}),
-        }
-    difficulty_calibration = [
-        {
-            "difficulty": level,
-            "label": f"难度 {level}",
-            "question_count": data["question_count"],
-            "attempts": data["attempts"],
-            "accuracy": round(data["probability"] * 100, 1) if data["attempts"] else None,
-            "adjustment": round((data["probability"] - global_probability) * 100, 1),
-            "years": data["years"],
-        }
-        for level, data in difficulty_stats.items()
-    ]
+        })
 
-    def probability_for(question: dict[str, Any]) -> float:
-        direct = attempts_by_question.get(question["id"], [])
+    anchor_distributions: dict[int, dict[int, float]] = {}
+    anchor_means: dict[int, float] = {}
+    if exam_type == "数学二":
+        for year in recent_years:
+            reference_year = _math2_reference_year(year)
+            anchor = _math2_score_anchor_distribution(
+                MATH2_ALL_CANDIDATE_TAIL_OBSERVATIONS[reference_year],
+                _math2_reference_mean(year),
+            )
+            anchor_distributions[year] = anchor
+            anchor_means[year] = _distribution_mean(anchor)
+    else:
+        for year in recent_years:
+            paper_max = paper_max_scores.get(year, 0.0)
+            anchor_distributions[year] = {}
+            anchor_means[year] = sum(
+                float(question.get("points") or 0) * _difficulty_prior_probability(question)
+                for question in papers[year]
+            ) / paper_max * max_score if paper_max else 0.0
+
+    def paper_baseline_offset(paper: list[dict[str, Any]], paper_max: float, anchor_mean: float) -> float:
+        if paper_max <= 0:
+            return 0.0
+        raw_score = sum(
+            float(question.get("points") or 0) * _difficulty_prior_probability(question)
+            for question in paper
+        ) / paper_max * max_score
+        target_score = anchor_mean
+        return max(-0.12, min(0.12, (target_score - raw_score) / max_score))
+
+    paper_offsets = {
+        year: paper_baseline_offset(papers[year], paper_max_scores[year], anchor_means[year])
+        for year in recent_years
+        if paper_max_scores.get(year)
+    }
+
+    def probability_for(question: dict[str, Any], paper_year: int) -> float:
+        base_probability = max(
+            0.05,
+            min(0.95, _difficulty_prior_probability(question) + paper_offsets.get(paper_year, 0.0)),
+        )
+        shift = 0.65 * global_shift
+        local_shifts = [concept_shifts[concept_id] for concept_id in question.get("concept_ids") or [] if concept_id in concept_shifts]
+        if local_shifts:
+            shift += 0.35 * sum(local_shifts) / len(local_shifts)
+        direct = evidence_by_question.get(question["id"])
         if direct:
-            probability = posterior(direct, global_probability)
-        else:
-            concept_items = [
-                item for concept_id in question.get("concept_ids") or []
-                for item in attempts_by_concept.get(concept_id, [])
-            ]
-            subtype_items = [
-                item for subtype_id in question_subtype_ids(question)
-                for item in attempts_by_subtype.get(subtype_id, [])
-            ]
-            concept_probability = posterior(concept_items, global_probability)
-            subtype_probability = posterior(subtype_items, global_probability)
-            difficulty_probability = difficulty_stats.get(
-                int(question.get("difficulty") or 3), {"probability": global_probability}
-            )["probability"]
-            evidence = [(global_probability, 0.25), (difficulty_probability, 0.25)]
-            if concept_items:
-                evidence.append((concept_probability, 0.30))
-            if subtype_items:
-                evidence.append((subtype_probability, 0.20))
-            denominator = sum(weight for _, weight in evidence)
-            probability = sum(value * weight for value, weight in evidence) / denominator
-        difficulty_level = int(question.get("difficulty") or 3)
-        # The latest three papers' difficulty distribution is the calibration
-        # anchor.  This small adjustment preserves the evidence model while
-        # ensuring a harder paper cannot be predicted above an easier peer
-        # solely because its point total is different.
-        probability += (difficulty_center - difficulty_level) * 0.045
-        return max(0.02, min(0.95, probability))
+            direct_weight = min(0.25, direct["weight"] / (direct["weight"] + 8.0))
+            shift += direct["residual"] * direct_weight
+        shift = max(-MATH2_FORECAST_MAX_PERSONAL_SHIFT, min(MATH2_FORECAST_MAX_PERSONAL_SHIFT, shift))
+        return max(0.02, min(0.95, base_probability + shift))
 
-    def paper_distribution(paper: list[dict[str, Any]], paper_max: float) -> dict[int, float]:
-        # Use tenths of a point so the exact convolution remains compact while
-        # retaining the 150-point normalization and fractional source scores.
+    def paper_distribution(paper: list[dict[str, Any]], paper_max: float, paper_year: int) -> dict[int, float]:
+        # Exact convolution in tenths of a point preserves source point values
+        # after normalizing each historical paper to the 150-point scale.
         distribution: dict[int, float] = {0: 1.0}
         for question in paper:
             increment = int(round(float(question.get("points") or 0) / paper_max * max_score * 10)) if paper_max else 0
-            probability = probability_for(question)
+            probability = probability_for(question, paper_year)
             next_distribution: dict[int, float] = defaultdict(float)
             for score, mass in distribution.items():
                 next_distribution[score] += mass * (1.0 - probability)
@@ -1054,18 +1303,35 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
         total_mass = sum(distribution.values()) or 1.0
         return {score: mass / total_mass for score, mass in distribution.items()}
 
-    def mixture_quantile(distributions: list[dict[int, float]], quantile: float) -> float:
-        mixture: dict[int, float] = defaultdict(float)
-        weight = 1.0 / len(distributions)
+    distributions = []
+    for year in recent_years:
+        if not paper_max_scores.get(year):
+            continue
+        personal = paper_distribution(papers[year], paper_max_scores[year], year)
+        population = anchor_distributions[year]
+        distributions.append(
+            _mix_distributions(population, personal, personalization_weight)
+            if population else personal
+        )
+
+    mixture: dict[int, float] = defaultdict(float)
+    if distributions:
+        paper_weight = 1.0 / len(distributions)
         for distribution in distributions:
             for score, mass in distribution.items():
-                mixture[score] += mass * weight
-        accumulated = 0.0
-        for score in sorted(mixture):
-            accumulated += mixture[score]
-            if accumulated >= quantile:
-                return score / 10.0
-        return max(mixture, default=0) / 10.0
+                mixture[score] += mass * paper_weight
+    normalized_mixture = dict(mixture)
+    score_range = {
+        "low": round(_distribution_quantile(normalized_mixture, 0.20), 1) if normalized_mixture else 0.0,
+        "high": round(_distribution_quantile(normalized_mixture, 0.80), 1) if normalized_mixture else 0.0,
+        "coverage": "中心 60%",
+    }
+    outer_range = {
+        "low": round(_distribution_quantile(normalized_mixture, 0.10), 1) if normalized_mixture else 0.0,
+        "high": round(_distribution_quantile(normalized_mixture, 0.90), 1) if normalized_mixture else 0.0,
+        "coverage": "宽参考边界",
+    }
+    population_reference = _math2_population_reference() if exam_type == "数学二" else None
 
     if not scoped_attempts:
         return {
@@ -1076,26 +1342,23 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
             "paper_questions": len(papers.get(target_year, [])),
             "evaluation_questions": sum(len(paper) for paper in papers.values()),
             "max_score": max_score,
-            "p10": 0.0,
-            "p50": 0.0,
-            "p90": 0.0,
+            "score_range": {"low": 0.0, "high": 0.0, "coverage": "等待真实作答"},
+            "outer_range": {"low": 0.0, "high": 0.0, "coverage": "等待真实作答"},
             "confidence": "暂无",
             "attempts_used": 0,
+            "unique_questions_used": 0,
+            "concepts_used": 0,
+            "personalization_weight": 0.0,
             "recent_difficulty_mean": round(difficulty_center, 2),
             "difficulty_calibration": difficulty_calibration,
-            "median_method": "无作答数据时不推断个人分数，初始值固定为 0 分",
-            "note": f"尚无真实作答记录，初始预估分按 0 分显示。完成练习后，将用最近三年（{'、'.join(str(year) for year in recent_years)}）真题的难度分布校准；人群中约三成考生能超过 50 分，系统不会把这个比例直接当成你的个人成绩。",
+            "interval_method": "无作答数据时不推断个人区间，初始值固定为 0 分",
+            "population_reference": population_reference,
+            "note": f"尚无真实作答记录，暂不推断个人得分区间。完成练习后，将按题目去重、知识块覆盖和难度分层，结合最近三年（{'、'.join(str(year) for year in recent_years)}）真题与全体考生历史均分/高分尾部观测缓慢更新。",
         }
 
-    distributions = [
-        paper_distribution(papers[year], paper_max_scores[year])
-        for year in recent_years
-        if paper_max_scores.get(year)
-    ]
-    p10 = round(mixture_quantile(distributions, 0.10), 1) if distributions else 0.0
-    p50 = round(mixture_quantile(distributions, 0.50), 1) if distributions else 0.0
-    p90 = round(mixture_quantile(distributions, 0.90), 1) if distributions else 0.0
-    confidence = "低" if attempted_count < 10 or unique_attempted_count < 8 else ("中" if attempted_count < 40 or unique_attempted_count < 25 else "较高")
+    confidence = "低" if unique_attempted_count < 12 or len(unique_concepts) < 3 else (
+        "中" if unique_attempted_count < 35 or len(unique_concepts) < 7 else "较高"
+    )
     return {
         "available": True,
         "exam_type": exam_type,
@@ -1104,13 +1367,16 @@ def forecast_score(questions: list[dict[str, Any]], attempts: list[dict[str, Any
         "paper_questions": len(papers.get(target_year, [])),
         "evaluation_questions": sum(len(paper) for paper in papers.values()),
         "max_score": max_score,
-        "p10": p10,
-        "p50": p50,
-        "p90": p90,
+        "score_range": score_range,
+        "outer_range": outer_range,
         "confidence": confidence,
         "attempts_used": attempted_count,
+        "unique_questions_used": unique_attempted_count,
+        "concepts_used": len(unique_concepts),
+        "personalization_weight": round(personalization_weight, 4),
         "recent_difficulty_mean": round(difficulty_center, 2),
         "difficulty_calibration": difficulty_calibration,
-        "median_method": "最近三年真实试卷按 150 分归一化后做精确离散分布，取三年等权混合分布的中位数",
-        "note": f"预估基于当前作答证据与最近三年（{'、'.join(str(year) for year in recent_years)}）真实题目的分值和难度分布，不等同于考试承诺；低样本阶段保留约三成考生超过 50 分的保守基线，数据量增加后区间会收窄。",
+        "interval_method": "公共分段先验 + 题目去重 + 知识块覆盖收缩 + 难度分层精确离散分布，展示中心 60% 区间",
+        "population_reference": population_reference,
+        "note": f"区间基于当前作答证据与最近三年（{'、'.join(str(year) for year in recent_years)}）真实题目；少量同一知识块的作答只产生很小更新，必须扩大题目和知识块覆盖后区间才会逐步移动。全体考生历史均分与高分尾部观测用于校准群体边界，不代表你的个人成绩承诺。",
     }
