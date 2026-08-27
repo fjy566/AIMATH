@@ -152,6 +152,16 @@ def test_forecast_ui_renders_interval_instead_of_a_single_p50() -> None:
     assert 'forecast-p50' not in app_source
 
 
+def test_settings_page_does_not_repeat_global_page_heading() -> None:
+    html_source = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    settings_markup = html_source.split('<section class="view" id="view-settings">', 1)[1].split("</section>", 1)[0]
+
+    assert "SETTINGS / MODEL + SERVER" not in settings_markup
+    assert "<h2>设置</h2>" not in settings_markup
+    assert 'class="settings-contextbar"' in settings_markup
+    assert 'id="connection-badge"' in settings_markup
+
+
 def test_learning_analytics_separates_observed_evidence_from_untrained_topics() -> None:
     questions = load_questions()
     first = next(question for question in questions if question["year"] == 2025 and question["question_type"] == "choice")

@@ -337,6 +337,9 @@ select:focus, input:focus, textarea:focus { border-color: var(--blue); box-shado
 .connection-badge span { width: 6px; height: 6px; border-radius: 50%; background: #a0a7a0; }
 .connection-badge.connected { color: var(--green); border-color: #a6c4b1; background: #e7f0e8; }
 .connection-badge.connected span { background: var(--green); }
+.settings-contextbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; padding: 10px 12px; border: 1px solid var(--line); background: rgba(247,250,248,.72); }
+.settings-contextbar p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.settings-contextbar .connection-badge { flex: 0 0 auto; }
 .settings-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr); gap: 18px; align-items: start; }
 .settings-card { padding: 28px 31px 30px; }
 .settings-card-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 26px; }
@@ -1238,6 +1241,7 @@ body.theme-dark .template-quick-nav { background: rgba(17,42,46,.95); border-col
 body.theme-dark .template-quick-nav button:hover { background: #1a4547; }
 body.theme-dark .answer-format-bar button { color: var(--ink-soft); }
 body.theme-dark .block-stack-card[open] .block-stack-summary, body.theme-dark .practice-question-navigator, body.theme-dark .practice-card-navigation { background: #173b3e; border-color: var(--line); }
+body.theme-dark .settings-contextbar { background: #153236; border-color: var(--line); }
 
 @media (max-width: 1080px) {
   .workbench-shell { grid-template-columns: 220px minmax(0, 1fr); }
@@ -1312,6 +1316,7 @@ body.theme-dark .block-stack-card[open] .block-stack-summary, body.theme-dark .p
   .block-stack-reason { display: none; }
   .practice-question-navigator { grid-template-columns: 1fr; gap: 9px; padding: 12px 14px; }
   .practice-card-navigation { padding: 12px 14px; }
+  .settings-contextbar { align-items: flex-start; flex-direction: column; gap: 8px; }
 }
 
 @media (max-width: 480px) {
