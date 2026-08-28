@@ -24,15 +24,16 @@ _TEX_COMMAND_NAMES = (
     "sum|prod|int|iint|iiint|partial|nabla|infty|to|sim|le|ge|leq|geq|leqslant|"
     "geqslant|ne|neq|in|notin|subset|subseteq|forall|exists|varnothing|emptyset|"
     "Longleftrightarrow|Longrightarrow|Longleftarrow|Rightarrow|Leftrightarrow|"
-    "leftarrow|rightarrow|cdot|times|pm|mp|approx|asymp|nsim|quad|qquad|det|"
-    "lambda|xi|mu|alpha|beta|gamma|delta|theta|pi|Delta|Lambda|Omega|ell|eta|"
-    "rho|psi|sigma|zeta|varphi|varepsilon|phi|boldsymbol|vec|overline|underline|"
+    "leftarrow|rightarrow|longleftarrow|longrightarrow|longleftrightarrow|xrightarrow|cdot|times|pm|mp|approx|asymp|nsim|gtrless|quad|qquad|det|"
+    "lambda|xi|mu|alpha|beta|gamma|delta|theta|pi|Delta|Lambda|Phi|Omega|ell|eta|kappa|"
+    "rho|psi|sigma|zeta|varphi|varepsilon|phi|boldsymbol|vec|bar|overline|underline|"
     "overbrace|underbrace|widehat|hat|check|tilde|dot|ddot|cdots|ldots|dots|"
     "vdots|ddots|prime|mid|middle|boxed|hspace|limits|substack|max|min|"
     "Big|big|bigl|bigr|bigg|Bigg|Bigl|Bigr|Biggl|Biggr|cup|cap|setminus|circ|"
     "perp|downarrow|uparrow|triangle|ker|pmod|mod"
 )
-_TEX_COMMAND_RE = re.compile(rf"(?<!\\)\\\\(?=(?:{_TEX_COMMAND_NAMES})\b)")
+_TEX_COMMAND_RE = re.compile(rf"(?<!\\)\\\\(?=(?:{_TEX_COMMAND_NAMES})(?![A-Za-z]))")
+_TEX_LONG_ESCAPE_RE = re.compile(rf"(?<!\\)(?:\\\\){{2,}}(?=(?:{_TEX_COMMAND_NAMES})(?![A-Za-z]))")
 
 
 def _normalize_template_prose(value: str) -> str:
@@ -42,7 +43,12 @@ def _normalize_template_prose(value: str) -> str:
 
 def _normalize_template_formula(value: str) -> str:
     """Normalize doubled TeX command escapes without destroying matrix rows."""
-    return _TEX_COMMAND_RE.sub(lambda _match: "\\", str(value or ""))
+    formula = str(value or "")
+    # A raw string copied through two serializers can contain four or more
+    # slashes before a command.  Collapse only even runs; an odd run such as
+    # ``\\\\\\left`` is an intentional array row break followed by a command.
+    formula = _TEX_LONG_ESCAPE_RE.sub(lambda _match: "\\", formula)
+    return _TEX_COMMAND_RE.sub(lambda _match: "\\", formula)
 
 
 def _build_answer_structure(
@@ -1950,6 +1956,603 @@ for _items in SUBTYPE_CATALOG.values():
         _item.update(_DETAILED_TEMPLATES[_item["id"]])
 
 
+def _construction_pattern(
+    title: str,
+    when: str,
+    formula: str,
+    steps: tuple[str, ...] | list[str],
+    target: str,
+    checks: tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    """Create one reusable, paper-oriented construction recipe.
+
+    The workbench used to expose only a prose framework.  Keeping recipes as
+    structured data lets the API, the copy action and the browser render the
+    same source without another hand-maintained list of duplicated strings.
+    """
+    return {
+        "title": title,
+        "when": when,
+        "formula": formula,
+        "steps": list(steps),
+        "target": target,
+        "checks": list(checks),
+    }
+
+
+_ROLLE_CONSTRUCTION_PATTERNS = (
+    _construction_pattern(
+        "直接取原函数",
+        r"题设给出 $f\in C[a,b]$、$f$ 在 $(a,b)$ 可导，且 $f(a)=f(b)$；目标是证明存在 $\\xi$ 使 $f'(\\xi)=0$。",
+        r"$$F(x)=f(x),\qquad F(a)=F(b).$$",
+        (
+            "先写 $F=f$，把题设的连续、可导条件原样转给 $F$。",
+            "计算 $F(a)=f(a)$、$F(b)=f(b)$，由题设得到端点等值。",
+            "引用罗尔定理，得到 $\\exists\\xi\\in(a,b)$ 使 $F'(\\xi)=0$。",
+            "展开 $F'$，写出 $f'(\\xi)=0$，并标明 $\\xi$ 的区间。",
+        ),
+        r"$$f'(\\xi)=0,\quad \\xi\\in(a,b).$$",
+        ("连续性写在 $[a,b]$，可导性写在 $(a,b)$。", "不要把罗尔结论误写成存在函数值为零。"),
+    ),
+    _construction_pattern(
+        "减去目标直线（常数斜率）",
+        "目标是证明 $f'(\\xi)=k$，并且端点增量满足 $f(b)-f(a)=k(b-a)$。",
+        r"$$F(x)=f(x)-kx\quad\text{（也可取 }F(x)=f(x)-k(x-a)\text{）}.$$",
+        (
+            "把目标移项为 $f'(\\xi)-k=0$，反推 $F'(x)=f'(x)-k$。",
+            "用端点增量验证 $F(b)-F(a)=f(b)-f(a)-k(b-a)=0$。",
+            "逐项核验 $F\\in C[a,b]$ 且在 $(a,b)$ 可导，再用罗尔定理。",
+            "由 $F'(\\xi)=0$ 还原 $f'(\\xi)=k$。",
+        ),
+        r"$$f'(\\xi)-k=0\\Longrightarrow f'(\\xi)=k.$$",
+        ("$k$ 必须与端点割线斜率相容。", "取 $f(x)-k(x-a)$ 可减少常数项，避免误算端点。"),
+    ),
+    _construction_pattern(
+        "减去割线（由罗尔推出拉格朗日）",
+        "端点值不相等，但要证明某点导数等于割线斜率。",
+        r"$$F(x)=f(x)-f(a)-\\frac{f(b)-f(a)}{b-a}(x-a).$$",
+        (
+            "设 $m=\\dfrac{f(b)-f(a)}{b-a}$，写成目标 $f'(\\xi)-m=0$。",
+            "构造 $F=f-f(a)-m(x-a)$，直接算出 $F(a)=F(b)=0$。",
+            "验证定理条件并得到 $F'(\\xi)=0$。",
+            "代回 $F'=f'-m$，整理为 $f'(\\xi)=\\dfrac{f(b)-f(a)}{b-a}$。",
+        ),
+        r"$$f'(\\xi)=\\frac{f(b)-f(a)}{b-a}.$$",
+        ("要求 $a\\ne b$。", "$\\xi$ 只保证落在 $(a,b)$，不能指定为中点。"),
+    ),
+    _construction_pattern(
+        "两函数作差",
+        "要证明存在 $\\xi$ 使 $f'(\\xi)=g'(\\xi)$，且 $f(a)-g(a)=f(b)-g(b)$。",
+        r"$$F(x)=f(x)-g(x),\qquad F'(x)=f'(x)-g'(x).$$",
+        (
+            "把两边导数移到同一侧，确定差函数 $F=f-g$。",
+            "由端点差值相等写出 $F(a)=F(b)$，并核验连续、可导条件。",
+            "应用罗尔定理得到 $F'(\\xi)=0$。",
+            "展开导数并回到原题，得到 $f'(\\xi)=g'(\\xi)$。",
+        ),
+        r"$$f'(\\xi)-g'(\\xi)=0.$$",
+        ("差函数的端点等值必须逐项计算。", "若目标是 $f'(\\xi)+g'(\\xi)=0$，应改用 $F=f+g$。"),
+    ),
+    _construction_pattern(
+        "柯西型加权差",
+        "要处理两个增量之比，或要求 $f'(\\xi)/g'(\\xi)$，且 $g'(x)$ 在区间内不为零。",
+        r"$$F(x)=\\bigl(g(b)-g(a)\\bigr)f(x)-\\bigl(f(b)-f(a)\\bigr)g(x).$$",
+        (
+            "先记 $A=g(b)-g(a)$、$B=f(b)-f(a)$，把分式目标改写为 $Af'(\\xi)-Bg'(\\xi)=0$。",
+            "构造 $F=Af-Bg$，计算 $F(b)-F(a)=AB-BA=0$。",
+            "用罗尔定理得到 $Af'(\\xi)-Bg'(\\xi)=0$。",
+            "在 $g'(\\xi)\\ne0$ 时除以 $Ag'(\\xi)$，得到导数比值；若分母为零须保留未约形式。",
+        ),
+        r"$$\\frac{f'(\\xi)}{g'(\\xi)}=\\frac{f(b)-f(a)}{g(b)-g(a)}.$$",
+        ("确认 $g(b)\\ne g(a)$ 才能写端点增量之比。", "除法前必须说明 $A\\ne0$、$g'(\\xi)\\ne0$。"),
+    ),
+    _construction_pattern(
+        "参数线性组合",
+        "题目给出待定参数，要求找到 $\\lambda$ 使某点满足 $f'(\\xi)+\\lambda g'(\\xi)=0$。",
+        r"$$F(x)=f(x)+\\lambda g(x),\qquad \\lambda=-\\frac{f(b)-f(a)}{g(b)-g(a)}.$$",
+        (
+            "先计算端点差并确认 $g(b)-g(a)\\ne0$。",
+            "由 $F(a)=F(b)$ 解出唯一的 $\\lambda$，不要先对 $F'$ 猜参数。",
+            "核验 $F$ 的连续、可导条件，使用罗尔定理得到 $F'(\\xi)=0$。",
+            "展开为 $f'(\\xi)+\\lambda g'(\\xi)=0$，再按题意解释 $\\lambda$。",
+        ),
+        r"$$f'(\\xi)+\\lambda g'(\\xi)=0.$$",
+        ("分母为零时改换基函数或直接检查端点。", "参数先由端点条件确定，再进入导数结论。"),
+    ),
+    _construction_pattern(
+        "积分平均值构造",
+        "目标是证明连续函数在区间内某点取到平均值，或出现 $f(\\xi)=c$。",
+        r"$$c=\\frac1{b-a}\\int_a^b f(t)\\,dt,\\qquad F(x)=\\int_a^x f(t)\\,dt-c(x-a).$$",
+        (
+            "先定义平均值 $c$，把目标改写为 $f(\\xi)-c=0$。",
+            "由微积分基本定理得 $F'(x)=f(x)-c$；计算 $F(a)=0$、$F(b)=0$。",
+            "若 $f$ 连续，则 $F$ 在闭区间连续、开区间可导，应用罗尔定理。",
+            "由 $F'(\\xi)=0$ 得 $f(\\xi)=c$，并写出 $\\xi\\in(a,b)$。",
+        ),
+        r"$$f(\\xi)=\\frac1{b-a}\\int_a^b f(t)\\,dt.$$",
+        ("要求 $a<b$ 且 $f$ 在 $[a,b]$ 连续。", "平均值不是端点平均，分母必须是区间长度。"),
+    ),
+    _construction_pattern(
+        "加权积分平均",
+        "目标含 $f(\\xi)=c,g(\\xi)$，且 $f,g$ 连续、$g$ 不变号并且积分分母非零。",
+        r"$$c=\\frac{\\int_a^b f(t)\\,dt}{\\int_a^b g(t)\\,dt},\\qquad F(x)=\\int_a^x\\bigl(f(t)-c g(t)\\bigr)\\,dt.$$",
+        (
+            "先检查 $\\int_a^b g(t)\\,dt\\ne0$，由端点积分确定 $c$。",
+            "构造原函数型 $F$，由基本定理得到 $F'=f-cg$。",
+            "计算两端均为零，应用罗尔定理得到 $f(\\xi)-cg(\\xi)=0$。",
+            "根据 $g(\\xi)$ 是否为零决定能否除法；保留乘积形式更稳妥。",
+        ),
+        r"$$f(\\xi)=c\\,g(\\xi)\\quad\\text{或}\\quad f(\\xi)-c g(\\xi)=0.$$",
+        ("分母积分必须非零。", "$g(\\xi)=0$ 时不能强行写成比值。"),
+    ),
+    _construction_pattern(
+        "对称端点与镜像差",
+        "区间为 $[-a,a]$ 或含对称点，要求导数在相反点的和、差满足关系。",
+        r"$$F(x)=f(x)-f(-x)\\quad\\text{或}\\quad F(x)=f(x)+f(-x).$$",
+        (
+            "先确认 $f$ 在对称区间的定义域、连续性和可导性。",
+            "根据题设选择和函数或差函数，并计算 $F(-a)$、$F(a)$；必要时先利用端点相等把它们化为同值。",
+            "求导时注意链式法则：$(f(-x))'=-f'(-x)$，再应用罗尔定理。",
+            "将 $F'(\\xi)=0$ 展开为 $f'(\\xi)\\pm f'(-\\xi)=0$，说明点的范围。",
+        ),
+        r"$$F'(x)=f'(x)+f'(-x)\\quad\\text{（差函数）}.$$",
+        ("求 $f(-x)$ 的导数时不能漏负号。", "端点等值仍需验证，不能只凭‘关于原点对称’。"),
+    ),
+    _construction_pattern(
+        "复合变换保端点",
+        "端点满足 $\\Phi(f(a))=\\Phi(f(b))$，目标含 $\\Phi'(f(\\xi))f'(\\xi)=0$ 或希望制造端点等值。",
+        r"$$F(x)=\\Phi(f(x)),\\qquad F'(x)=\\Phi'(f(x))f'(x).$$",
+        (
+            "选择在函数值范围内可导的 $\\Phi$（如平方、对数或指数），先确认其定义域。",
+            "用端点条件计算 $F(a)=\\Phi(f(a))$、$F(b)=\\Phi(f(b))$。",
+            "验证复合函数的连续、可导条件后应用罗尔定理。",
+            "展开链式导数；若 $\\Phi'(f(\\xi))\\ne0$ 才能进一步推出 $f'(\\xi)=0$。",
+        ),
+        r"$$\\Phi'(f(\\xi))f'(\\xi)=0.$$",
+        ("对数构造要求 $f(x)>0$，平方构造可能引入 $f(a)=-f(b)$。", "得到乘积为零后必须讨论各因子。"),
+    ),
+    _construction_pattern(
+        "多零点与反复罗尔",
+        "函数在同一闭区间有多个零点，或题目要求证明高阶导数存在零点。",
+        r"$$f(x_0)=f(x_1)=\\cdots=f(x_n)=0\\Longrightarrow f^{(n)}(\\xi)=0.$$",
+        (
+            "先按大小排列零点 $x_0<x_1<\\cdots<x_n$，确认每个相邻区间满足定理条件。",
+            "在每个 $[x_i,x_{i+1}]$ 上对 $f$ 用罗尔，得到 $f'$ 的零点 $\\xi_i$。",
+            "将相邻的 $\\xi_i$ 再组成区间，对 $f'$ 重复使用罗尔；需要几阶就重复几次。",
+            "最后明确零点落在原区间内，并区分‘至少一个’和‘恰有一个’。",
+        ),
+        r"$$f\\text{ 有 }n+1\\text{ 个互异零点}\\Longrightarrow\\exists\\xi\\in(x_0,x_n):f^{(n)}(\\xi)=0.$$",
+        ("高阶重复使用需要足够阶的可导性。", "零点必须按顺序形成非退化区间，不能重复使用同一点。"),
+    ),
+    _construction_pattern(
+        "原函数型零点与唯一性",
+        "目标是证明某个连续表达式 $\\varphi(\\xi)=0$，且它可以写成辅助函数的导数。",
+        r"$$F(x)=\\int_a^x\\varphi(t)\\,dt,\\qquad F'(x)=\\varphi(x).$$",
+        (
+            "把待证表达式整体记为 $\\varphi$，不要拆掉会改变零点的因子。",
+            "由题设或积分条件验证 $F(a)=F(b)$，并确认 $\\varphi$ 连续。",
+            "应用罗尔定理得到 $F'(\\xi)=0$，即 $\\varphi(\\xi)=0$。",
+            "若题目还问唯一性，另证 $\\varphi$ 严格单调或导数恒号，再写‘存在且唯一’。",
+        ),
+        r"$$F'(\\xi)=\\varphi(\\xi)=0.$$",
+        ("存在性由罗尔给出，唯一性必须另证。", "积分端点条件要写出，不要把原函数常数漏掉。"),
+    ),
+)
+
+
+_CONSTRUCTION_FAMILY_PATTERNS: dict[str, tuple[dict[str, Any], ...]] = {
+    "function": (
+        _construction_pattern("定义域先行", "含分母、根式、对数、反三角函数或分段条件时。", r"$$D=\\{x\\mid q(x)\\ne0,\\ r(x)\\ge0,\\ s(x)>0\\}.$$", ("分别列出每个限制。", "取交集并标出端点是否属于定义域。", "后续所有性质只在 $D$ 上讨论。"), "得到完整定义域 $D$。", ("不对称定义域不能判奇偶。", "分段连接点要单独检查。")),
+        _construction_pattern("按定义判性质", "需要判断奇偶、有界、周期或单调，且图像直觉不可靠时。", r"$$f(-x)=\\pm f(x),\\qquad f(x+T)=f(x).$$", ("先确认变换后的点仍在 $D$。", "把解析式化简后逐项比较。", "对周期补充 $T>0$ 和最小正周期说明。"), "写出性质成立的完整区间。", ("只验一个点不够。", "非周期因子不能被三角因子掩盖。")),
+        _construction_pattern("中间变量消元", "复合、参数方程或含 $f(g(x))$ 的关系题。", r"$$u=g(x),\\quad y=f(u)\\Longrightarrow y=F(x).$$", ("设中间变量并写范围。", "消去参数或反解得到关系。", "检查反解单值性和新定义域。"), "得到单值的 $y=F(x)$ 或明确多值关系。", ("反解可能引入分支。", "不能丢掉原参数约束。")),
+        _construction_pattern("分段与端点复核", "绝对值、分段函数、周期拼接或性质在边界处可能失效时。", r"$$f(x)=\\begin{cases}f_1(x),&x\\in I_1,\\\\f_2(x),&x\\in I_2.\\end{cases}$$", ("按区间拆开表达式。", "逐段求性质或导数。", "在分界点回代原式检查。"), "结论覆盖全部定义域。", ("分界点不能只套某一段公式。", "闭端点是否纳入要写清。")),
+    ),
+    "sequence": (
+        _construction_pattern("主项与等价", "显式数列中最高阶或基本等价无穷小明显时。", r"$$a_n=\\frac{p(n)}{q(n)}\\sim\\frac{\\operatorname{lead}p(n)}{\\operatorname{lead}q(n)}.$$", ("提取最高阶。", "只在乘除因子中做等价替换。", "代回并写趋向。"), "得到极限或主阶。", ("加减项不能直接替换。", "参数使主项消失时要重分情况。")),
+        _construction_pattern("夹逼", "数列有绝对值、振荡因子或容易找到上下界时。", r"$$u_n\\le a_n\\le v_n,\\quad u_n,v_n\\to L\\Longrightarrow a_n\\to L.$$", ("构造同一极限的上下界。", "证明不等式对充分大的 $n$ 成立。", "引用夹逼准则。"), "写出 $a_n\\to L$。", ("上下界必须同向收敛。", "有限个前项不影响极限但要说明。")),
+        _construction_pattern("递推不变区间", "$a_{n+1}=\\varphi(a_n)$ 且需要先证明收敛时。", r"$$a_1\\in[m,M],\\quad \\varphi([m,M])\\subseteq[m,M].$$", ("验证初值在区间内。", "归纳证明不变区间。", "再比较 $a_{n+1}-a_n$ 判单调。"), "得到单调有界，从而收敛。", ("只证明有界不够。", "递推函数连续性用于取极限。")),
+        _construction_pattern("Stolz/差商", "分母严格递增趋于无穷，直接求和比值困难时。", r"$$\\lim\\frac{a_n}{b_n}=\\lim\\frac{a_{n+1}-a_n}{b_{n+1}-b_n}.$$", ("确认 $b_n$ 严格递增且趋于无穷。", "计算差分并判定新极限。", "引用 Stolz 定理并补充适用条件。"), "把数列比值化为差分比值。", ("不能把它当作连续洛必达。", "分母差不能为零。")),
+    ),
+    "limit": (
+        _construction_pattern("代入与连续", "代入后不是未定式，或函数在趋近点连续时。", r"$$\\lim_{x\\to x_0}f(x)=f(x_0).$$", ("先确定趋近方向和定义域。", "直接代入。", "写明连续性或定义域依据。"), "得到有限极限或立即判发散。", ("点无定义不等于极限不存在。", "左右极限要分别处理。")),
+        _construction_pattern("因式分解/有理化", "$0/0$、根式差或多项式因子相消时。", r"$$\\sqrt{A}-\\sqrt{B}=\\frac{A-B}{\\sqrt A+\\sqrt B}.$$", ("先找公因式或乘共轭。", "约去非零因子并保留趋近条件。", "再次代入判型。"), "把未定式降为可直接计算的形式。", ("约分前确认邻域内因子不恒为零。", "有理化后分母定义域不能漏。")),
+        _construction_pattern("等价无穷小/泰勒", "乘除结构可拆分，或主项抵消需要保留更高阶时。", r"$$\\sin u\\sim u,\\quad 1-\\cos u\\sim\\frac{u^2}{2},\\quad f(x)=\\sum_{k=0}^{n}\\frac{f^{(k)}(x_0)}{k!}(x-x_0)^k+o((x-x_0)^n).$$", ("判断替换发生在乘除还是加减。", "主项抵消时提高展开阶数。", "保留第一个不消失项。"), "求出极限阶数和常数。", ("加减内部不能直接等价替换。", "展开阶数必须覆盖抵消后的阶。")),
+        _construction_pattern("夹逼与渐近", "含振荡因子、有界因子或趋于无穷的最高阶比较。", r"$$|g(x)|\\le M,\\quad |h(x)|\\to0\\Longrightarrow g(x)h(x)\\to0.$$", ("先给出绝对值上下界。", "分别处理正负无穷方向。", "若含参数，先消去发散主项。"), "证明极限存在或判定发散方向。", ("上下界必须在同一邻域成立。", "最高阶系数为零要重算。")),
+        _construction_pattern("左右极限与参数匹配", "分段点、绝对值或参数使连续/极限存在时。", r"$$\\lim_{x\\to x_0^-}f(x)=\\lim_{x\\to x_0^+}f(x)=f(x_0).$$", ("分别写左、右表达式。", "令两侧极限相等解参数。", "再检查函数值和其他可疑点。"), "得到极限存在或连续参数范围。", ("一侧存在不代表二侧存在。", "参数边界要回代原定义域。")),
+    ),
+    "continuity": (
+        _construction_pattern("三件套匹配", "求分段函数在连接点连续的参数。", r"$$f(x_0)=\\lim_{x\\to x_0^-}f(x)=\\lim_{x\\to x_0^+}f(x).$$", ("分别求两侧极限。", "先令两侧相等，再令共同值等于函数值。", "检查所有连接点。"), "得到连续参数和连续区间。", ("函数值不能遗漏。", "左右使用的区间方向不能反。")),
+        _construction_pattern("可去间断补值", "左右极限相等且有限，但原函数值缺失或不等时。", r"$$f(x_0):=\\lim_{x\\to x_0}f(x).$$", ("求有限共同极限。", "定义补充值。", "说明补值后在该点连续。"), "给出唯一连续延拓。", ("左右极限不等时不能补成连续。", "无穷极限不是可去间断。")),
+        _construction_pattern("零点/介值", "连续函数端点异号或目标值夹在端点函数值之间时。", r"$$f(a)f(b)<0\\Longrightarrow\\exists\\xi\\in(a,b):f(\\xi)=0.$$", ("确认 $f\\in C[a,b]$。", "比较端点值与目标值。", "引用零点或介值定理并写区间。"), "证明至少存在一个点。", ("这是存在性，不给唯一性。", "端点等号时点可能在端点。")),
+        _construction_pattern("间断分类", "要求分类全部间断点。", r"$$L_- ,L_+,f(x_0)\\quad\\text{三者逐一比较}.$$", ("找定义域断点和无穷远可疑点。", "分别求左右极限。", "按有限/相等/函数值关系分类。"), "写出可去、跳跃、无穷或振荡间断。", ("不能只写‘不连续’。", "一侧无穷时属于第二类。")),
+    ),
+    "existence": (
+        _construction_pattern("零点定理", "连续函数端点异号，要求证明方程有根。", r"$$f\\in C[a,b],\\quad f(a)f(b)<0.$$", ("写闭区间连续。", "算端点符号。", "引用零点定理。"), "存在 $\\xi\\in(a,b)$ 使 $f(\\xi)=0$。", ("零点定理不保证唯一。", "端点为零要按题目区间书写。")),
+        _construction_pattern("最值与界", "连续函数在闭区间上求最大最小或证明有界。", r"$$f\\in C[a,b]\\Longrightarrow f\\text{ 在 }[a,b]\\text{ 上有界且取得最值}.$$", ("确认闭区间和连续性。", "求驻点并与端点比较。", "分别报告最值点与最值。"), "得到最大值、最小值及取得位置。", ("极值不等于最值。", "端点必须纳入候选。")),
+        _construction_pattern("介值定位", "目标值位于连续函数两个函数值之间。", r"$$\min\\{f(a),f(b)\\}\\le c\\le\\max\\{f(a),f(b)\\}.$$", ("明确目标值 $c$。", "构造 $h=f-c$ 或直接使用介值。", "写出点所在区间。"), "证明存在 $f(\\xi)=c$。", ("严格区间需端点不直接等于目标。", "不要把存在写成唯一。")),
+        _construction_pattern("构造辅助函数", "题目结论不是直接的零点，而可转写为连续函数的零点。", r"$$h(x)=\\text{左边}-\\text{右边},\\qquad h(\\xi)=0.$$", ("把目标移到一边。", "核对 $h$ 的连续性。", "用端点符号、最值或介值完成存在性。"), "把原命题化成标准存在性结论。", ("移项不能改变定义域。", "最后还原原变量。")),
+    ),
+}
+
+
+def _generated_construction_patterns(family: str, name: str) -> tuple[dict[str, Any], ...]:
+    """Return the shared recipe set for a syllabus family.
+
+    Most subtypes differ in vocabulary rather than proof architecture.  The
+    family recipes keep that architecture in one place; the subtype's own
+    framework is injected below as the final, topic-specific instruction.
+    """
+    if family == "derivative":
+        return (
+            _construction_pattern("定义或差商入口", f"题目要求直接求 {name}，或给出分段/特殊点的导数。", r"$$f'(x_0)=\\lim_{h\\to0}\\frac{f(x_0+h)-f(x_0)}h.$$", ("先写导数定义和点的范围。", "分段点分别求左右差商并比较。", "得到导数后回代题设条件。"), "给出导数或可导条件。", ("可导必连续，但连续不必可导。", "差商分母 $h$ 不能先约掉。")),
+            _construction_pattern("链式/隐式层次", "含复合、隐函数、参数或反函数关系时。", r"$$\\frac{dy}{dx}=\\frac{dy/dt}{dx/dt},\\qquad F_x+F_y y'=0.$$", ("画出变量依赖层次。", "逐层求导并保留内层因子。", "参数式先确认 $dx/dt\\ne0$。"), "把结果化回题目要求的变量。", ("隐函数的 $y'$ 要移项。", "参数分母为零要单独讨论。")),
+            _construction_pattern("对数/乘积微分", "幂指、乘积或商式直接求导复杂时。", r"$$\\ln y=g\\ln f\\Longrightarrow\\frac{y'}y=g'\\ln f+g\\frac{f'}f.$$", ("确认 $y>0$ 和底数定义域。", "两边取对数后求导。", "最后乘回 $y$ 并检查符号。"), "得到稳定、可复核的导数表达式。", ("底数非正时不能取对数。", "对商式也可先取对数但不能漏定义域。")),
+            _construction_pattern("导数后独立验算", "结果含多层括号、参数或分段时。", r"$$\\frac{d}{dx}F(G(x))=F'(G(x))G'(x).$$", ("用低阶特例或数值点检查。", "逐项对照外层、内层和常数因子。", "检查结果在原定义域有意义。"), "避免漏链式因子和符号错误。", ("验算不能替代推导。", "特殊点需回到定义。")),
+        )
+    if family == "derivative-techniques":
+        return (
+            _construction_pattern("依赖图逐层链式", "复合函数或多变量嵌套求导。", r"$$\\frac{dz}{dx}=\\frac{\\partial z}{\\partial u}\\frac{du}{dx}+\\frac{\\partial z}{\\partial v}\\frac{dv}{dx}.$$", ("列出中间变量。", "按依赖路径逐层相乘。", "合并同类项并回代。"), "得到完整链式导数。", ("每条路径都要计入。", "内层变量的定义域不能丢。")),
+            _construction_pattern("隐式移项", "方程 $F(x,y)=0$ 确定 $y(x)$。", r"$$F_x(x,y)+F_y(x,y)y'=0\\Longrightarrow y'=-\\frac{F_x}{F_y}.$$", ("确认 $F_y\\ne0$。", "分别求 $F_x,F_y$。", "移项并代入点值。"), "写出指定点的 $y'$ 或高阶导数。", ("$F_y=0$ 要单独判断。", "点必须满足原方程。")),
+            _construction_pattern("参数方程", "曲线由 $x=x(t),y=y(t)$ 给出。", r"$$\\frac{dy}{dx}=\\frac{y'(t)}{x'(t)},\\qquad x'(t_0)\\ne0.$$", ("求 $x'(t),y'(t)$。", "确认参数值对应目标点。", "除法后再求高阶导数或切线。"), "得到以 $x,y$ 表示的几何量。", ("$x'(t_0)=0$ 可能是竖直切线。", "参数范围决定曲线分支。")),
+            _construction_pattern("反函数导数", "题目给出 $y=f(x)$ 严格单调并要求 $f^{-1}$ 的导数。", r"$$(f^{-1})'(y_0)=\\frac1{f'(x_0)},\\quad y_0=f(x_0),\\ f'(x_0)\\ne0.$$", ("先找对应点 $x_0,y_0$。", "确认单调和 $f'(x_0)\\ne0$。", "取倒数并写清自变量。"), "得到反函数指定点导数。", ("不能把 $x,y$ 的位置写反。", "导数为零时公式失效。")),
+        )
+    if family == "higher-derivative":
+        return (
+            _construction_pattern("先找导数循环", "三角、指数或周期函数的高阶导数。", r"$$f^{(n)}(x)=f^{(n-r)}(x)\\quad(r\\text{ 为循环周期}).$$", ("连续求前几阶。", "记录符号和函数循环。", "按 $n$ 除以周期取余。"), "写出第 $n$ 阶导数。", ("余数为零对应第 $r$ 阶而非零阶。", "符号循环要用一阶特例核对。")),
+            _construction_pattern("莱布尼茨展开", "乘积函数的高阶导数。", r"$$(uv)^{(n)}=\\sum_{k=0}^n\\binom nk u^{(k)}v^{(n-k)}.$$", ("判断两因子各阶导数。", "列出组合数项。", "利用多项式高阶导数为零截断。"), "得到有限项或通项。", ("组合数不能漏。", "上下标阶数必须相加为 $n$。")),
+            _construction_pattern("系数/展开法", "要求在 $x_0$ 处的高阶导数或幂级数系数。", r"$$f^{(n)}(x_0)=n!\\,[ (x-x_0)^n ]f(x).$$", ("把表达式改写为已知展开。", "读取对应系数。", "乘以 $n!$ 并复核阶数。"), "得到指定阶导数或系数。", ("展开中心不能混淆。", "收敛性不是有限阶计算的替代条件。")),
+            _construction_pattern("递推与低阶核对", "导数满足递推式或答案结构较长时。", r"$$f^{(n+1)}=A_n f^{(n)}+B_n f^{(n-1)}.$$", ("先求低阶初值。", "建立阶数递推。", "用 $n=1,2$ 检查通项。"), "写出可验证的高阶结果。", ("递推初值至少要给两项。", "注意定义域和系数依赖。")),
+        )
+    if family == "geometry-calculus":
+        return (
+            _construction_pattern("点与斜率", "求切线、法线或指定点方向。", r"$$y-y_0=f'(x_0)(x-x_0).$$", ("由曲线和附加条件求点。", "求一阶导数并代入。", "用点斜式写直线。"), "得到经过切点的切线/法线。", ("先确认点在曲线上。", "水平、竖直切线要分开。")),
+            _construction_pattern("隐式曲线切线", "曲线由 $F(x,y)=0$ 给出。", r"$$y'=-\\frac{F_x}{F_y},\\quad F_y\\ne0.$$", ("求偏导。", "代入目标点。", "检查分母和切线方向。"), "得到隐式曲线切线斜率。", ("点值必须满足 $F=0$。", "$F_y=0$ 时考虑竖直切线。")),
+            _construction_pattern("显函数/参数曲率", "要求曲率或曲率半径。", r"$$\\kappa=\\frac{|y''|}{(1+(y')^2)^{3/2}},\\qquad \\rho=\\frac1\\kappa.$$", ("确定表示形式。", "求一、二阶导数。", "代入并取绝对值。"), "给出曲率、半径及其所在点。", ("分母幂为 $3/2$。", "曲率不能带负号。")),
+            _construction_pattern("几何量复核", "切点多解、参数点或单位要求明显时。", r"$$\\text{切点}\\in\\text{曲线},\\qquad \\text{法线斜率}=-1/\\text{切线斜率}.$$", ("逐个保留候选点。", "回代原方程和参数范围。", "检查直线是否经过该点。"), "排除伪解并写完整几何结论。", ("法线斜率为负倒数。", "斜率为零时不能取倒数。")),
+        )
+    if family == "mvt":
+        return (
+            _construction_pattern("直接套拉格朗日", "目标是函数增量或导数估计。", r"$$f(b)-f(a)=f'(\\xi)(b-a),\\quad \\xi\\in(a,b).$$", ("选定两个端点。", "核验连续/可导条件。", "写完整中值等式并代入。"), "把增量改写为中间点导数。", ("$\\xi$ 不是固定点。", "$b-a$ 的符号要保留。")),
+            _construction_pattern("导数界估值", "已知 $m\\le f'(x)\\le M$，要求函数差的上下界。", r"$$m(b-a)\\le f(b)-f(a)\\le M(b-a)\\quad(a<b).$$", ("先确认 $a<b$。", "对 $f'(\\xi)$ 使用界。", "必要时取绝对值处理方向。"), "得到误差或增量估计。", ("区间反向时不等号方向改变。", "界只在指定区间有效。")),
+            _construction_pattern("差函数证不等式", "证明含两点函数值的不等式。", r"$$H(x)=f(x)-g(x),\\quad H'(x)\\gtrless0\\Longrightarrow H\\text{ 单调}.$$", ("把目标移成 $H(b)-H(a)$。", "用中值定理或导数符号判断。", "还原成原不等式。"), "得到全区间不等式及等号条件。", ("存在性和全区间结论不要混写。", "等号点需单独判断。")),
+            _construction_pattern("根的存在与唯一", "题目问方程根的个数或参数范围。", r"$$H(a)H(b)<0\\Rightarrow\\text{至少一根};\\quad H'\\text{ 恒号}\\Rightarrow\\text{至多一根}.$$", ("用端点符号证存在。", "用导数恒号证单调。", "合并为唯一性并写根区间。"), "完整回答存在、唯一或至多根。", ("中值定理本身不给唯一性。", "端点根的区间措辞要准确。")),
+            _construction_pattern("柯西比值入口", "两个增量成比，普通拉格朗日无法直接配对时。", r"$$\\frac{f(b)-f(a)}{g(b)-g(a)}=\\frac{f'(\\xi)}{g'(\\xi)}.$$", ("分别检查 $f,g$ 的定理条件。", "确认 $g'(x)\\ne0$。", "写比值和中间点范围。"), "把比值题化为导数比值。", ("分母增量和导数都不能随意约去。", "$\\xi$ 由定理存在。")),
+        )
+    if family == "taylor":
+        return (
+            _construction_pattern("确定展开点与阶数", "求极限、近似或局部主部。", r"$$f(x)=\\sum_{k=0}^{n}\\frac{f^{(k)}(x_0)}{k!}(x-x_0)^k+R_n(x).$$", ("确定 $x_0$ 和目标精度。", "展开到第一个不消失项。", "保留余项阶数。"), "得到局部多项式和误差阶。", ("展开不足会被主项抵消。", "展开点不能写错。")),
+            _construction_pattern("主项抵消极限", "分子多项式项相消后需要更高阶。", r"$$R_n(x)=o((x-x_0)^n)\\quad(x\\to x_0).$$", ("逐项写展开。", "先做代数消去。", "再取极限或比较阶。"), "求出首个非零项决定的极限。", ("不要先舍去会抵消的项。", "小$o$阶数要统一。")),
+            _construction_pattern("余项估计", "要求误差上界、证明近似精度或带参数范围。", r"$$|R_n(x)|\\le\\frac{M|x-x_0|^{n+1}}{(n+1)!}.$$", ("给出高阶导数界 $M$。", "代入区间最大距离。", "写成题目要求的误差形式。"), "得到可核验的误差界。", ("$M$ 必须覆盖整个区间。", "阶数与余项下标一致。")),
+            _construction_pattern("积分余项/参数", "题目要求积分型余项或利用参数求系数。", r"$$R_n(x)=\\frac1{n!}\\int_{x_0}^{x}(x-t)^n f^{(n+1)}(t)\\,dt.$$", ("确认可导阶数。", "选择积分余项或拉格朗日余项。", "注明中间点/积分变量范围。"), "写出完整余项并可继续估计。", ("余项形式不能混用条件。", "中间点在两点之间。")),
+        )
+    if family == "monotonicity":
+        return (
+            _construction_pattern("临界点分区", "求单调区间、极值或参数临界值。", r"$$f'(x)=0\\quad\\text{或}\\quad f'(x)\\text{ 不存在}.$$", ("写完整定义域。", "列出驻点和不可导点。", "按大小分段判导数符号。"), "得到增减区间。", ("不可导点也可能是极值。", "端点不属于导数区间时不能代导数。")),
+            _construction_pattern("一阶变号判极值", "判断临界点是否为局部极值。", r"$$+\\to-\\Rightarrow\\text{极大},\\qquad -\\to+\\Rightarrow\\text{极小}.$$", ("列临界点左右符号。", "判断是否变号。", "区分极值点和极值。"), "写出极值点与函数值。", ("导数为零不必有极值。", "极值是局部概念。")),
+            _construction_pattern("闭区间最值", "求 $[a,b]$ 上最大值和最小值。", r"$$S=\\{a,b\\}\\cup\\{f'=0\\}\\cup\\{f'\\text{不存在}\}.$$", ("列候选集合。", "逐点代入比较。", "分别写取得位置和数值。"), "得到绝对最值。", ("端点必须比较。", "候选点需属于区间。")),
+            _construction_pattern("差函数与参数", "证明不等式、讨论参数下单调性或极值。", r"$$H'(x)=f'(x)-g'(x)\\quad\\text{或}\quad f'(x;\\lambda).$$", ("先求参数使临界点存在。", "按参数边界分段。", "每段重新制作符号表。"), "写全参数范围的结论。", ("临界点顺序可能随参数改变。", "严格不等号的边界要单独代入。")),
+        )
+    if family == "graph":
+        return (
+            _construction_pattern("定义域与对称", "函数图形综合分析的第一步。", r"$$D=\\{x\\mid f(x)\\text{ 有意义}\},\\quad f(-x)=\\pm f(x).$$", ("列定义域。", "判奇偶/周期和零点。", "标出断点和对称轴。"), "确定图形骨架。", ("对称性只在对称定义域上谈。", "断点处不能连线。")),
+            _construction_pattern("渐近线极限", "有理式、对数或无穷远行为题。", r"$$\\lim_{x\\to a^\\pm}f(x),\\quad \\lim_{x\\to\\pm\\infty}f(x),\\quad y=kx+b.$$", ("逐侧求竖直渐近线。", "求水平极限。", "若需斜渐近线求 $k,b$。"), "写出全部渐近线。", ("左右方向不能合并。", "斜渐近线要同时给斜率和截距。")),
+            _construction_pattern("一阶增减二阶凹凸", "要求描绘曲线或判凹凸、拐点。", r"$$f'>0\\Rightarrow\\text{增},\\quad f''>0\\Rightarrow\\text{凹向上}.$$", ("求一、二阶导数。", "按临界点分区判号。", "凹凸改变且函数连续才是拐点。"), "完成图形关键特征表。", ("拐点不等于二阶导数为零。", "不可导点也要列入候选。")),
+            _construction_pattern("关键点汇总", "信息较多，需要把计算结果转成图形。", r"$$\text{零点}+\text{极值}+\text{渐近线}+\text{凹凸}=\text{图形骨架}.$$", ("按从左到右整理。", "标注开闭点和趋向。", "用单调/凹凸连接各段。"), "画出与解析性质一致的草图。", ("草图不能代替证明。", "局部特征需回代验证。")),
+        )
+    if family == "zeros":
+        return (
+            _construction_pattern("端点异号证存在", "证明至少有一个零点。", r"$$f\\in C[a,b],\\quad f(a)f(b)<0.$$", ("构造目标函数。", "检查闭区间连续。", "引用零点定理。"), "得到区间内至少一个根。", ("存在不等于唯一。", "端点为零时按题意处理。")),
+            _construction_pattern("导数恒号证唯一", "证明零点至多一个或方程只有一个根。", r"$$f'(x)>0\\ (\\text{或 }<0)\\Longrightarrow f\\text{ 严格单调}.$$", ("求导并证明恒号。", "设有两个根并导出矛盾，或直接用单调。", "与存在性合并。"), "得到唯一根或根的个数。", ("导数恒号区间必须覆盖目标区间。", "不能只验数值。")),
+            _construction_pattern("罗尔反证根数", "题设有多个零点或要求导数零点。", r"$$f(x_1)=f(x_2)\\Longrightarrow\\exists\\xi:f'(\\xi)=0.$$", ("假设根数过多。", "在相邻根区间应用罗尔。", "与导数条件矛盾。"), "限制根的个数。", ("区间必须非退化。", "罗尔只给存在一个点。")),
+            _construction_pattern("差函数证不等式", "零点问题与函数不等式混合。", r"$$H(x)=f(x)-g(x),\\quad H(x)\\gtrless0.$$", ("把不等式移项。", "从端点或极值判断符号。", "写等号成立条件。"), "得到全区间不等式。", ("符号方向要一致。", "等号点不能漏。")),
+        )
+    if family == "lhopital":
+        return (
+            _construction_pattern("先判未定式", "代入得到 $0/0$ 或 $\\infty/\\infty$ 型商式。", r"$$\\lim\\frac{f}{g}=\\lim\\frac{f'}{g'}\\quad(0/0\\text{ 或 }\\infty/\\infty).$$", ("先代入判型。", "确认分子分母在邻域可导。", "再决定是否使用洛必达。"), "把允许的未定式化为导数比值。", ("非未定式不能套。", "每次求导后要重新判型。")),
+            _construction_pattern("乘积/差式改商", "遇到 $0\\cdot\\infty$、$\\infty-\\infty$ 或幂指型。", r"$$0\\cdot\\infty=\\frac{0}{1/\\infty},\\qquad y=f(x)^{g(x)}\\Rightarrow\\ln y=g\\ln f.$$", ("用倒数或通分改成商。", "幂指式先确认底数为正并取对数。", "求对数极限后指数还原。"), "得到可用洛必达的标准形式。", ("底数非正不能取对数。", "差式通分后仍需判型。")),
+            _construction_pattern("一次后复判", "一次求导仍为未定式，需要继续。", r"$$\\lim\\frac{f'}{g'}\\ \text{仍为未定式}\\Longrightarrow\\text{重新核验条件后再求导}.$$", ("检查新分母导数不为零。", "重新判断趋向型。", "达到可算型立即停止。"), "避免无条件连续套用。", ("分母可能在邻域为零。", "过度求导会引入复杂错误。")),
+            _construction_pattern("代数化简优先", "因式分解、有理化或等价替换比洛必达更短时。", r"$$\\text{先约分/有理化/等价，再决定是否洛必达}.$$", ("比较方法成本。", "保留定义域和趋向方向。", "用独立代入复核。"), "得到最短且条件完整的过程。", ("洛必达不是万能钥匙。", "简化不能约掉趋近点导致的结构。")),
+        )
+    if family == "equivalent":
+        return (
+            _construction_pattern("乘除因子替换", "等价无穷小出现在乘积或商中。", r"$$\\alpha(x)\\sim\\beta(x)\\Longrightarrow\\frac{\\alpha(x)}{\\beta(x)}\\to1.$$", ("确认同一极限过程。", "拆成乘除因子。", "逐个替换并保留常数。"), "化简极限主部。", ("不能直接替换加减项。", "等价关系需在非零邻域成立。")),
+            _construction_pattern("加减先提主部", "多个无穷小相减或主项抵消。", r"$$\\alpha-\\beta=\\text{共同主项}\\times(\\text{相对误差}).$$", ("先统一阶数。", "提取共同主项。", "再对相对误差作等价。"), "正确判断阶数和首项。", ("主项抵消后要提高阶。", "符号常数不能省。")),
+            _construction_pattern("阶数比较", "题目问高阶、同阶、低阶或极限比。", r"$$\\alpha=o(\\beta)\\Longleftrightarrow\\frac{\\alpha}{\\beta}\\to0.$$", ("选参照无穷小。", "计算比值极限。", "用 $o/O/\\sim$ 写结论。"), "给出阶数关系。", ("$O$ 不等于 $o$。", "参照量不能为零或改变符号条件。")),
+            _construction_pattern("带参数重分情况", "参数使首项系数为零或替换结构变化时。", r"$$a(\\lambda)=0\\Rightarrow\\text{主阶改变，必须另算}.$$", ("先令主项系数为零求临界参数。", "一般参数和临界参数分别展开。", "合并可行范围。"), "得到完整参数结论。", ("不能把一般参数结果代到临界值。", "定义域限制也要交集。")),
+        )
+    if family == "important-limit":
+        return (
+            _construction_pattern("正弦型重要极限", "出现 $\\sin u/u$、$\\tan u/u$ 或同类结构。", r"$$\\lim_{u\\to0}\\frac{\\sin u}{u}=1,\\quad\\lim_{u\\to0}\\frac{\\tan u}{u}=1.$$", ("把所有小量统一成 $u$。", "补齐相同因子。", "乘除常数并取极限。"), "完成三角型极限。", ("角度需用弧度。", "内层趋于零要写明。")),
+            _construction_pattern("指数型重要极限", "出现 $(1+u)^{1/u}$ 或其变形。", r"$$\\lim_{u\\to0}(1+u)^{1/u}=e,\\qquad (1+u)^v=\\exp(v\\ln(1+u)).$$", ("确认底数为正。", "取对数或整理成标准型。", "指数还原。"), "求幂指型极限。", ("底数趋近必须为 $1$。", "对数后的极限要存在。")),
+            _construction_pattern("夹逼振荡", "有界三角因子乘趋零因子。", r"$$-1\\le\\sin x,\\cos x\\le1.$$", ("取绝对值。", "把振荡因子压在常数界内。", "夹逼到零。"), "证明极限为零或给出界。", ("界必须对邻域内所有 $x$ 成立。", "只看振荡因子本身不能判断。")),
+            _construction_pattern("变量替换与复合", "趋近表达式被复杂内层包裹。", r"$$u=\\phi(x),\\quad x\\to x_0\\Longrightarrow u\\to u_0.$$", ("设新变量并写趋向。", "化成标准重要极限。", "检查替换是否单值且定义域允许。"), "把复杂极限归约为标准型。", ("内层趋向不能漏。", "左右方向可能随替换改变。")),
+        )
+    if family == "integral-basic":
+        return (
+            _construction_pattern("拆项与配凑", "被积函数是和式、常数倍或复合微分。", r"$$\\int(af+bg)\\,dx=a\\int f\\,dx+b\\int g\\,dx.$$", ("拆和式并提常数。", "寻找 $u'(x)dx$ 配凑。", "逐项回求导。"), "得到原函数族。", ("不定积分最后写 $+C$。", "配凑不能改变定义域。")),
+            _construction_pattern("基本公式反查", "幂、指数、三角、反三角基本积分。", r"$$\\int x^n dx=\\frac{x^{n+1}}{n+1}+C\\quad(n\\ne-1).$$", ("识别标准型。", "代入公式并注明参数条件。", "回求导检查。"), "得到正确原函数。", ("$n=-1$ 要单独写对数。", "绝对值不能漏。")),
+            _construction_pattern("定积分先换成原函数", "需要计算有界区间定积分。", r"$$\\int_a^b f(x)\\,dx=F(b)-F(a),\\quad F'=f.$$", ("先求一个原函数。", "代入上、下限。", "核对符号和端点。"), "给出定积分值。", ("定积分没有 $+C$。", "上下限顺序改变会变号。")),
+            _construction_pattern("结果回导验证", "表达式较长或含参数。", r"$$\\frac{d}{dx}F(x)=f(x)\\ ?$$", ("对结果逐项求导。", "检查常数和复合链式因子。", "在原定义域内确认一致。"), "排除积分常数、符号和阶数错误。", ("验证是独立步骤。", "对数绝对值按定义域决定。")),
+        )
+    if family == "substitution":
+        return (
+            _construction_pattern("第一类换元", "出现复合函数与其内层导数。", r"$$u=\\phi(x),\\quad du=\\phi'(x)dx.$$", ("选择内层变量。", "同步替换微分。", "积分后换回 $x$。"), "把复合积分化为基本型。", ("所有旧变量要消失。", "换元需在区间内可逆或分段。")),
+            _construction_pattern("第二类换元", "根式、有理式或三角结构需要反向代换。", r"$$x=\\phi(t),\\quad dx=\\phi'(t)dt.$$", ("根据根式/分母选 $x=\\phi(t)$。", "求 $dx$ 并替换全部项。", "回代并写定义域分支。"), "消除根式或复杂分母。", ("平方根符号决定分支。", "回代后不能遗留 $t$。")),
+            _construction_pattern("定积分上下限同换", "定积分使用换元且不想换回原变量时。", r"$$x=a\\to u=\\phi(a),\\quad x=b\\to u=\\phi(b).$$", ("写出单调方向。", "同时替换上下限。", "直接在新变量中计算。"), "得到无需回代的定积分。", ("换元反向时上下限会交换。", "不要再重复换回。")),
+            _construction_pattern("换元后复核", "换元表达式含参数或多个分支时。", r"$$\\int_a^b f(x)dx=\\int_{\\phi(a)}^{\\phi(b)}f(\\phi(t))\\phi'(t)dt.$$", ("把结果微分或代点核验。", "检查端点与方向。", "确认定义域没有扩张。"), "保证换元等价。", ("非法换元会产生伪结果。", "分段单调需拆区间。")),
+        )
+    if family == "parts":
+        return (
+            _construction_pattern("反对幂三指选取", "乘积积分或含对数/反三角函数。", r"$$\\int u\\,dv=uv-\\int v\\,du.$$", ("优先选反函数、对数、代数、三角、指数为 $u$。", "求 $dv$ 的原函数 $v$。", "代入公式并整理。"), "降低剩余积分复杂度。", ("负号要跟随。", "边界项先代后减。")),
+            _construction_pattern("递推设元", "积分次数变化规律明显。", r"$$I_n=\\int x^n\\phi(x)dx\\Longrightarrow I_n=A_n I_{n-1}+B_n.$$", ("设目标积分为 $I_n$。", "分部一次得到低阶积分。", "移项解出递推。"), "建立可计算递推式。", ("递推初值必须补齐。", "移项系数不能为零。")),
+            _construction_pattern("循环积分移项", "分部后又回到原积分。", r"$$I=U-\\alpha I\\Longrightarrow I=\\frac{U}{1+\\alpha}.$$", ("保留原积分符号。", "把同类积分移到一侧。", "解一次代数方程。"), "得到闭式结果。", ("检查 $1+\\alpha\\ne0$。", "不要重复展开造成循环。")),
+            _construction_pattern("定积分边界复核", "分部积分用于定积分。", r"$$\\int_a^b u\\,dv=[uv]_a^b-\\int_a^b v\\,du.$$", ("写边界项。", "依次代入 $b,a$。", "检查负号和对称性。"), "得到定积分值。", ("不能写成不定积分的 $+C$。", "上下限顺序影响符号。")),
+        )
+    if family == "definite":
+        return (
+            _construction_pattern("区间平移对称", "积分区间关于中点对称或可通过换元配对。", r"$$\\int_a^b f(x)dx=\\int_a^b f(a+b-x)dx.$$", ("找区间中心。", "用 $x\\mapsto a+b-x$ 配对。", "判断和/差是否为常数或零。"), "利用对称性缩短积分。", ("变换后的上下限要倒序处理。", "函数对称条件需写出来。")),
+            _construction_pattern("奇偶性", "区间为 $[-a,a]$。", r"$$f\\text{ 奇}\Rightarrow\\int_{-a}^{a}f=0,\\quad f\\text{ 偶}\Rightarrow\\int_{-a}^{a}f=2\\int_0^a f.$$", ("确认定义域对称。", "判函数奇偶。", "套对应结论并写区间。"), "把对称积分化为零或半区间积分。", ("只在对称区间成立。", "分段函数的奇偶要整体判断。")),
+            _construction_pattern("周期性", "积分区间覆盖整数个周期。", r"$$\\int_a^{a+T}f(x)dx=\\int_0^T f(x)dx,\\quad f(x+T)=f(x).$$", ("确认最小正周期或一个周期。", "拆成若干完整周期。", "处理余下区间。"), "缩短长区间积分。", ("非周期因子会破坏结论。", "区间长度不是周期倍数时不能整除。")),
+            _construction_pattern("积分中值/估计", "被积函数连续且需估值或证明存在某点。", r"$$\\int_a^b f(x)dx=f(\\xi)(b-a),\\quad \\xi\\in(a,b).$$", ("核验连续性。", "给出上下界或中值点。", "按题意求值或估计。"), "得到积分范围、平均值或存在点。", ("积分中值点不一定唯一。", "$a=b$ 不构成区间。")),
+            _construction_pattern("换元复核", "恒等式或参数积分需要比较两种写法。", r"$$x=\\phi(t)\\Longrightarrow\\int_a^b f(x)dx=\\int_{\\phi^{-1}(a)}^{\\phi^{-1}(b)}f(\\phi(t))\\phi'(t)dt.$$", ("写换元和端点。", "比较变换前后表达式。", "按参数范围筛选。"), "证明积分恒等式或求参数。", ("换元需可逆/分段可逆。", "绝对值和方向要检查。")),
+        )
+    if family == "variable-integral":
+        return (
+            _construction_pattern("单上限求导", "上限为 $x$，被积函数连续。", r"$$F(x)=\\int_a^x f(t)dt\\Longrightarrow F'(x)=f(x).$$", ("先确认 $f$ 连续。", "直接使用基本定理。", "再研究单调或极值。"), "得到积分上限函数导数。", ("积分变量是哑变量。", "不要把 $f(x)$ 当成积分结果。")),
+            _construction_pattern("复合上限链式", "上下限是可导函数。", r"$$\\frac{d}{dx}\\int_{u(x)}^{v(x)}f(t)dt=f(v(x))v'(x)-f(u(x))u'(x).$$", ("拆成两个单上限积分。", "分别求导。", "保留上下限符号。"), "正确处理变限积分导数。", ("下限贡献带负号。", "还要乘内层导数。")),
+            _construction_pattern("积分方程转微分方程", "未知函数出现在变限积分或积分方程中。", r"$$y(x)=c+\\int_a^x K(t,y(t))dt\\Longrightarrow y'(x)=K(x,y(x)).$$", ("确认两边连续。", "对 $x$ 求导降阶。", "补回初值或积分常数并验算。"), "把积分关系化为可解微分方程。", ("求导可能损失常数条件。", "最后必须代回原积分式。")),
+            _construction_pattern("单调与极值", "题目要求变限积分的单调、最值或零点。", r"$$F'(x)=f(v(x))v'(x)-f(u(x))u'(x).$$", ("求 $F'$。", "按临界点分区判号。", "检查端点值。"), "得到完整单调/最值结论。", ("导数零不一定是极值。", "定义域端点需单独写。")),
+            _construction_pattern("积分极限交换检查", "含参数极限或端点逼近。", r"$$\\lim_{x\\to x_0}\\int_a^{v(x)}f(t)dt=\\int_a^{v(x_0)}f(t)dt.$$", ("确认 $f$ 连续或满足可交换条件。", "先判断上限趋向。", "再使用连续性/夹逼。"), "得到极限并说明条件。", ("不要无条件交换极限和积分。", "端点瑕点需另作反常处理。")),
+        )
+    if family == "improper":
+        return (
+            _construction_pattern("逐端点取极限", "无穷区间或被积函数在端点无界。", r"$$\\int_a^{+\\infty}f=\\lim_{R\\to+\\infty}\\int_a^R f,\\quad \\int_a^b f=\\lim_{\\varepsilon\\to0^+}\\int_{a+\\varepsilon}^b f.$$", ("列出全部瑕点/无穷端。", "分别写极限定义。", "每一段单独判敛散。"), "得到反常积分是否收敛及其值。", ("所有部分都收敛才能合并。", "不能把不同端点用同一极限代替。")),
+            _construction_pattern("比较判别", "被积函数非负且可与 $p$ 型或已知函数比较。", r"$$0\\le f\\le g,\\quad\\int g\\text{ 收敛}\\Rightarrow\\int f\\text{ 收敛}.$$", ("先保证非负。", "在瑕点邻域比较。", "引用比较或极限比较。"), "判定敛散性。", ("比较方向不能反。", "局部比较不能替代所有端点。")),
+            _construction_pattern("等价判别", "端点附近有渐近等价关系。", r"$$f(x)\\sim g(x)\\ge0\\Longrightarrow\\int f,\\int g\\text{ 同敛散}.$$", ("求比值极限。", "确认同号。", "转用熟知积分。"), "快速判定敛散性。", ("等价需在同一端点过程。", "有符号积分不能直接套非负比较。")),
+            _construction_pattern("参数范围交集", "含参数的反常积分。", r"$$\\int_0^1 x^\\alpha dx\\text{ 收敛}\\Longleftrightarrow\\alpha>-1.$$", ("分别研究每个瑕点。", "求每段参数条件。", "取条件交集并在边界复核。"), "写完整参数收敛范围。", ("边界指数经常改变结论。", "不要只看无穷端。")),
+        )
+    if family == "geometry-integral":
+        return (
+            _construction_pattern("先求交点和上下界", "平面面积或两曲线围成区域。", r"$$f(x)\\ge g(x)\\Rightarrow S=\\int_a^b\\bigl(f(x)-g(x)\\bigr)dx.$$", ("解交点。", "分段判断上下关系。", "写出积分区间。"), "得到非负面积。", ("上下曲线可能换位。", "交点要满足定义域。")),
+            _construction_pattern("旋转体垫片/圆柱壳", "绕坐标轴旋转求体积。", r"$$V=\\pi\\int_a^b(R^2-r^2)dx\\quad\\text{或}\\quad V=2\\pi\\int_a^b xh(x)dx.$$", ("确定旋转轴。", "选垂直切片或壳法。", "求外半径、内半径并积分。"), "得到旋转体体积。", ("半径要取距离。", "空心体要减内半径平方。")),
+            _construction_pattern("弧长", "曲线由显函数或参数给出。", r"$$L=\\int_a^b\\sqrt{1+(y')^2}dx,\\qquad L=\\int_{t_0}^{t_1}\\sqrt{(x')^2+(y')^2}dt.$$", ("确认曲线表示和区间。", "求导并代入弧长公式。", "必要时分段。"), "得到曲线长度。", ("参数方向不影响长度但区间要完整。", "根式取非负。")),
+            _construction_pattern("极坐标面积", "边界用 $r=r(\\theta)$ 给出。", r"$$S=\\frac12\\int_{\\alpha}^{\\beta}r^2(\\theta)d\\theta.$$", ("确定角度范围和闭合边界。", "处理对称性。", "代入并计算。"), "得到平面区域面积。", ("角度范围不能重复覆盖。", "半径可能为负时看实际边界。")),
+            _construction_pattern("图形与单位复核", "结果需要解释面积、体积或弧长的几何意义。", r"$$S\\ge0,\\quad V\\ge0,\\quad L\\ge0.$$", ("把积分结果与草图对照。", "检查量纲。", "用粗略估计判断数量级。"), "排除上下限、半径和系数错误。", ("几何量不能为负。", "单位平方/立方要对应。")),
+        )
+    if family == "integral-inequality":
+        return (
+            _construction_pattern("差函数恒号", "证明积分等式或不等式。", r"$$H(x)=\\text{左}-\\text{右},\\quad H'(x)\\gtrless0.$$", ("把目标移到一侧。", "求导或变限化简。", "由初值/端点确定符号。"), "得到恒等式、不等式及等号条件。", ("符号方向要全区间成立。", "等号条件不能只看某一步。")),
+            _construction_pattern("最值估计", "被积函数有上下界。", r"$$m\\le f(x)\\le M\\Longrightarrow m(b-a)\\le\\int_a^b f\\le M(b-a).$$", ("找全区间界。", "积分保持不等号。", "讨论等号成立。"), "得到定积分估计。", ("区间方向影响符号。", "函数需可积。")),
+            _construction_pattern("积分中值", "连续函数积分需要转成点值。", r"$$\\int_a^b f(x)g(x)dx=f(\\xi)\\int_a^b g(x)dx.$$", ("确认 $f$ 连续、$g$ 不变号。", "套积分中值定理。", "按 $\\int g=0$ 与否分支。"), "得到存在点或平均值。", ("$g$ 的条件不能漏。", "不能把 $\\xi$ 当固定点。")),
+            _construction_pattern("换元/分部恒等式", "积分左右结构可通过换元或分部互相转化。", r"$$\\int_a^b f(\\phi(x))\\phi'(x)dx=\\int_{\\phi(a)}^{\\phi(b)}f(u)du.$$", ("选择变换或分部。", "逐项写边界。", "化为同一标准积分。"), "证明积分恒等式。", ("上下限和负号要核对。", "恒等式需写适用条件。")),
+        )
+    if family == "physical":
+        return (
+            _construction_pattern("微元法", "功、质量、压力、质心或平均值。", r"$$Q=\\int_a^b dQ(x),\\qquad dQ=\\text{密度/力/量}\times dx.$$", ("选择位置变量。", "写出宽度/面积微元。", "在完整区间积分。"), "得到物理量总值。", ("微元系数和单位要正确。", "区间端点来自实际几何。")),
+            _construction_pattern("平均值归一化", "求函数平均值或加权平均。", r"$$\\bar f=\\frac1{b-a}\\int_a^b f(x)dx,\\qquad \\bar x=\\frac{\\int x\\,dm}{\\int dm}.$$", ("先求总量。", "再除以长度、总质量或总权重。", "检查单位。"), "得到平均量/质心坐标。", ("分母不能漏。", "加权平均的权重要非负且非零。")),
+            _construction_pattern("分段模型", "密度、力或速度在不同区间分段。", r"$$Q=\\sum_i\\int_{a_i}^{a_{i+1}}dQ_i(x).$$", ("列出分界点。", "每段写对应微元。", "求和并检查连续性。"), "得到分段物理量。", ("分段端点不可重复/遗漏。", "单位在各段一致。")),
+            _construction_pattern("结果量纲复核", "答案复杂或带常数参数。", r"$$[\\text{功}]=\\mathrm{N\\cdot m},\\quad[\\text{质量}]=\\mathrm{kg}.$$", ("检查积分变量量纲。", "检查常数和几何系数。", "用极端情况判断方向。"), "确认结果物理可解释。", ("负值可能表示方向但需说明。", "平均值不一定是端点平均。")),
+        )
+    if family == "multivariable":
+        return (
+            _construction_pattern("固定其余变量求偏导", "求 $f_x,f_y$ 或指定点偏导。", r"$$f_x(x,y)=\\frac{\\partial f}{\\partial x},\\quad f_y(x,y)=\\frac{\\partial f}{\\partial y}.$$", ("求 $f_x$ 时把 $y$ 当常数。", "求 $f_y$ 时把 $x$ 当常数。", "最后代入点值。"), "得到偏导数或梯度。", ("不要把偏导当全导。", "点必须在定义域内。")),
+            _construction_pattern("全微分与线性主部", "判断可微、求全微分或近似增量。", r"$$dz=f_xdx+f_ydy+o(\\sqrt{dx^2+dy^2}).$$", ("求偏导。", "写线性主部。", "用余项极限判断可微。"), "得到全微分或可微结论。", ("偏导存在不自动可微。", "余项阶数要相对距离。")),
+            _construction_pattern("多元链式法则", "变量由中间参数复合而成。", r"$$\\frac{dz}{dt}=f_x\\frac{dx}{dt}+f_y\\frac{dy}{dt}.$$", ("列出依赖路径。", "沿每条路径相乘后相加。", "代入参数点。"), "得到复合函数导数。", ("每条路径不能漏。", "中间变量范围要明确。")),
+            _construction_pattern("隐式偏导", "方程 $F(x,y,z)=0$ 确定一个变量。", r"$$z_x=-\\frac{F_x}{F_z},\\qquad z_y=-\\frac{F_y}{F_z}.$$", ("确认 $F_z\\ne0$。", "分别求偏导。", "代入满足原方程的点。"), "得到隐式函数偏导。", ("分母为零要另判。", "不能忘记保持其他自变量不变。")),
+            _construction_pattern("多元极值/方向导数", "求极值、切平面或方向变化率。", r"$$\\nabla f=(f_x,f_y),\\quad D_{\\boldsymbol u}f=\\nabla f\\cdot\\boldsymbol u.$$", ("求梯度并列驻点。", "规范化方向向量。", "比较边界或约束。"), "得到极值、切平面或方向导数。", ("方向向量要单位化。", "闭域极值要检查边界。")),
+        )
+    if family == "multiple-region":
+        return (
+            _construction_pattern("先画积分区域", "二重积分换序或确定上下限。", r"$$D=\\{(x,y):a\\le x\\le b,\\ \phi_1(x)\\le y\\le\\phi_2(x)\\}.$$", ("画边界并求交点。", "选择竖切或横切。", "写成不重不漏的区域。"), "得到正确积分限。", ("上下函数可能换位。", "交点需满足两条边界。")),
+            _construction_pattern("交换积分次序", "原次序难算或要求换序。", r"$$\\int_a^b\\int_{\\phi_1(x)}^{\\phi_2(x)}f(x,y)dydx=\\int_c^d\\int_{\\psi_1(y)}^{\\psi_2(y)}f(x,y)dxdy.$$", ("由区域图确定外变量范围。", "求内变量左右/上下边界。", "必要时分块。"), "完成换序后的二重积分。", ("积分限不是简单交换符号。", "分块边界要连续覆盖。")),
+            _construction_pattern("极坐标变换", "区域含圆、扇形或 $x^2+y^2$。", r"$$x=r\\cos\\theta,\\ y=r\\sin\\theta,\\ dxdy=r\\,drd\\theta.$$", ("确定 $\\theta$ 范围。", "写内外半径。", "补雅可比 $r$。"), "把区域化为极坐标积分。", ("雅可比不能漏。", "角度范围不能重复。")),
+            _construction_pattern("对称性", "区域关于坐标轴或原点对称。", r"$$f(-x,y)=\\pm f(x,y)\\Longrightarrow\\iint_Df\\,dA.$$", ("确认区域和被积函数的对称。", "判奇偶后缩小区域。", "乘对称倍数或判零。"), "简化二重积分。", ("区域和函数要同时对称。", "符号变化要一致。")),
+            _construction_pattern("物理应用", "求面积、质量、质心或转动量。", r"$$M=\\iint_D\\rho(x,y)dA,\\quad \\bar x=\\frac{1}{M}\\iint_Dx\\rho\\,dA.$$", ("写密度和区域。", "选坐标并补雅可比。", "分别求总量和矩。"), "得到多元物理量。", ("密度不可漏。", "质心分母是总质量。")),
+        )
+    if family == "multiple":
+        return (
+            _construction_pattern("直角坐标二重积分", "区域边界适合上下函数表示。", r"$$\\iint_D f(x,y)dA=\\int_a^b\\int_{\\phi_1(x)}^{\\phi_2(x)}f(x,y)dydx.$$", ("画区域。", "确定外、内变量。", "逐次积分。"), "得到二重积分值。", ("区域不能漏块或重复。", "上下限顺序决定符号。")),
+            _construction_pattern("极坐标", "圆盘、扇形、环域或径向函数。", r"$$dA=r\\,drd\\theta.$$", ("画极坐标边界。", "写角度与半径区间。", "代入并计算。"), "化简区域积分。", ("补 $r$。", "半径非负，角度覆盖恰好一次。")),
+            _construction_pattern("对称消项", "区域对称且被积函数奇偶。", r"$$\\iint_D f(x,y)dA=0\\quad\\text{若 }D\\text{ 对称且 }f\\text{ 关于相应变量为奇}.$$", ("核对区域对称。", "判断函数变换。", "直接判零或取倍数。"), "减少计算量。", ("不能只看函数不看区域。", "偏移区域不再对称。")),
+            _construction_pattern("变量代换", "边界由线性组合、椭圆或复合量给出。", r"$$(u,v)=\\Phi(x,y),\\quad dA=\\left|\\frac{\\partial(x,y)}{\\partial(u,v)}\\right|dudv.$$", ("选择新变量把边界变简单。", "求反变换和雅可比。", "转写区域及被积函数。"), "得到可积的新区域。", ("雅可比取绝对值。", "变换需一一对应或分块。")),
+        )
+    if family == "ode":
+        return (
+            _construction_pattern("识别方程结构", f"{name} 题先判断阶数、线性与变量可分性。", r"$$y'=F(x)G(y),\\quad y'+P(x)y=Q(x).$$", ("整理成标准形。", "标出不可除的平衡解/退化分支。", "选择对应方法。"), "确定唯一的解法入口。", ("约除因子会漏平衡解。", "初值点不能在奇异位置。")),
+            _construction_pattern("通解与常数", "完成积分或特征方程后。", r"$$\\int\\frac{dy}{G(y)}=\\int F(x)dx+C,\\quad y=y_h+y_p.$$", ("求通解。", "用初值或边界条件定常数。", "回代原方程。"), "得到满足条件的特解。", ("积分常数只在不定积分出现。", "隐式解需说明可解区间。")),
+            _construction_pattern("参数/初值分支", "参数、初值或特征根发生退化。", r"$$\\Delta=0\\quad\\text{或}\quad G(y_0)=0\\Longrightarrow\\text{单独讨论}.$$", ("找临界参数。", "逐分支求解。", "比较初值和定义域。"), "覆盖全部可行解。", ("重根不能套异根公式。", "初值可能排除某些分支。")),
+            _construction_pattern("唯一性与验算", "题目要求唯一解、最大区间或验证结果。", r"$$y'(x)=F(x,y),\\quad F\\text{ 与 }\\partial F/\\partial y\\text{ 连续}.$$", ("检查存在唯一条件。", "说明解的区间。", "代回并核对初值。"), "完成解的有效性说明。", ("通解不等于满足初值的解。", "奇异点会截断区间。")),
+            _construction_pattern("模型边界解释", "方程来自实际变化率、冷却、运动或增长模型。", r"$$\\frac{dQ}{dt}=\\text{输入}-\\text{输出},\\qquad Q(t_0)=Q_0.$$", ("定义状态变量和单位。", "由题意列微分方程。", "用初值并解释参数。"), "得到可解释的模型解。", ("单位必须一致。", "模型只在题设时间/状态范围有效。")),
+        )
+    if family == "matrix":
+        return (
+            _construction_pattern("形状与基本运算", "矩阵加减乘、转置或幂。", r"$$A_{m\\times n}B_{n\\times p}\\in\\mathbb R^{m\\times p},\\qquad(AB)^T=B^TA^T.$$", ("先写矩阵形状。", "按行乘列计算。", "核对结果维数和转置顺序。"), "得到合法矩阵运算结果。", ("非同型矩阵不能相乘。", "矩阵乘法一般不交换。")),
+            _construction_pattern("行变换/初等矩阵", "需要化简、求秩、解方程或判断等价。", r"$$E_k\\cdots E_2E_1A=R.$$", ("记录每次行变换。", "化为阶梯形或最简形。", "回到原矩阵解释主元。"), "得到秩、解集或等价关系。", ("行变换不保持列向量对应。", "交换行会影响行列式符号。")),
+            _construction_pattern("行列式性质", "含参数、乘积、转置或需要快速计算行列式。", r"$$|AB|=|A||B|,\\quad |A^T|=|A|,\\quad |\\lambda A|=\\lambda^n|A|.$$", ("找可提取因子和零行列。", "使用行列式性质简化。", "参数特殊值单独代入。"), "得到行列式或参数条件。", ("阶数影响数乘幂次。", "行交换的符号不能漏。")),
+            _construction_pattern("逆矩阵/矩阵方程", "求逆、解 $AX=B$ 或判断可逆。", r"$$A^{-1}=\\frac{1}{|A|}A^*,\\qquad AX=B\\Longrightarrow X=A^{-1}B.$$", ("先判 $|A|\\ne0$。", "用伴随或增广矩阵求逆。", "代回原方程验算。"), "得到唯一矩阵解或不可逆结论。", ("不可逆时不能写 $A^{-1}$。", "乘法方向不能调换。")),
+            _construction_pattern("秩与主子式", "求秩、判满秩或讨论参数。", r"$$r(A)=\\text{阶梯形主元数}=\\max\\{\\text{非零子式阶数}\}.$$", ("行化简或找非零子式。", "参数临界值使主元消失时分支。", "写出秩的范围。"), "得到精确秩和参数条件。", ("化简后主元对应行，不直接看原列。", "零矩阵/满秩边界要写。")),
+        )
+    if family == "linear-system":
+        return (
+            _construction_pattern("增广矩阵消元", "齐次或非齐次线性方程组。", r"$$[A\\mid b]\\xrightarrow{\\text{行变换}}[R\\mid c].$$", ("写增广矩阵。", "化阶梯形并数主元。", "回代或写自由变量。"), "得到解集、基础解系或无解判断。", ("行变换不能改变解集。", "自由变量个数要与秩对应。")),
+            _construction_pattern("秩判定解的个数", "题目问有解、唯一解或无穷多解。", r"$$r(A)=r([A\\mid b])\\text{ 有解};\\quad r(A)=n\\text{ 唯一解}.$$", ("分别求系数矩阵和增广矩阵秩。", "比较秩与未知数个数。", "写出解的类型。"), "完成解的个数分类。", ("无解时两秩不等。", "未知数个数是列数而非行数。")),
+            _construction_pattern("参数临界分支", "系数含参数且要求讨论解。", r"$$\\det A(\\lambda)=0\\quad\\text{或主元}=0\\Longrightarrow\\text{分支}.$$", ("找主元/行列式为零的参数。", "一般参数与临界参数分别消元。", "合并参数范围。"), "得到全参数解集。", ("临界值必须代回增广矩阵。", "不能只凭行列式判断非方阵系统。")),
+            _construction_pattern("公共解/同解", "两个方程组要求公共解或解集相同。", r"$$S_1\\cap S_2=\\{x:A_1x=b_1,\\ A_2x=b_2\\}.$$", ("合并约束或比较行空间。", "求交集解集。", "证明双向包含以判同解。"), "得到公共解或等价条件。", ("单向包含不等于同解。", "参数分支要分别比较。")),
+        )
+    if family == "vector":
+        return (
+            _construction_pattern("线性表示设系数", "求一个向量由向量组表示。", r"$$x_1\\alpha_1+\\cdots+x_m\\alpha_m=\\beta.$$", ("按坐标列方程。", "消元求系数。", "代回验证。"), "得到表示式或说明不可表示。", ("向量列/行方向要统一。", "系数可能不唯一。")),
+            _construction_pattern("线性相关判别", "判断向量组相关、无关或求关系式。", r"$$x_1\\alpha_1+\\cdots+x_m\\alpha_m=0.$$", ("令线性组合等于零。", "求齐次系统解。", "非零解即相关，只有零解即无关。"), "写出相关性和一组关系。", ("系数不全为零才是相关证据。", "向量个数超过维数必相关。")),
+            _construction_pattern("列主元与极大无关组", "求秩、极大无关组或其余向量表示。", r"$$A=[\\alpha_1\\cdots\\alpha_m]\\xrightarrow{\\text{行变换}}R.$$", ("把向量作列矩阵。", "只做行变换找主元列。", "主元列回指原向量并回代非主元列。"), "得到极大无关组和秩。", ("化简矩阵的列不是原向量。", "列变换会破坏对应关系。")),
+            _construction_pattern("秩不等式/相互表示", "比较两个向量组的秩或判等价。", r"$$B=AP\\Longrightarrow r(B)\\le r(A).$$", ("写清表示矩阵方向。", "使用乘积秩不等式。", "若能相互表示再证明等秩。"), "得到秩关系或向量组等价。", ("单向表示只有单向不等式。", "矩阵维数必须匹配。")),
+        )
+    if family == "eigen":
+        return (
+            _construction_pattern("特征方程", "求特征值、特征向量或特征子空间。", r"$$|\\lambda E-A|=0,\\qquad(A-\\lambda E)x=0.$$", ("计算特征多项式并分解。", "对每个特征值解齐次方程。", "写基础解系和特征子空间。"), "得到全部特征值及非零特征向量。", ("特征向量不能为零。", "重根要重复求特征空间。")),
+            _construction_pattern("迹、行列式与多项式", "由部分信息反求特征值或矩阵性质。", r"$$\\sum\\lambda_i=\\operatorname{tr}A,\\quad\\prod\\lambda_i=|A|,\\quad p(A)x=p(\\lambda)x.$$", ("确认重数。", "使用迹、行列式或多项式作用。", "检查零特征值和可逆性。"), "快速得到特征值关系。", ("代数重数和几何重数不同。", "逆矩阵特征值需可逆。")),
+            _construction_pattern("特征向量组对角化", "判断相似对角化或求 $P^{-1}AP$。", r"$$P=[x_1\\cdots x_n],\\quad P^{-1}AP=\\Lambda.$$", ("求各特征空间维数。", "凑够 $n$ 个线性无关特征向量。", "按同序组成 $P,\\Lambda$。"), "得到对角化或不可对角化结论。", ("列顺序必须一致。", "特征向量不足 $n$ 个不能对角化。")),
+            _construction_pattern("实对称正交化", "实对称矩阵、重根特征空间或正交对角化。", r"$$Q^TAQ=\\Lambda,\\qquad Q^TQ=E.$$", ("验证 $A^T=A$。", "不同特征值向量自动正交，同一空间施密特正交化。", "单位化后组成 $Q$。"), "得到正交矩阵与对角阵。", ("每列要单位正交。", "对角元素顺序与列向量对应。")),
+        )
+    if family == "quadratic":
+        return (
+            _construction_pattern("对称矩阵表示", "二次型标准形、规范形或正定性。", r"$$Q(x)=x^TAx,\\qquad A=A^T.$$", ("交叉项系数除以 $2$ 放入对称矩阵。", "确认矩阵对称。", "选择正交变换或配方法。"), "得到正确二次型矩阵。", ("交叉项系数最易错。", "变换需可逆。")),
+            _construction_pattern("特征值正交变换", "实对称二次型化标准形。", r"$$Q=x^TAx=y^T\\Lambda y=\\sum\\lambda_i y_i^2.$$", ("求特征值和单位正交特征向量。", "组成正交矩阵。", "代入得到标准形。"), "得到标准形及惯性信息。", ("列顺序需同步。", "特征值可能重复。")),
+            _construction_pattern("顺序主子式判正定", "判断正定或求参数范围。", r"$$A>0\\Longleftrightarrow\\Delta_1>0,\\ldots,\\Delta_n>0.$$", ("确认 $A$ 实对称。", "计算顺序主子式。", "联立严格不等式求参数。"), "得到正定/半正定/不定结论。", ("正定要求严格大于零。", "参数边界需另判半正定。")),
+            _construction_pattern("单位球最值", "约束 $x^Tx=1$ 下求二次型最大最小值。", r"$$\\lambda_{\\min}\\le x^TAx\\le\\lambda_{\\max}.$$", ("确认矩阵对称。", "求最小、最大特征值。", "写出对应特征向量和等号条件。"), "得到最值和取得方向。", ("约束必须写清。", "最值向量要满足单位化。")),
+        )
+    return ()
+
+
+def _family_entries(family: str, *subtype_ids: str) -> dict[str, str]:
+    return {subtype_id: family for subtype_id in subtype_ids}
+
+
+_SUBTYPE_CONSTRUCTION_FAMILIES = {
+    **_family_entries("function", "function-properties"),
+    **_family_entries("sequence", "sequence-limit"),
+    **_family_entries("limit", "function-limit"),
+    **_family_entries("lhopital", "lhopital-limit"),
+    **_family_entries("equivalent", "equivalent-infinitesimal"),
+    **_family_entries("important-limit", "important-limits"),
+    **_family_entries("continuity", "continuity-discontinuity"),
+    **_family_entries("existence", "closed-interval-theorems"),
+    **_family_entries("derivative", "derivative-definition"),
+    **_family_entries("derivative-techniques", "differentiation-techniques"),
+    **_family_entries("higher-derivative", "higher-derivative"),
+    **_family_entries("geometry-calculus", "tangent-normal-curvature"),
+    **_family_entries("rolle", "rolle-theorem"),
+    **_family_entries("mvt", "lagrange-mvt"),
+    **_family_entries("taylor", "cauchy-taylor"),
+    **_family_entries("monotonicity", "monotonicity-extrema"),
+    **_family_entries("graph", "concavity-asymptote"),
+    **_family_entries("zeros", "zeros-differential-inequality"),
+    **_family_entries("integral-basic", "antiderivative-basic"),
+    **_family_entries("substitution", "substitution-integration", "special-integrals"),
+    **_family_entries("parts", "integration-by-parts"),
+    **_family_entries("definite", "definite-properties"),
+    **_family_entries("variable-integral", "variable-upper-limit"),
+    **_family_entries("improper", "improper-integral"),
+    **_family_entries("geometry-integral", "geometric-integral"),
+    **_family_entries("integral-inequality", "integral-identity-inequality"),
+    **_family_entries("physical", "physical-average-integral"),
+    **_family_entries("multivariable", "partial-full-differential", "multivariable-chain", "implicit-partial", "multivariable-extrema"),
+    **_family_entries("multiple-region", "double-region-order", "double-application"),
+    **_family_entries("multiple", "double-cartesian", "double-polar", "double-symmetry"),
+    **_family_entries("ode", "separable-homogeneous-ode", "first-order-linear-ode", "exact-ode", "first-order-substitution-ode", "linear-ode-structure", "bernoulli-ode", "reducible-higher-ode", "constant-coefficient-ode", "ode-modeling"),
+    **_family_entries("matrix", "determinant-properties", "abstract-determinant", "matrix-operations-powers", "inverse-adjugate", "elementary-transform", "matrix-rank", "block-matrix-equation"),
+    **_family_entries("linear-system", "homogeneous-system", "nonhomogeneous-system", "parameter-system", "common-equivalent-systems"),
+    **_family_entries("vector", "linear-combination", "linear-dependence", "max-independent-rank", "vector-relations"),
+    **_family_entries("eigen", "eigen-computation", "eigen-properties", "similar-diagonalization", "symmetric-orthogonal"),
+    **_family_entries("quadratic", "quadratic-standard-form", "positive-definite", "quadratic-extrema"),
+}
+
+
+def _fallback_construction_patterns(subtype: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Keep a new catalog item usable even before a family recipe is added."""
+    name = str(subtype.get("name", "本题型"))
+    framework = [str(item).strip() for item in subtype.get("framework", []) if str(item).strip()]
+    first = framework[0] if framework else f"先写出{name}的定义、范围和目标。"
+    second = framework[1] if len(framework) > 1 else "把题设条件翻译成可计算的数学对象。"
+    third = framework[2] if len(framework) > 2 else "按标准公式展开，并保留关键中间结论。"
+    last = framework[-1] if framework else "把结果代回原题并检查边界、符号和单位。"
+    return (
+        _construction_pattern("条件—目标翻译", f"题目要求处理{name}时。", r"$$\\text{题设条件}\\Longrightarrow\\text{标准目标}.$$", (first, second, "确认每个变量和参数的范围。"), "把题目转成标准问题。", ("条件不完整不能直接套公式。", "目标要写成可核验等式或不等式。")),
+        _construction_pattern("标准主线", f"已识别为{name}且条件满足时。", r"$$\\text{定义/定理}\\longrightarrow\\text{计算/证明}\\longrightarrow\\text{结论}.$$", (second, third, last), "按顺序完成主要计算或证明。", ("关键变形要写理由。", "不要跳过中间结论。")),
+        _construction_pattern("参数与退化分支", "含参数、端点、零值、重根或不可逆情形时。", r"$$p=p_0\\Longrightarrow\\text{结构改变，分情况讨论}.$$", ("先找会使分母、主元或系数为零的临界值。", "一般情形与临界情形分别计算。", "取参数条件交集。"), "覆盖所有可行分支。", ("临界值不能代入一般公式。", "定义域和区间边界要回代。")),
+        _construction_pattern("结果复核", "完成答案后，尤其是选择、填空和长解答题。", r"$$\\text{代回原式}+\\text{边界检查}+\\text{独立验算}.$$", ("代回原条件或原方程。", "检查范围、符号、维数和单位。", "用低阶特例或另一方法再算一次。"), "得到可直接誊写的最终结论。", ("复核不能省略常数/范围。", "只写未化简的多值结果可能丢分。")),
+    )
+
+
+def _build_construction_patterns(subtype_id: str, subtype: dict[str, Any]) -> list[dict[str, Any]]:
+    if subtype_id == "rolle-theorem":
+        source = _ROLLE_CONSTRUCTION_PATTERNS
+    else:
+        family = _SUBTYPE_CONSTRUCTION_FAMILIES.get(subtype_id, "")
+        source = _CONSTRUCTION_FAMILY_PATTERNS.get(family) or _generated_construction_patterns(family, str(subtype.get("name", "本题型")))
+        if not source:
+            source = _fallback_construction_patterns(subtype)
+    # Return fresh nested lists so a caller/editor cannot mutate the catalog.
+    return [
+        {
+            **item,
+            "steps": list(item.get("steps", [])),
+            "checks": list(item.get("checks", [])),
+        }
+        for item in source
+    ]
+
+
+def _build_solution_steps(subtype_id: str, subtype: dict[str, Any], patterns: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Build a concrete seven-step writing plan from the same recipes."""
+    name = str(subtype.get("name", "本题型"))
+    goal = str(subtype.get("summary", "")).strip() or f"完成{name}的题目要求"
+    framework = [str(item).strip() for item in subtype.get("framework", []) if str(item).strip()]
+    if subtype_id == "rolle-theorem":
+        return [
+            {"label": "目标改写", "instruction": "先把题目要证的式子整理成某个导数为零。", "content": "将目标统一写成 $F'(\\xi)=0$；例如 $f'(\\xi)=k$ 改写为 $f'(\\xi)-k=0$。", "check": "目标中的点、区间和常数没有偷换。"},
+            {"label": "选择构造", "instruction": "从常用构造卡中选最短、端点最容易相等的一种。", "content": "优先尝试 $F=f$、$F=f-kx$、$F=f-g$、减割线、加权差或积分原函数；不要凭‘经验’跳过端点方程。", "check": "构造后的 $F'$ 确实包含题目目标。"},
+            {"label": "写区间条件", "instruction": "先固定闭区间，再逐项搬运连续和可导条件。", "content": "设目标区间为 $[a,b]$（$a<b$），明确 $F\\in C[a,b]$ 且 $F$ 在 $(a,b)$ 可导。", "check": "闭区间/开区间没有写反。"},
+            {"label": "验证端点等值", "instruction": "端点相等是罗尔定理的关键得分点。", "content": "完整计算 $F(a)$ 与 $F(b)$；若有参数，先由 $F(a)=F(b)$ 解出参数，再继续。", "check": "没有把函数值相等误写成导数相等。"},
+            {"label": "引用罗尔定理", "instruction": "把定理名称、存在性和点的范围写完整。", "content": "由罗尔定理，存在 $\\xi\\in(a,b)$ 使 $F'(\\xi)=0$。若有多个零点，按相邻区间重复应用。", "check": "$\\xi$ 落在指定开区间而不是端点。"},
+            {"label": "展开并还原", "instruction": "把辅助函数导数逐项展开，回到原题变量。", "content": "例如 $F=f-g$ 时，$0=F'(\\xi)=f'(\\xi)-g'(\\xi)$，从而得到 $f'(\\xi)=g'(\\xi)$。", "check": "链式法则、系数和负号全部保留。"},
+            {"label": "分支与复核", "instruction": "最后处理多解、退化、除法和唯一性。", "content": "除以 $g'(\\xi)$ 或其它因子前先说明非零；高阶结论要检查可导阶数；存在且唯一必须分别证明。", "check": "独立回代端点和结论，写出最终完整陈述。"},
+        ]
+    first = framework[0] if framework else f"先写出{name}的条件和目标。"
+    second = framework[1] if len(framework) > 1 else "把题设翻译为标准数学条件。"
+    core = framework[2:-1] or framework[2:] or [goal]
+    last = framework[-1] if framework else "回代并检查边界、符号和单位。"
+    lead = patterns[0] if patterns else None
+    recipe_hint = f"常用入口：{'、'.join(item['title'] for item in patterns[:4])}。"
+    if lead:
+        recipe_hint += f"首选构造式：{lead['formula']}"
+    return [
+        {"label": "读题定位", "instruction": "圈出题干信号，先判断求值、判定、证明还是反求参数。", "content": f"本题属于{name}，目标是：{goal}。", "check": "没有把相邻题型的结论直接套过来。"},
+        {"label": "范围与条件", "instruction": "把定义域、区间、参数、维数和定理前提列全。", "content": first, "check": "所有后续公式都在同一范围内有意义。"},
+        {"label": "标准化题面", "instruction": "先化简、移项、换元或建立辅助对象，再开始计算。", "content": second, "check": "变形保持等价，未引入或丢失分支。"},
+        {"label": "选择主线", "instruction": "只选一条最短主线，必要时把备选构造留作验算。", "content": recipe_hint, "check": "首个公式的使用条件已写明。"},
+        {"label": "展开过程", "instruction": "按从条件到结论的顺序写关键等式和理由。", "content": "\n".join(core), "check": "中间量、符号和参数分支没有跳步。"},
+        {"label": "边界与分支", "instruction": "独立处理端点、零值、退化、重根、多解和不可逆情形。", "content": last, "check": "临界参数已回代，结论范围没有扩大。"},
+        {"label": "结论复核", "instruction": "把结果还原为题目问法，并做一次独立验算。", "content": f"最终写出：{goal}。再检查：{last}", "check": "答案格式、单位、常数、唯一性和符号均正确。"},
+    ]
+
+
+def _normalize_template_learning(template: dict[str, Any]) -> None:
+    """Normalize formula/prose fields recursively before API serialization."""
+    patterns = []
+    for item in template.get("construction_patterns", []) or []:
+        if not isinstance(item, dict):
+            continue
+        normalized = {
+            **item,
+            "title": _normalize_template_prose(item.get("title", "")),
+            "when": _normalize_template_prose(item.get("when", "")),
+            "formula": _normalize_template_formula(item.get("formula", "")),
+            "target": _normalize_template_prose(item.get("target", "")),
+            "steps": [_normalize_template_prose(value) for value in item.get("steps", []) if str(value).strip()],
+            "checks": [_normalize_template_prose(value) for value in item.get("checks", []) if str(value).strip()],
+        }
+        patterns.append(normalized)
+    template["construction_patterns"] = patterns
+    solution_steps = []
+    for item in template.get("solution_steps", []) or []:
+        if not isinstance(item, dict):
+            continue
+        solution_steps.append({
+            **item,
+            "label": _normalize_template_prose(item.get("label", "")),
+            "instruction": _normalize_template_prose(item.get("instruction", "")),
+            "content": _normalize_template_prose(item.get("content", "")),
+            "check": _normalize_template_prose(item.get("check", "")),
+        })
+    template["solution_steps"] = solution_steps
+
+
+for _items in SUBTYPE_CATALOG.values():
+    for _item in _items:
+        _item["construction_patterns"] = _build_construction_patterns(_item["id"], _item)
+        _item["solution_steps"] = _build_solution_steps(_item["id"], _item, _item["construction_patterns"])
+
+
 _CONCEPT_CONNECTIONS = {
     "limit-continuity": "可与导数定义、连续性、泰勒展开和定积分存在性串联",
     "derivative": "可与极限、函数图形、积分不等式和微分方程串联",
@@ -2519,6 +3122,15 @@ def _copy_template(concept_id: str, subtype: dict[str, Any]) -> dict[str, Any]:
         "formula_sheet": _normalize_template_formula(subtype.get("formula_sheet", "")),
         "mistakes": [_normalize_template_prose(item) for item in subtype["mistakes"]],
         "memory_aid": _normalize_template_prose(subtype["memory_aid"]),
+        "construction_patterns": [
+            {
+                **item,
+                "steps": list(item.get("steps", [])),
+                "checks": list(item.get("checks", [])),
+            }
+            for item in subtype.get("construction_patterns", [])
+        ],
+        "solution_steps": [dict(item) for item in subtype.get("solution_steps", [])],
         "source": "数学二公开大纲、公开教材目录与开源笔记结构交叉整理",
     }
 
@@ -2577,6 +3189,7 @@ def build_workbench_template(
     template["memory_aid"] = _normalize_template_prose(template.get("memory_aid", ""))
     template["formula_sheet"] = _normalize_template_formula(template.get("formula_sheet", ""))
     template.update(_template_learning_layers(concept_id, subtype, template))
+    _normalize_template_learning(template)
     template["answer_structure"] = _build_answer_structure(
         template["overview"],
         template["framework"],

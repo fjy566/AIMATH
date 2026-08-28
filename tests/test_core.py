@@ -297,6 +297,18 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
             assert r"\\end{" not in template["formula_sheet"]
             assert template["overview"]
             assert template["subtype_name"] == subtype["name"]
+            assert len(template["construction_patterns"]) >= 4
+            assert len(template["solution_steps"]) >= 6
+            assert all(
+                item["title"].strip()
+                and item["when"].strip()
+                and item["formula"].strip()
+                and item["steps"]
+                and item["target"].strip()
+                and item["checks"]
+                for item in template["construction_patterns"]
+            )
+            assert all(item["label"].strip() and item["content"].strip() and item["check"].strip() for item in template["solution_steps"])
 
     assert build_workbench_template(questions, "derivative", "rolle-theorem")["matched_question_count"] > 0
     assert build_workbench_template(questions, "derivative", "lagrange-mvt")["matched_question_count"] > 0
@@ -314,6 +326,31 @@ def test_workbench_covers_every_math2_block_with_real_examples() -> None:
     selected_ids = {eigen_template["example"]["question"]["id"], *(item["question"]["id"] for item in eigen_template["variants"])}
     assert analysis_fragment["id"] not in selected_ids
     assert combined_paper["id"] not in selected_ids
+
+
+def test_rolle_template_exposes_common_constructions_and_stepwise_proof() -> None:
+    from app.services.workbench import build_workbench_template
+
+    template = build_workbench_template(load_questions(), "derivative", "rolle-theorem")
+    titles = {item["title"] for item in template["construction_patterns"]}
+    assert {
+        "直接取原函数",
+        "减去目标直线（常数斜率）",
+        "减去割线（由罗尔推出拉格朗日）",
+        "两函数作差",
+        "柯西型加权差",
+        "参数线性组合",
+        "积分平均值构造",
+        "加权积分平均",
+        "对称端点与镜像差",
+        "复合变换保端点",
+        "多零点与反复罗尔",
+        "原函数型零点与唯一性",
+    }.issubset(titles)
+    assert [item["label"] for item in template["solution_steps"]] == [
+        "目标改写", "选择构造", "写区间条件", "验证端点等值", "引用罗尔定理", "展开并还原", "分支与复核",
+    ]
+    assert all("$" in item["content"] for item in template["solution_steps"])
 
 
 def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
@@ -366,6 +403,12 @@ def test_workbench_template_navigation_search_and_actions_are_reusable() -> None
     assert "template.practice_levels" in source
     assert "template.exam_checklist" in source
     assert "function renderLearningText" in source
+    assert "function templateConstructionMarkup" in source
+    assert "function templateSolutionStepsMarkup" in source
+    assert "template.construction_patterns" in source
+    assert "template.solution_steps" in source
+    assert "template-constructions" in source
+    assert "template-solution-steps" in source
     assert 'renderLearningText(item.focus, "template-format-focus")' in source
     assert 'renderLearningText(item.steps, "template-format-steps")' in source
     assert 'renderLearningText(item.finish, "template-format-finish")' in source
@@ -374,6 +417,8 @@ def test_workbench_template_navigation_search_and_actions_are_reusable() -> None
     assert 'renderLearningText(item, "template-check-item")' in source
     assert ".template-quick-nav" in styles
     assert ".template-format-grid" in styles
+    assert ".template-construction-card" in styles
+    assert ".template-solution-step" in styles
 
 
 def test_block_training_uses_compact_stack_and_single_question_navigation() -> None:
@@ -457,6 +502,7 @@ def test_tex_normalization_preserves_array_row_break_before_command() -> None:
     from app.services.workbench import _normalize_template_formula
 
     assert _normalize_template_formula(r"$\\left(x\\right)$") == r"$\left(x\right)$"
+    assert _normalize_template_formula(r"$$\\\\lim_{x\\to0}x$$") == r"$$\lim_{x\to0}x$$"
     array_formula = r"$\begin{array}{l}y^{\prime}+ay=f(x),\\\left.y\right|_{x=0}=0\end{array}$"
     assert _normalize_template_formula(array_formula) == array_formula
 

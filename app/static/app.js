@@ -2157,24 +2157,44 @@ function templatePracticeMarkup(levels, checklist) {
   return `<div class="template-practice-check-grid"><section><span class="template-section-label">三层训练路径</span><ol class="template-practice-levels">${levelMarkup}</ol></section><section><span class="template-section-label">交卷前 30 秒检查</span><ul class="template-exam-checklist">${checklistMarkup}</ul></section></div>`;
 }
 
+function templateSolutionStepsMarkup(items) {
+  const steps = (items || []).map((item, index) => `<article class="template-solution-step"><div class="template-solution-step-index">${String(index + 1).padStart(2, "0")}</div><div class="template-solution-step-body"><div class="template-solution-step-title"><strong>${escapeHtml(item.label || "解题步骤")}</strong><span>${escapeHtml(item.check || "完成后核对这一项")}</span></div>${item.instruction ? `<p class="template-solution-step-instruction">${escapeHtml(item.instruction)}</p>` : ""}<div class="markdown-body template-solution-step-content">${renderMarkdown(item.content || "")}</div></div></article>`).join("");
+  if (!steps) return "";
+  return `<section class="template-solution-steps" id="template-solution-steps"><div class="workbench-section-head"><div><h4>按这个顺序写出完整过程</h4><p>每一步都对应一个可检查的得分点；先写条件，再做变形，最后独立复核。</p></div><span>${items.length} 步主线</span></div><div class="template-solution-step-list">${steps}</div></section>`;
+}
+
+function templateConstructionMarkup(items) {
+  const patterns = (items || []).map((item, index) => {
+    const stepMarkup = (item.steps || []).map((step) => `<li>${renderLearningText(step)}</li>`).join("");
+    const checkMarkup = (item.checks || []).map((check) => `<li>${renderLearningText(check)}</li>`).join("");
+    return `<details class="template-construction-card" ${index === 0 ? "open" : ""}><summary><span class="template-construction-index">${String(index + 1).padStart(2, "0")}</span><div class="template-construction-title"><strong>${escapeHtml(item.title || "常用构造")}</strong>${renderLearningText(item.when, "template-construction-when")}</div><span class="template-construction-toggle" aria-hidden="true">展开</span></summary><div class="template-construction-body"><div class="template-construction-formula"><span class="template-section-label">构造式 / 核心公式</span><div class="markdown-body">${renderMarkdown(item.formula || "")}</div></div><div class="template-construction-columns"><section><span class="template-section-label">具体步骤</span><ol>${stepMarkup}</ol></section><section><span class="template-section-label">目标与检查</span><div class="template-construction-target markdown-body">${renderMarkdown(item.target || "")}</div><ul class="template-construction-checks">${checkMarkup}</ul></section></div></div></details>`;
+  }).join("");
+  if (!patterns) return "";
+  return `<section class="template-constructions" id="template-constructions"><div class="workbench-section-head"><div><h4>常用构造与解法入口</h4><p>先按“适用场景”筛选，再展开公式和步骤；同一题只选一条主线，其他卡片用来迁移和验算。</p></div><span>${items.length} 种构造</span></div><div class="template-construction-list">${patterns}</div></section>`;
+}
+
 function templateGuideMarkup(template, framework, formulaSheet, mistakes) {
   const recognition = template.recognition || [];
   const directions = template.exam_directions || [];
   return `<div class="template-guide">
-    <nav class="template-quick-nav" aria-label="答题模板段落导航"><span>快速定位</span><button type="button" data-template-target="template-recognition">识别题型</button><button type="button" data-template-target="template-directions">命题方向</button><button type="button" data-template-target="template-answer-chain">答题得分链</button><button type="button" data-template-target="template-formats">分题型策略</button><button type="button" data-template-target="template-example">真实例题</button></nav>
+    <nav class="template-quick-nav" aria-label="答题模板段落导航"><span>快速定位</span><button type="button" data-template-target="template-recognition">识别题型</button><button type="button" data-template-target="template-directions">命题方向</button><button type="button" data-template-target="template-solution-steps">解题步骤</button><button type="button" data-template-target="template-constructions">常用构造</button><button type="button" data-template-target="template-formats">分题型策略</button><button type="button" data-template-target="template-example">真实例题</button></nav>
     <section class="template-overview template-rich-text markdown-body" id="template-recognition"><span class="template-section-label">这类题在考什么</span>${renderMarkdown(template.overview || "")}${templateInsightCards(recognition)}</section>
     <section class="template-directions" id="template-directions">${workbenchSectionHeadingMarkup("常见命题方向", "从直接计算到参数、证明、综合与伪装变式，先识别命题层级再动笔。", `${directions.length} 类方向`)}${templateInsightCards(directions, { titleKey: "title", bodyKey: "detail", className: "template-direction-grid" })}</section>
     ${formulaSheet ? `<section class="template-formula-card"><div><span class="template-section-label">公式卡片</span><small>先理解使用条件，再代入计算</small></div><div class="template-formula-body markdown-body">${renderMarkdown(formulaSheet)}</div></section>` : ""}
-    <div id="template-answer-chain">${renderAnswerStructure(template)}</div>
+    ${templateSolutionStepsMarkup(template.solution_steps || template.answer_structure)}
+    ${templateConstructionMarkup(template.construction_patterns)}
     <section class="template-format-section" id="template-formats">${workbenchSectionHeadingMarkup("选择、填空、解答怎么写", "同一知识点在不同题面形式下，计算深度、书写要求和验算方式不同。", "3 种题面形式")}${templateQuestionTypeMarkup(template.question_type_guides)}</section>
     <section class="template-training-section">${workbenchSectionHeadingMarkup("从会认到会迁移", "按层训练，避免只会复述模板却无法识别变式。", "识别 · 执行 · 迁移")}${templatePracticeMarkup(template.practice_levels, template.exam_checklist)}</section>
-    <div class="template-guide-columns"><section><span class="template-section-label">推荐作答顺序</span><ol>${framework.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ol></section><section class="template-mistakes"><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ul></section></div>
+    <div class="template-guide-columns template-review-columns"><section><span class="template-section-label">容易丢分的地方</span><ul>${mistakes.map((item) => `<li>${renderTemplateText(item)}</li>`).join("")}</ul></section><section class="template-mistakes"><span class="template-section-label">把模板变成自己的话</span><p>先遮住公式卡片，只看题干信号说出首步；再展开一张构造卡，检查它是否满足题设条件；最后用真实例题验证。</p></section></div>
     <section class="template-memory"><span>考场提醒</span>${renderTemplateText(template.memory_aid || "")}</section>
   </div>`;
 }
 
 function templateAnswerText(template) {
-  return (template.answer_structure || []).map((item, index) => `${index + 1}. ${item.label}\n${item.content}`).join("\n\n");
+  const steps = template.solution_steps || template.answer_structure || [];
+  const main = steps.map((item, index) => `${index + 1}. ${item.label}\n${item.instruction ? `${item.instruction}\n` : ""}${item.content}${item.check ? `\n检查：${item.check}` : ""}`).join("\n\n");
+  const recipes = (template.construction_patterns || []).map((item, index) => `${index + 1}. ${item.title}\n适用：${item.when}\n公式：${item.formula}\n步骤：${(item.steps || []).join("；")}\n检查：${(item.checks || []).join("；")}`).join("\n\n");
+  return ["【完整答题主线】", main, recipes ? `【常用构造清单】\n${recipes}` : ""].filter(Boolean).join("\n\n");
 }
 
 async function copyWorkbenchAnswerTemplate() {
@@ -2182,7 +2202,7 @@ async function copyWorkbenchAnswerTemplate() {
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    showToast("六步答题骨架已复制，可粘贴到答题区或笔记。", false);
+    showToast("完整答题模板已复制，可粘贴到答题区或笔记。", false);
   } catch {
     showToast("无法自动复制，请在模板中手动选择答题结构。", true);
   }
@@ -2234,7 +2254,7 @@ function renderWorkbenchTemplate() {
   const sourceNote = template.example_source === "无直接题目"
     ? "当前题库没有找到可核验的该细分题型真题，不展示其他题型作为替代。"
     : "例题与变式只使用细分题型直接命中的真实题目。";
-  const primaryActions = state.workbenchEditingTemplate ? "" : `<button type="button" class="secondary-button" id="copy-workbench-answer-template">复制六步骨架</button><button type="button" class="primary-button" id="start-workbench-practice">开始专项训练</button>`;
+  const primaryActions = state.workbenchEditingTemplate ? "" : `<button type="button" class="secondary-button" id="copy-workbench-answer-template">复制完整答题模板</button><button type="button" class="primary-button" id="start-workbench-practice">开始专项训练</button>`;
   card.innerHTML = `<header class="workbench-template-head"><div><span class="workbench-template-path">${escapeHtml(template.subject)} / ${escapeHtml(template.concept_name)}</span><h3>${escapeHtml(template.subtype_name)}</h3><div class="workbench-template-summary">${renderLearningText(template.subtype_summary || "")}<span>${escapeHtml(sourceNote)}</span></div></div><div class="template-head-actions">${template.customized ? `<span class="custom-template-mark">已自定义</span>` : ""}${primaryActions}<button type="button" class="secondary-button" id="refresh-workbench-variants">换一组题</button><button type="button" class="secondary-button" id="edit-workbench-template">${state.workbenchEditingTemplate ? "继续编辑" : "编辑模板"}</button>${state.workbenchEditingTemplate ? `<button type="button" class="quiet-button" id="cancel-workbench-template">取消</button><button type="button" class="primary-button" id="save-workbench-template">保存模板</button>` : ""}</div></header>${summaryMarkup}<section class="workbench-example-section" id="template-example">${workbenchSectionHeadingMarkup("先看一道完整例题", "题目在左，来源答案与解析在右，可以进入作答区独立完成。", "完整题面与来源解析")}${workbenchQuestionMarkup(template.example, "典型例题")}</section><section class="workbench-variants-section">${workbenchSectionHeadingMarkup("再做变式练习", "一次只展示一道，换题会优先避开当前例题和变式，避免来回重复。", `${template.variant_count || 0} 道真实题`)}<div class="workbench-variant-switcher" role="tablist" aria-label="选择变式题">${variantTabs}</div><div class="workbench-variant-viewer">${variantViewer}</div>${variantItems.length > 1 ? `<nav class="workbench-variant-nav" aria-label="切换变式题"><button type="button" class="quiet-button" id="workbench-variant-prev" ${state.workbenchVariantIndex === 0 ? "disabled" : ""}>上一道</button><span>${state.workbenchVariantIndex + 1} / ${variantItems.length}</span><button type="button" class="secondary-button" id="workbench-variant-next" ${state.workbenchVariantIndex === variantItems.length - 1 ? "disabled" : ""}>下一道</button></nav>` : ""}</section>`;
   bindQuestionOpeners(card);
   bindWorkbenchTemplateActions(card);
