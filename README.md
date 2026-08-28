@@ -49,6 +49,8 @@ python scripts/run_server.py
 
 浏览器打开 <http://127.0.0.1:8000>。如果 PowerShell 禁止激活脚本，也可以直接使用 `.venv\Scripts\python.exe` 和 `.venv\Scripts\uvicorn.exe`。
 
+`scripts/run_server.py` 会按脚本自身目录定位项目；从其他目录执行时请传入脚本完整路径，例如 `python "F:\source\AI MATH\scripts\run_server.py" --open`。桌面端希望自动打开默认浏览器时使用 `python scripts/run_server.py --open`；如果端口已被同一个砺数服务占用，启动器会复用现有服务，不会再启动第二个进程。也可以用 `--host` 和 `--port` 临时覆盖保存的监听配置。
+
 首次打开会进入账户注册页：第一个注册账户会自动获得本地工作区管理员权限，之后每个账户只能看到自己的作答、笔记、训练和模型配置。已有旧版本工作区会在首次注册时迁移到该账户；如果需要多人在局域网使用，请先配置 HTTPS、反向代理和防火墙，再把监听地址改为 `0.0.0.0`。
 
 `python scripts/run_server.py` 会读取“设置”页面保存的监听地址和端口，默认是 `127.0.0.1:8000`。也可以直接用 Uvicorn 命令临时覆盖配置，例如：

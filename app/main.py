@@ -466,7 +466,9 @@ def _normalize_note_payload(payload: NoteRequest, *, user_id: str, note_id: str 
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    # The shell carries versioned asset URLs; keep the document itself fresh
+    # so a desktop browser cannot remain on a stale auth/bootstrap bundle.
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/auth/bootstrap")

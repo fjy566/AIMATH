@@ -79,10 +79,18 @@ def server_settings() -> dict[str, Any]:
     public_url = normalized["public_url"]
     bind_host = normalized["host"]
     access_url = public_url or f"http://{bind_host}:{normalized['port']}"
+    # Wildcard bind addresses are useful to the server but cannot be pasted
+    # into a browser. Keep the original access_url for compatibility and also
+    # expose a safe local URL for desktop launchers and the settings view.
+    browser_host = "127.0.0.1" if bind_host in {"0.0.0.0", "::", "::1"} else bind_host
+    if ":" in browser_host and not browser_host.startswith("["):
+        browser_host = f"[{browser_host}]"
+    browser_url = public_url or f"http://{browser_host}:{normalized['port']}"
     is_network_bound = bind_host not in {"127.0.0.1", "localhost", "::1"}
     return {
         **normalized,
         "access_url": access_url,
+        "browser_url": browser_url,
         "binding_mode": "网络访问" if is_network_bound else "仅本机",
         "network_exposure_warning": is_network_bound,
         "restart_required": True,

@@ -760,13 +760,31 @@ def test_server_settings_validate_and_persist(tmp_path: Path) -> None:
         assert saved["port"] == 8123
         assert saved["public_url"] == "https://math.example.test/study"
         assert saved["network_exposure_warning"] is True
+        assert saved["browser_url"] == "https://math.example.test/study"
         assert saved["launch_command"] == "python scripts/run_server.py"
+        local_only = save_server_settings("0.0.0.0", 8123)
+        assert local_only["browser_url"] == "http://127.0.0.1:8123"
         with pytest.raises(ServerSettingsError):
             save_server_settings("bad host", 8123)
         with pytest.raises(ServerSettingsError):
             save_server_settings("127.0.0.1", 70000)
     finally:
         database.DB_PATH = original_db_path
+
+
+def test_auth_shell_has_a_no_blank_fallback_and_progressive_fields() -> None:
+    html_source = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert '<body class="auth-pending">' not in html_source
+    assert 'class="noscript-screen"' in html_source
+    assert 'id="auth-retry"' in html_source
+    assert 'id="register-optional-fields"' in html_source
+    assert 'data-password-toggle' in html_source
+    assert "replaceAllLiteral" in app_source
+    assert "timeoutMs: 12000" in app_source
+    assert 'button, input, select, textarea, summary' in styles
 
 
 def test_openai_compatible_url_normalization() -> None:

@@ -6,29 +6,43 @@
     <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css" />
-    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260828" />
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=20260828" />
   </head>
-  <body class="auth-pending">
-    <section class="auth-screen" id="auth-screen" hidden>
+  <body>
+    <noscript><div class="noscript-screen"><strong>砺数需要启用 JavaScript</strong><span>请在浏览器设置中允许 JavaScript，然后重新打开学习空间。</span></div></noscript>
+    <section class="auth-screen" id="auth-screen" hidden aria-labelledby="auth-title">
       <div class="auth-card">
-        <div class="auth-brand"><div class="brand-mark">∑</div><div><div class="brand-name">砺数</div><div class="brand-subtitle">PRIVATE STUDY SPACE</div></div></div>
-        <div class="auth-copy"><span class="eyebrow">LOCAL ACCOUNT</span><h1 id="auth-title">登录你的学习空间</h1><p id="auth-description">登录后，作答、笔记、训练进度和模型配置都会只属于当前账户。</p></div>
-        <form id="login-form" class="auth-form">
-          <label class="field-label">用户名或邮箱<input id="login-identifier" type="text" autocomplete="username" required maxlength="254" placeholder="例如 math_learner" /></label>
-          <label class="field-label">密码<input id="login-password" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="至少 8 个字符" /></label>
-          <button type="submit" class="primary-button auth-submit">登录 <span>→</span></button>
-        </form>
-        <form id="register-form" class="auth-form" hidden>
-          <label class="field-label">用户名<input id="register-username" type="text" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_\-]{3,32}" placeholder="3–32 位字母、数字、下划线或短横线" /></label>
-          <label class="field-label">邮箱（可选）<input id="register-email" type="email" autocomplete="email" maxlength="254" placeholder="用于账户识别，也可以留空" /></label>
-          <label class="field-label">显示名称<input id="register-display-name" type="text" autocomplete="nickname" maxlength="80" placeholder="例如 小林" /></label>
-          <label class="field-label">设置密码<input id="register-password" type="password" autocomplete="new-password" required minlength="8" maxlength="128" placeholder="至少 8 个字符，不含空格" /></label>
-          <button type="submit" class="primary-button auth-submit">创建账户 <span>→</span></button>
-        </form>
+        <div class="auth-card-header">
+          <div class="auth-brand"><div class="brand-mark">∑</div><div><div class="brand-name">砺数</div><div class="brand-subtitle">PRIVATE STUDY SPACE</div></div></div>
+          <span class="auth-mode-badge" id="auth-mode-badge">SECURE SIGN IN</span>
+        </div>
+        <div class="auth-copy"><span class="eyebrow">LOCAL ACCOUNT</span><h1 id="auth-title">登录你的学习空间</h1><p id="auth-description">登录后，作答、笔记、训练进度和模型配置都会只属于当前账户。</p><div class="auth-progress" id="auth-progress" hidden><span class="auth-progress-bar"><i></i></span><span id="auth-progress-copy">账户凭据 · 可选资料稍后补充</span></div></div>
+        <div class="auth-form-stage">
+          <form id="login-form" class="auth-form">
+            <label class="field-label">用户名或邮箱<span class="auth-input-shell"><input id="login-identifier" type="text" autocomplete="username" required maxlength="254" placeholder="例如 math_learner" /></span></label>
+            <label class="field-label">密码<span class="auth-input-shell password-input-shell"><input id="login-password" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="至少 8 个字符" /><button type="button" class="password-toggle" data-password-toggle data-target="login-password" aria-label="显示密码" aria-pressed="false">显示</button></span></label>
+            <div class="auth-form-hint"><span>本机账户 · 数据按账户隔离</span><span>无需记住额外入口</span></div>
+            <button type="submit" class="primary-button auth-submit">登录 <span aria-hidden="true">→</span></button>
+          </form>
+          <form id="register-form" class="auth-form" hidden>
+            <label class="field-label">用户名<span class="auth-input-shell"><input id="register-username" type="text" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_\-]{3,32}" placeholder="3–32 位字母、数字、下划线或短横线" /></span></label>
+            <label class="field-label">设置密码<span class="auth-input-shell password-input-shell"><input id="register-password" type="password" autocomplete="new-password" required minlength="8" maxlength="128" placeholder="至少 8 个字符，不含空格" /><button type="button" class="password-toggle" data-password-toggle data-target="register-password" aria-label="显示密码" aria-pressed="false">显示</button></span></label>
+            <details class="auth-optional-fields" id="register-optional-fields">
+              <summary><span>完善资料</span><small>可选，之后也能在设置中修改</small><b aria-hidden="true">⌄</b></summary>
+              <div class="auth-optional-grid">
+                <label class="field-label">邮箱（可选）<span class="auth-input-shell"><input id="register-email" type="email" autocomplete="email" maxlength="254" placeholder="用于账户识别" /></span></label>
+                <label class="field-label">显示名称<span class="auth-input-shell"><input id="register-display-name" type="text" autocomplete="nickname" maxlength="80" placeholder="例如 小林" /></span></label>
+              </div>
+            </details>
+            <div class="auth-form-hint"><span>首个账户自动成为本地管理员</span><span id="auth-step-mark">STEP 1 / 1</span></div>
+            <button type="submit" class="primary-button auth-submit">创建账户 <span aria-hidden="true">→</span></button>
+          </form>
+        </div>
         <div class="auth-switch-row"><span id="auth-switch-copy">还没有账户？</span><button type="button" class="text-button" id="auth-switch">注册新账户</button></div>
         <p class="form-status auth-status" id="auth-status" role="alert" aria-live="polite"></p>
-        <p class="auth-security-note">本地优先：密码只保存为不可逆摘要，学习数据按账户隔离。</p>
+        <div class="auth-connection" id="auth-connection" hidden><span class="auth-connection-dot" aria-hidden="true"></span><span id="auth-connection-copy">正在连接本地服务……</span><button type="button" class="text-button" id="auth-retry">重新连接</button></div>
+        <details class="auth-privacy-details"><summary>隐私与数据隔离 <b aria-hidden="true">⌄</b></summary><p>密码只保存为不可逆摘要；作答、笔记、训练进度和模型设置都绑定当前账户，退出后不会在浏览器中复用其他账户的数据。</p></details>
       </div>
     </section>
     <div class="app-shell">
@@ -377,7 +391,7 @@
     </div>
 
     <div class="toast" id="toast" role="alert"></div>
-    <script src="/static/vendor/katex/katex.min.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/vendor/katex/katex.min.js?v=20260828"></script>
+    <script src="/static/app.js?v=20260828"></script>
   </body>
 </html>

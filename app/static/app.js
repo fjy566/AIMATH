@@ -1,3 +1,9 @@
+// Hide the application while the session is being checked, but do this from
+// JavaScript rather than the HTML shell. If an older desktop browser cannot
+// parse this bundle, the shell remains visible and the user gets a useful
+// fallback instead of a blank window.
+document.body?.classList.add("auth-pending");
+
 const state = {
   view: "overview",
   userId: "local-user",
@@ -70,6 +76,10 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
+function replaceAllLiteral(value, search, replacement) {
+  return String(value).split(String(search)).join(String(replacement));
+}
+
 // A few imported/template records contain an extra slash before a TeX command
 // (for example "\\le"). Normalize only known command names so matrix row
 // breaks ("\\") remain intact.
@@ -137,9 +147,9 @@ function renderMarkdown(source) {
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     for (const formula of formulas) {
       const math = renderFormula(formula.tex, formula.display);
-      html = html.replaceAll(formula.token, math);
+      html = replaceAllLiteral(html, formula.token, math);
     }
-    for (const item of media) html = html.replaceAll(item.token, item.html);
+    for (const item of media) html = replaceAllLiteral(html, item.token, item.html);
     return html;
   };
 
@@ -259,7 +269,7 @@ function renderInlineFormulaText(value) {
     return token;
   });
   let html = escapeHtml(replaced).replace(/\n/g, "<br />");
-  for (const formula of formulas) html = html.replaceAll(formula.token, renderFormula(formula.tex, formula.display));
+  for (const formula of formulas) html = replaceAllLiteral(html, formula.token, renderFormula(formula.tex, formula.display));
   return html;
 }
 
@@ -1446,26 +1456,46 @@ function setAuthMode(mode) {
   const register = state.authMode === "register";
   $("login-form")?.toggleAttribute("hidden", register);
   $("register-form")?.toggleAttribute("hidden", !register);
+  const activeForm = register ? $("register-form") : $("login-form");
+  activeForm?.classList.remove("auth-form-enter");
+  if (activeForm) window.requestAnimationFrame?.(() => activeForm.classList.add("auth-form-enter"));
   if ($("auth-title")) $("auth-title").textContent = register ? "创建你的学习空间" : "登录你的学习空间";
   if ($("auth-description")) $("auth-description").textContent = register ? "首个账户会成为本地工作区管理员，之后可以管理账户和权限。" : "登录后，作答、笔记、训练进度和模型配置都会只属于当前账户。";
   if ($("auth-switch-copy")) $("auth-switch-copy").textContent = register ? "已经有账户？" : "还没有账户？";
   if ($("auth-switch")) $("auth-switch").textContent = register ? "返回登录" : "注册新账户";
+  if ($("auth-mode-badge")) $("auth-mode-badge").textContent = register ? "CREATE A SPACE" : "SECURE SIGN IN";
+  const progress = $("auth-progress");
+  if (progress) progress.toggleAttribute("hidden", !register);
+  if ($("auth-progress-copy")) $("auth-progress-copy").textContent = register ? "账户凭据 · 可选资料稍后补充" : "";
+  if ($("auth-step-mark")) $("auth-step-mark").textContent = register ? "STEP 1 / 1" : "LOCAL / PRIVATE";
+  const optional = $("register-optional-fields");
+  if (!register && optional) optional.open = false;
   $("auth-status")?.classList.remove("error");
+  if ($("auth-status")) $("auth-status").textContent = "";
 }
 
-function showAuthScreen(message = "") {
+function setAuthConnection(message = "", visible = false) {
+  const connection = $("auth-connection");
+  if (!connection) return;
+  connection.toggleAttribute("hidden", !visible);
+  if (message && $("auth-connection-copy")) $("auth-connection-copy").textContent = message;
+}
+
+function showAuthScreen(message = "", { connection = false, info = false } = {}) {
   resetUserScopedState();
   setAuthMode("login");
   document.body.classList.add("auth-pending");
   $("auth-screen")?.removeAttribute("hidden");
   $("auth-status") && ($("auth-status").textContent = message);
-  if (message) $("auth-status")?.classList.add("error");
+  $("auth-status")?.classList.toggle("error", Boolean(message && !info && !connection));
+  setAuthConnection(connection ? message : "", connection);
   $("login-identifier")?.focus({ preventScroll: true });
 }
 
 function hideAuthScreen() {
   document.body.classList.remove("auth-pending");
   $("auth-screen")?.setAttribute("hidden", "");
+  setAuthConnection();
 }
 
 async function submitAuthForm(event) {
@@ -1494,13 +1524,42 @@ async function submitAuthForm(event) {
 
 async function bootstrapAuth() {
   try {
-    const payload = await fetchJSON("/api/auth/me");
+    const payload = await fetchJSON("/api/auth/me", { timeoutMs: 12000 });
     setAuthState(payload);
     hideAuthScreen();
     return true;
   } catch (error) {
-    showAuthScreen(error.message.includes("尚未注册") ? "请先创建账户，首个账户将自动获得管理员权限。" : "登录已失效，请重新登录。");
+    const message = String(error?.message || "");
+    const connectionError = error?.name === "TypeError" || error?.name === "TimeoutError" || /Failed to fetch|NetworkError|Load failed|无法连接|超时/i.test(message);
+    if (connectionError) {
+      showAuthScreen("无法连接本地服务，请先运行启动脚本后重试。", { connection: true });
+    } else if (message.includes("尚未注册")) {
+      showAuthScreen("请先创建账户，首个账户将自动获得管理员权限。", { info: true });
+    } else {
+      showAuthScreen("登录已失效，请重新登录。");
+    }
     return false;
+  }
+}
+
+async function retryAuthConnection() {
+  const button = $("auth-retry");
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "连接中……";
+  }
+  try {
+    if (await bootstrapAuth()) {
+      applyWorkbenchTheme();
+      await loadOverview();
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.textContent = "重新连接";
+    }
   }
 }
 
@@ -1518,11 +1577,32 @@ async function logout() {
 
 async function fetchJSON(url, options = {}) {
   const requestOptions = { ...options, credentials: "same-origin" };
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 30000;
+  delete requestOptions.timeoutMs;
   const headers = new Headers(options.headers || {});
   const method = String(requestOptions.method || "GET").toUpperCase();
   if (!new Set(["GET", "HEAD", "OPTIONS"]).has(method) && state.csrfToken) headers.set("X-CSRF-Token", state.csrfToken);
   requestOptions.headers = headers;
-  const response = await fetch(url, requestOptions);
+  let timeoutId = 0;
+  let controller = null;
+  if (!requestOptions.signal && typeof AbortController !== "undefined") {
+    controller = new AbortController();
+    requestOptions.signal = controller.signal;
+    timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  }
+  let response;
+  try {
+    response = await fetch(url, requestOptions);
+  } catch (error) {
+    if (error?.name === "AbortError" && controller) {
+      const timeoutError = new Error("本地服务响应超时，请确认服务已启动。");
+      timeoutError.name = "TimeoutError";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
   let payload;
   try {
     payload = await response.json();
@@ -3860,7 +3940,7 @@ function renderServerSettingsValues() {
   $("server-public-url").value = settings.public_url || "";
   $("server-binding-mode").textContent = `⌁ ${settings.binding_mode || "服务"}`;
   $("server-launch-command").textContent = settings.launch_command || "python scripts/run_server.py";
-  const access = settings.public_url || settings.access_url || `http://${settings.host}:${settings.port}`;
+  const access = settings.public_url || settings.browser_url || settings.access_url || `http://${settings.host}:${settings.port}`;
   const bindNote = settings.network_exposure_warning
     ? "当前监听地址允许网络设备连接。局域网使用本机 IP；公网请先配置防火墙、HTTPS 和认证。"
     : "当前只监听本机，其他设备无法访问。保存后请用启动脚本重启服务。";
@@ -4139,6 +4219,17 @@ function bindAdminControls() {
 
 function bindAuthControls() {
   $("auth-switch")?.addEventListener("click", () => setAuthMode(state.authMode === "login" ? "register" : "login"));
+  $("auth-retry")?.addEventListener("click", retryAuthConnection);
+  $$('[data-password-toggle]').forEach((button) => button.addEventListener("click", () => {
+    const input = $(button.dataset.target || "");
+    if (!input) return;
+    const visible = input.type === "text";
+    input.type = visible ? "password" : "text";
+    button.textContent = visible ? "显示" : "隐藏";
+    button.setAttribute("aria-pressed", String(!visible));
+    button.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
+    input.focus({ preventScroll: true });
+  }));
   $("login-form")?.addEventListener("submit", submitAuthForm);
   $("register-form")?.addEventListener("submit", submitAuthForm);
   setAuthMode("login");
@@ -4149,6 +4240,25 @@ function bindAccountSettingsControls() {
   $("preferences-settings-form")?.addEventListener("submit", savePreferencesSettings);
   $("password-settings-form")?.addEventListener("submit", savePasswordSettings);
   $("revoke-other-sessions")?.addEventListener("click", revokeOtherSessions);
+}
+
+function handleClientBootFailure(error) {
+  // A missing favicon or a slow optional font should not turn into an auth
+  // error. Only handle script/runtime failures; resource error events have a
+  // DOM target but no Error object.
+  if (error?.target && error.target !== window && !error.error) return;
+  const message = String(error?.reason?.message || error?.error?.message || error?.message || "");
+  console.error("AI Math client error", error?.reason || error?.error || error);
+  if (!state.authenticated && $("auth-screen")?.hasAttribute("hidden")) {
+    showAuthScreen("界面加载失败，请刷新页面或重新启动本地服务。", { connection: true });
+    if ($("auth-connection-copy")) $("auth-connection-copy").textContent = "页面脚本未能完成初始化，请重试。";
+    return;
+  }
+  const notice = $("app-notice");
+  if (notice) {
+    notice.textContent = "页面遇到一个可恢复的问题，请刷新当前页面后重试。";
+    notice.classList.add("show");
+  }
 }
 
 async function init() {
@@ -4194,4 +4304,6 @@ async function init() {
 }
 
 window.addEventListener("beforeunload", handleSimulationBeforeUnload);
+window.addEventListener("error", handleClientBootFailure);
+window.addEventListener("unhandledrejection", handleClientBootFailure);
 window.addEventListener("DOMContentLoaded", init);
