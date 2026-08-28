@@ -1,6 +1,13 @@
 const state = {
   view: "overview",
   userId: "local-user",
+  user: null,
+  csrfToken: "",
+  authenticated: false,
+  authMode: "login",
+  adminUsers: [],
+  adminAudit: [],
+  accountSettings: null,
   stats: null,
   progress: null,
   forecast: null,
@@ -44,6 +51,7 @@ const viewMeta = {
   simulation: ["FULL PAPER / TIMED PRACTICE", "模拟考"],
   analytics: ["ANALYTICS / EVIDENCE", "学习分析"],
   settings: ["SETTINGS / MODEL + SERVER", "设置"],
+  admin: ["ADMIN / ACCESS CONTROL", "管理后台"],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -503,9 +511,10 @@ const HANDWRITING_MAX_STROKES = 320;
 const HANDWRITING_MAX_POINTS = 6000;
 
 function answerHandwritingKey(mode, questionId, contextId = "") {
+  const owner = state.userId || "local-user";
   const scope = String(mode || "modal");
   const context = contextId ? `${String(contextId)}:` : "";
-  return `${scope}:${context}${String(questionId || "unknown")}`;
+  return `${owner}:${scope}:${context}${String(questionId || "unknown")}`;
 }
 
 function handwritingStorageKey(key) {
@@ -1364,8 +1373,156 @@ function showNotice(message) {
   notice.classList.toggle("show", Boolean(message));
 }
 
+function readCookie(name) {
+  const prefix = `${encodeURIComponent(name)}=`;
+  const pair = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith(prefix));
+  return pair ? decodeURIComponent(pair.slice(prefix.length)) : "";
+}
+
+function renderAuthenticatedUser() {
+  const user = state.user || {};
+  state.userId = user.id || "local-user";
+  const label = user.display_name || user.username || "本地学习者";
+  const avatar = [...label].slice(0, 1).join("").toUpperCase() || "L";
+  $("user-avatar") && ($("user-avatar").textContent = avatar);
+  $("user-chip-name") && ($("user-chip-name").textContent = label);
+  const admin = user.role === "admin";
+  const adminNav = $("admin-nav") || document.querySelector(".admin-nav");
+  if (adminNav) adminNav.hidden = !admin;
+  const badge = $("account-role-badge");
+  if (badge) badge.textContent = admin ? "⌁ 管理员" : "⌁ 用户";
+  const logout = $("logout-button");
+  if (logout) logout.hidden = !state.authenticated;
+}
+
+function resetUserScopedState() {
+  window.clearInterval(state.simulationTimer);
+  state.userId = "local-user";
+  state.user = null;
+  state.csrfToken = "";
+  state.authenticated = false;
+  state.stats = null;
+  state.progress = null;
+  state.forecast = null;
+  state.analytics = null;
+  state.blocks = [];
+  state.nextQuestions = [];
+  state.concepts = [];
+  state.exams = [];
+  state.settings = null;
+  state.serverSettings = null;
+  state.accountSettings = null;
+  state.workbenchCatalog = [];
+  state.workbenchTemplate = null;
+  state.notes = [];
+  state.currentNote = null;
+  state.currentQuestion = null;
+  state.practiceSession = null;
+  state.currentSimulation = null;
+  state.simulationTimer = null;
+  state.simulationDeadline = null;
+  state.simulationCurrentIndex = 0;
+  state.view = "overview";
+  $$(".view").forEach((element) => element.classList.toggle("active", element.id === "view-overview"));
+  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === "overview"));
+  if ($("view-kicker") && viewMeta.overview) $("view-kicker").textContent = viewMeta.overview[0];
+  if ($("view-title") && viewMeta.overview) $("view-title").textContent = viewMeta.overview[1];
+  document.body.classList.remove("theme-dark");
+}
+
+function setAuthState(payload) {
+  const nextUser = payload?.user || null;
+  if (state.user?.id && nextUser?.id && state.user.id !== nextUser.id) resetUserScopedState();
+  state.user = nextUser;
+  state.userId = state.user?.id || "local-user";
+  state.csrfToken = payload?.csrf_token || readCookie("ai_math_csrf");
+  state.authenticated = Boolean(state.user?.id);
+  renderAuthenticatedUser();
+  if (state.authenticated) applyAccountTheme(state.user?.preferences?.theme || "system");
+}
+
+function setAuthMode(mode) {
+  state.authMode = mode === "register" ? "register" : "login";
+  const register = state.authMode === "register";
+  $("login-form")?.toggleAttribute("hidden", register);
+  $("register-form")?.toggleAttribute("hidden", !register);
+  if ($("auth-title")) $("auth-title").textContent = register ? "创建你的学习空间" : "登录你的学习空间";
+  if ($("auth-description")) $("auth-description").textContent = register ? "首个账户会成为本地工作区管理员，之后可以管理账户和权限。" : "登录后，作答、笔记、训练进度和模型配置都会只属于当前账户。";
+  if ($("auth-switch-copy")) $("auth-switch-copy").textContent = register ? "已经有账户？" : "还没有账户？";
+  if ($("auth-switch")) $("auth-switch").textContent = register ? "返回登录" : "注册新账户";
+  $("auth-status")?.classList.remove("error");
+}
+
+function showAuthScreen(message = "") {
+  resetUserScopedState();
+  setAuthMode("login");
+  document.body.classList.add("auth-pending");
+  $("auth-screen")?.removeAttribute("hidden");
+  $("auth-status") && ($("auth-status").textContent = message);
+  if (message) $("auth-status")?.classList.add("error");
+  $("login-identifier")?.focus({ preventScroll: true });
+}
+
+function hideAuthScreen() {
+  document.body.classList.remove("auth-pending");
+  $("auth-screen")?.setAttribute("hidden", "");
+}
+
+async function submitAuthForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector("button[type=submit]");
+  const status = $("auth-status");
+  if (submit) { submit.disabled = true; submit.setAttribute("aria-busy", "true"); }
+  if (status) { status.textContent = "正在验证……"; status.classList.remove("error"); }
+  try {
+    const payload = state.authMode === "register"
+      ? { username: $("register-username")?.value || "", email: $("register-email")?.value || "", display_name: $("register-display-name")?.value || "", password: $("register-password")?.value || "" }
+      : { identifier: $("login-identifier")?.value || "", password: $("login-password")?.value || "" };
+    const response = await fetchJSON(state.authMode === "register" ? "/api/auth/register" : "/api/auth/login", jsonOptions(payload));
+    setAuthState(response);
+    hideAuthScreen();
+    if (status) status.textContent = "";
+    showToast(state.authMode === "register" && response.first_account_is_admin ? "账户已创建，你是本地工作区管理员。" : "登录成功。");
+    await loadOverview();
+  } catch (error) {
+    if (status) { status.textContent = error.message; status.classList.add("error"); }
+  } finally {
+    if (submit) { submit.disabled = false; submit.removeAttribute("aria-busy"); }
+  }
+}
+
+async function bootstrapAuth() {
+  try {
+    const payload = await fetchJSON("/api/auth/me");
+    setAuthState(payload);
+    hideAuthScreen();
+    return true;
+  } catch (error) {
+    showAuthScreen(error.message.includes("尚未注册") ? "请先创建账户，首个账户将自动获得管理员权限。" : "登录已失效，请重新登录。");
+    return false;
+  }
+}
+
+async function logout() {
+  try {
+    await fetchJSON("/api/auth/logout", { method: "POST" });
+  } catch (error) {
+    if (!String(error.message).includes("请先登录")) showToast(`退出登录失败：${error.message}`, true);
+  }
+  state.user = null;
+  state.authenticated = false;
+  state.csrfToken = "";
+  showAuthScreen();
+}
+
 async function fetchJSON(url, options = {}) {
-  const response = await fetch(url, options);
+  const requestOptions = { ...options, credentials: "same-origin" };
+  const headers = new Headers(options.headers || {});
+  const method = String(requestOptions.method || "GET").toUpperCase();
+  if (!new Set(["GET", "HEAD", "OPTIONS"]).has(method) && state.csrfToken) headers.set("X-CSRF-Token", state.csrfToken);
+  requestOptions.headers = headers;
+  const response = await fetch(url, requestOptions);
   let payload;
   try {
     payload = await response.json();
@@ -1373,6 +1530,7 @@ async function fetchJSON(url, options = {}) {
     payload = {};
   }
   if (!response.ok) {
+    if (response.status === 401 && state.authenticated) showAuthScreen("登录已失效，请重新登录。");
     throw new Error(payload.detail || `请求失败（HTTP ${response.status}）`);
   }
   return payload;
@@ -1429,7 +1587,22 @@ async function uploadAnswerImage(file, questionId) {
 }
 
 function simulationDraftKey(simulationId) {
-  return `ai-math-simulation-draft-${simulationId}`;
+  return `ai-math-simulation-draft-${state.userId || "local-user"}-${simulationId}`;
+}
+
+function simulationPointerKey() {
+  return `ai-math-simulation-${state.userId || "local-user"}`;
+}
+
+function readSavedSimulationId() {
+  return localStorage.getItem(simulationPointerKey()) || localStorage.getItem("ai-math-simulation");
+}
+
+function saveSimulationPointer(simulationId) {
+  localStorage.setItem(simulationPointerKey(), simulationId);
+  // The unscoped key existed before accounts. Remove it once the pointer has
+  // been claimed by the current account so another account cannot inherit it.
+  localStorage.removeItem("ai-math-simulation");
 }
 
 function readSimulationDraft(simulation = state.currentSimulation) {
@@ -1621,6 +1794,8 @@ function handleSimulationBeforeUnload(event) {
 
 function navigate(view) {
   if (!viewMeta[view]) return;
+  if (!state.authenticated) { showAuthScreen(); return; }
+  if (view === "admin" && state.user?.role !== "admin") { showToast("只有管理员可以打开管理后台。", true); return; }
   if (!canLeaveSimulation(view)) return;
   state.view = view;
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
@@ -1634,6 +1809,7 @@ function navigate(view) {
   if (view === "simulation") return loadSimulationCatalog();
   if (view === "analytics") return loadAnalytics();
   if (view === "settings") return loadSettings();
+  if (view === "admin") return loadAdmin();
   return undefined;
 }
 
@@ -2435,10 +2611,15 @@ async function importWorkbenchData(file) {
 }
 
 function applyWorkbenchTheme() {
-  const dark = localStorage.getItem("ai-math-workbench-theme") === "dark";
-  document.body.classList.toggle("theme-dark", dark);
+  applyAccountTheme(state.user?.preferences?.theme || "system");
   const button = $("workbench-theme-toggle");
-  if (button) button.textContent = dark ? "切换亮色" : "切换暗色";
+  if (button) button.textContent = document.body.classList.contains("theme-dark") ? "切换亮色" : "切换暗色";
+}
+
+function applyAccountTheme(theme = "system") {
+  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  const dark = theme === "dark" || (theme === "system" && prefersDark);
+  document.body.classList.toggle("theme-dark", dark);
 }
 
 function bindWorkbenchControls() {
@@ -2564,8 +2745,11 @@ function bindNoteEditor() {
   });
   $("workbench-theme-toggle")?.addEventListener("click", () => {
     const next = document.body.classList.contains("theme-dark") ? "light" : "dark";
-    localStorage.setItem("ai-math-workbench-theme", next);
-    applyWorkbenchTheme();
+    applyAccountTheme(next);
+    const current = state.accountSettings?.preferences || {};
+    fetchJSON("/api/settings/preferences", { ...jsonOptions({ ...current, theme: next }), method: "PATCH" })
+      .then((payload) => { state.accountSettings = { ...(state.accountSettings || {}), preferences: payload.preferences }; state.user = { ...state.user, preferences: payload.preferences }; applyWorkbenchTheme(); })
+      .catch((error) => showToast(`主题保存失败：${error.message}`, true));
   });
   $("workbench-export")?.addEventListener("click", exportWorkbenchData);
   $("workbench-import")?.addEventListener("click", () => $("workbench-import-input")?.click());
@@ -3439,14 +3623,16 @@ async function loadSimulationCatalog() {
   if (!state.exams.length) {
     try { await loadBaseData(); } catch (error) { showNotice(error.message); return; }
   }
-  const savedId = localStorage.getItem("ai-math-simulation");
+  const savedId = readSavedSimulationId();
   if (savedId && !state.currentSimulation) {
     try {
       state.currentSimulation = await fetchJSON(`/api/simulations/${encodeURIComponent(savedId)}`);
+      saveSimulationPointer(state.currentSimulation.id);
       renderSimulation();
       if (state.currentSimulation.status !== "finished") startSimulationClock();
       return;
     } catch {
+      localStorage.removeItem(simulationPointerKey());
       localStorage.removeItem("ai-math-simulation");
     }
   }
@@ -3472,7 +3658,7 @@ async function createSimulation() {
     state.currentSimulation = payload;
     state.simulationCurrentIndex = 0;
     state.simulationCardFilter = "all";
-    localStorage.setItem("ai-math-simulation", payload.id);
+    saveSimulationPointer(payload.id);
     renderSimulation();
     startSimulationClock();
     showToast(`已生成 ${payload.year} 年完整试卷，共 ${payload.questions.length} 题。`);
@@ -3492,6 +3678,7 @@ async function cancelSimulation() {
   try {
     await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}?user_id=${encodeURIComponent(state.userId)}`, { method: "DELETE" });
     window.clearInterval(state.simulationTimer);
+    localStorage.removeItem(simulationPointerKey());
     localStorage.removeItem("ai-math-simulation");
     localStorage.removeItem(simulationDraftKey(simulation.id));
     state.currentSimulation = null;
@@ -3609,7 +3796,7 @@ async function submitSimulation(autoSubmit = false) {
       attachmentIds[input.dataset.simImage] = [uploaded.attachment_id];
     }
     state.currentSimulation = await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}/submit`, jsonOptions({ user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds }));
-    localStorage.setItem("ai-math-simulation", state.currentSimulation.id);
+    saveSimulationPointer(state.currentSimulation.id);
     localStorage.removeItem(simulationDraftKey(simulation.id));
     window.clearInterval(state.simulationTimer);
     renderSimulation();
@@ -3623,16 +3810,20 @@ async function submitSimulation(autoSubmit = false) {
 
 async function loadSettings() {
   try {
-    const [modelSettings, serverSettings] = await Promise.all([
+    const [accountSettings, modelSettings, serverSettings] = await Promise.all([
+      fetchJSON("/api/settings"),
       fetchJSON("/api/llm/settings"),
       fetchJSON("/api/server/settings"),
     ]);
+    state.accountSettings = accountSettings;
     state.settings = modelSettings;
     state.serverSettings = serverSettings;
+    renderAccountSettings();
     renderSettingsValues();
     renderServerSettingsValues();
     renderModelStatus();
   } catch (error) {
+    $("profile-settings-status").textContent = `读取账户设置失败：${error.message}`;
     $("settings-status").textContent = `读取模型配置失败：${error.message}`;
     $("settings-status").classList.add("error");
     $("server-settings-status").textContent = `读取服务配置失败：${error.message}`;
@@ -3674,6 +3865,12 @@ function renderServerSettingsValues() {
     ? "当前监听地址允许网络设备连接。局域网使用本机 IP；公网请先配置防火墙、HTTPS 和认证。"
     : "当前只监听本机，其他设备无法访问。保存后请用启动脚本重启服务。";
   $("server-access-note").innerHTML = `<strong>访问提示：</strong>${escapeHtml(bindNote)}<br /><span>展示地址：${escapeHtml(access)}</span>`;
+  const canEdit = state.user?.role === "admin";
+  const form = $("server-settings-form");
+  form?.classList.toggle("is-readonly", !canEdit);
+  form?.querySelectorAll("input, button[type=submit]").forEach((control) => { control.disabled = !canEdit; });
+  const permission = $("server-settings-permission");
+  if (permission) permission.textContent = canEdit ? "管理员可修改监听配置；保存后需要重启服务。" : "当前账户只能查看服务配置，修改权限属于管理员。";
 }
 
 async function fetchModelsFromForm() {
@@ -3764,9 +3961,199 @@ async function copyServerCommand() {
   }
 }
 
+function renderAccountSettings() {
+  const account = state.accountSettings || {};
+  const profile = account.profile || state.user || {};
+  const preferences = account.preferences || {};
+  $("account-username") && ($("account-username").value = profile.username || "");
+  $("account-email") && ($("account-email").value = profile.email || "");
+  $("account-display-name") && ($("account-display-name").value = profile.display_name || profile.username || "");
+  $("account-theme") && ($("account-theme").value = preferences.theme || "system");
+  $("account-daily-goal") && ($("account-daily-goal").value = preferences.daily_goal ?? 30);
+  $("account-practice-count") && ($("account-practice-count").value = preferences.practice_count ?? 15);
+  $("account-exam-type") && ($("account-exam-type").value = preferences.default_exam_type || "数学二");
+  $("account-sound-enabled") && ($("account-sound-enabled").checked = Boolean(preferences.sound_enabled));
+  const sessions = account.sessions || [];
+  const sessionRoot = $("account-sessions-list");
+  if (sessionRoot) sessionRoot.innerHTML = sessions.length
+    ? `<div class="sessions-heading"><strong>登录设备</strong><span>${sessions.length} 个有效会话</span></div>${sessions.map((session) => `<div class="account-session-row ${session.current ? "current" : ""}"><span class="session-device">${escapeHtml(session.user_agent || "未知设备")}</span><span>${escapeHtml(session.ip_address || "本机")} · ${escapeHtml(formatDateTime(session.last_seen_at))}</span>${session.current ? `<b>当前设备</b>` : ""}</div>`).join("")}`
+    : `<span class="muted-copy">暂无有效登录设备。</span>`;
+}
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+async function saveProfileSettings(event) {
+  event.preventDefault();
+  const status = $("profile-settings-status");
+  status.textContent = "正在保存……";
+  status.classList.remove("error");
+  try {
+    const payload = await fetchJSON("/api/settings/profile", { ...jsonOptions({ display_name: $("account-display-name").value, email: $("account-email").value }), method: "PATCH" });
+    state.user = { ...state.user, ...payload.profile };
+    state.accountSettings = { ...(state.accountSettings || {}), profile: state.user };
+    renderAuthenticatedUser();
+    status.textContent = "已保存";
+    showToast("账户资料已保存。");
+  } catch (error) {
+    status.textContent = `保存失败：${error.message}`;
+    status.classList.add("error");
+  }
+}
+
+async function savePreferencesSettings(event) {
+  event.preventDefault();
+  const status = $("preferences-settings-status");
+  status.textContent = "正在保存……";
+  status.classList.remove("error");
+  try {
+    const preferences = {
+      theme: $("account-theme").value,
+      default_exam_type: $("account-exam-type").value,
+      daily_goal: Number($("account-daily-goal").value),
+      practice_count: Number($("account-practice-count").value),
+      sound_enabled: $("account-sound-enabled").checked,
+    };
+    const payload = await fetchJSON("/api/settings/preferences", { ...jsonOptions(preferences), method: "PATCH" });
+    state.accountSettings = { ...(state.accountSettings || {}), preferences: payload.preferences };
+    state.user = { ...state.user, preferences: payload.preferences };
+    applyAccountTheme(payload.preferences.theme);
+    status.textContent = "已保存";
+    showToast("学习偏好已保存。");
+  } catch (error) {
+    status.textContent = `保存失败：${error.message}`;
+    status.classList.add("error");
+  }
+}
+
+async function savePasswordSettings(event) {
+  event.preventDefault();
+  const status = $("password-settings-status");
+  status.textContent = "正在更新……";
+  status.classList.remove("error");
+  try {
+    await fetchJSON("/api/auth/change-password", jsonOptions({ current_password: $("current-password").value, new_password: $("new-password").value }));
+    $("current-password").value = "";
+    $("new-password").value = "";
+    status.textContent = "密码已更新，请重新登录。";
+    showAuthScreen("密码已更新，请使用新密码登录。");
+  } catch (error) {
+    status.textContent = `更新失败：${error.message}`;
+    status.classList.add("error");
+  }
+}
+
+async function revokeOtherSessions() {
+  const status = $("password-settings-status");
+  try {
+    const result = await fetchJSON("/api/auth/sessions/revoke-others", jsonOptions({}));
+    status.textContent = `已退出 ${result.revoked || 0} 个其他设备。`;
+    await loadSettings();
+  } catch (error) {
+    status.textContent = `操作失败：${error.message}`;
+    status.classList.add("error");
+  }
+}
+
+const authActionLabels = {
+  register: "注册账户",
+  login: "登录成功",
+  "login-failed": "登录失败",
+  logout: "退出登录",
+  "password-changed": "修改密码",
+  "admin-user-updated": "管理员更新账户",
+  "legacy-data-migrated": "迁移旧数据",
+};
+
+function renderAdminUsers() {
+  const root = $("admin-users-table");
+  if (!root) return;
+  const users = state.adminUsers || [];
+  root.innerHTML = users.length
+    ? `<div class="admin-user-head"><span>账户</span><span>角色与状态</span><span>操作</span></div>${users.map((user) => `<article class="admin-user-row" data-admin-user="${escapeAttr(user.id)}"><div class="admin-user-identity"><strong>${escapeHtml(user.display_name || user.username)}</strong><span>@${escapeHtml(user.username)}${user.email ? ` · ${escapeHtml(user.email)}` : ""}</span><small>注册于 ${escapeHtml(formatDateTime(user.created_at))}${user.last_login_at ? ` · 最近登录 ${escapeHtml(formatDateTime(user.last_login_at))}` : ""}</small></div><div class="admin-user-controls"><label>角色<select data-admin-role ${user.id === state.userId ? "disabled" : ""}><option value="user" ${user.role === "user" ? "selected" : ""}>普通用户</option><option value="admin" ${user.role === "admin" ? "selected" : ""}>管理员</option></select></label><label class="admin-active-toggle"><input type="checkbox" data-admin-active ${user.is_active ? "checked" : ""} ${user.id === state.userId ? "disabled" : ""} />启用</label></div><div class="admin-user-actions"><input type="text" data-admin-display value="${escapeAttr(user.display_name || user.username)}" maxlength="80" aria-label="${escapeAttr(user.username)} 显示名称" /><button type="button" class="secondary-button" data-admin-save>保存</button><span class="form-status" data-admin-status></span></div></article>`).join("")}`
+    : `<div class="empty-state compact-empty"><h3>暂无账户</h3><p>注册后账户会显示在这里。</p></div>`;
+}
+
+function renderAdminAudit() {
+  const root = $("admin-audit-list");
+  if (!root) return;
+  const events = state.adminAudit || [];
+  root.innerHTML = events.length
+    ? events.map((event) => `<article class="admin-audit-row"><div><strong>${escapeHtml(authActionLabels[event.action] || event.action)}</strong><span>${escapeHtml(event.actor_username || event.user_username || "系统")}${event.target_username ? ` → ${escapeHtml(event.target_username)}` : ""}</span></div><time>${escapeHtml(formatDateTime(event.created_at))}</time><small>${escapeHtml(event.detail || event.ip_address || "")}</small></article>`).join("")
+    : `<div class="empty-state compact-empty"><h3>暂无安全事件</h3><p>登录、注册和权限变更会记录在这里。</p></div>`;
+}
+
+async function loadAdmin() {
+  if (state.user?.role !== "admin") return;
+  try {
+    const [overview, users, audit] = await Promise.all([
+      fetchJSON("/api/admin/overview"),
+      fetchJSON("/api/admin/users"),
+      fetchJSON("/api/admin/audit?limit=100"),
+    ]);
+    $("admin-users-count").textContent = overview.users ?? "—";
+    $("admin-active-users-count").textContent = overview.active_users ?? "—";
+    $("admin-sessions-count").textContent = overview.active_sessions ?? "—";
+    $("admin-attempts-count").textContent = overview.attempts ?? "—";
+    state.adminUsers = users.items || [];
+    state.adminAudit = audit.items || [];
+    renderAdminUsers();
+    renderAdminAudit();
+  } catch (error) {
+    $("admin-users-table").innerHTML = `<div class="loading-card">读取管理数据失败：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function updateAdminUser(row) {
+  const target = row?.dataset.adminUser;
+  if (!target) return;
+  const button = row.querySelector("[data-admin-save]");
+  const status = row.querySelector("[data-admin-status]");
+  if (button) { button.disabled = true; button.setAttribute("aria-busy", "true"); }
+  if (status) { status.textContent = "保存中……"; status.classList.remove("error"); }
+  try {
+    const payload = {
+      role: row.querySelector("[data-admin-role]")?.value || "user",
+      is_active: Boolean(row.querySelector("[data-admin-active]")?.checked),
+      display_name: row.querySelector("[data-admin-display]")?.value || "",
+    };
+    await fetchJSON(`/api/admin/users/${encodeURIComponent(target)}`, { ...jsonOptions(payload), method: "PATCH" });
+    if (status) status.textContent = "已保存";
+    await loadAdmin();
+  } catch (error) {
+    if (status) { status.textContent = `失败：${error.message}`; status.classList.add("error"); }
+  } finally {
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+  }
+}
+
+function bindAdminControls() {
+  $("admin-users-table")?.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-admin-save]");
+    if (button) updateAdminUser(button.closest("[data-admin-user]"));
+  });
+}
+
+function bindAuthControls() {
+  $("auth-switch")?.addEventListener("click", () => setAuthMode(state.authMode === "login" ? "register" : "login"));
+  $("login-form")?.addEventListener("submit", submitAuthForm);
+  $("register-form")?.addEventListener("submit", submitAuthForm);
+  setAuthMode("login");
+}
+
+function bindAccountSettingsControls() {
+  $("profile-settings-form")?.addEventListener("submit", saveProfileSettings);
+  $("preferences-settings-form")?.addEventListener("submit", savePreferencesSettings);
+  $("password-settings-form")?.addEventListener("submit", savePasswordSettings);
+  $("revoke-other-sessions")?.addEventListener("click", revokeOtherSessions);
+}
+
 async function init() {
   $("today-date").textContent = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date());
-  applyWorkbenchTheme();
+  bindAuthControls();
   bindNoteEditor();
   bindWorkbenchControls();
   $$(".nav-item[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
@@ -3786,6 +4173,9 @@ async function init() {
   $("server-settings-form").addEventListener("submit", saveServerSettings);
   $("copy-server-command").addEventListener("click", copyServerCommand);
   $("clear-key").addEventListener("click", clearApiKey);
+  $("logout-button")?.addEventListener("click", logout);
+  bindAccountSettingsControls();
+  bindAdminControls();
   $("model-select").addEventListener("change", () => { $("model-manual").value = $("model-select").value; });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeQuestion(); });
   document.addEventListener("keydown", (event) => {
@@ -3798,6 +4188,8 @@ async function init() {
     if (event.target.id === "submit-simulation") submitSimulation(false);
     if (event.target.id === "cancel-simulation") cancelSimulation();
   });
+  if (!(await bootstrapAuth())) return;
+  applyWorkbenchTheme();
   await loadOverview();
 }
 

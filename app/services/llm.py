@@ -12,11 +12,30 @@ class LLMError(RuntimeError):
     pass
 
 
+MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_CHAT_RESPONSE_BYTES = 8 * 1024 * 1024
+BLOCKED_METADATA_HOSTS = {
+    "169.254.169.254",
+    "metadata.google.internal",
+    "metadata.google.com",
+    "instance-data.ec2.internal",
+}
+
+
 def _valid_base_url(value: str) -> str:
     base_url = (value or "").strip().rstrip("/")
     parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment or parsed.query:
         raise LLMError("Base URL 必须是 http:// 或 https:// 开头的地址。")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if hostname in BLOCKED_METADATA_HOSTS:
+        raise LLMError("为避免误访问云主机元数据，不能使用该模型服务地址。")
+    try:
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise LLMError("Base URL 的端口无效。") from exc
+    if parsed_port is not None and not 1 <= parsed_port <= 65535:
+        raise LLMError("Base URL 的端口必须在 1–65535 之间。")
     return base_url
 
 
@@ -36,8 +55,9 @@ def _headers(api_key: str) -> dict[str, str]:
     return result
 
 
-def _settings() -> dict[str, str]:
-    value = get_setting("llm_settings", {})
+def _settings(user_id: str = "local-user") -> dict[str, str]:
+    key = "llm_settings" if str(user_id or "local-user") == "local-user" else f"llm_settings:{str(user_id).strip()}"
+    value = get_setting(key, {})
     return value if isinstance(value, dict) else {}
 
 
@@ -47,8 +67,8 @@ def mask_api_key(value: str) -> str:
     return "••••••••" + value[-4:]
 
 
-def public_settings() -> dict[str, Any]:
-    settings = _settings()
+def public_settings(user_id: str = "local-user") -> dict[str, Any]:
+    settings = _settings(user_id)
     key = settings.get("api_key", "")
     return {
         "base_url": settings.get("base_url", ""),
@@ -58,8 +78,8 @@ def public_settings() -> dict[str, Any]:
     }
 
 
-def save_settings(base_url: str, model: str, api_key: str | None = None, clear_api_key: bool = False) -> dict[str, Any]:
-    settings = _settings()
+def save_settings(base_url: str, model: str, api_key: str | None = None, clear_api_key: bool = False, user_id: str = "local-user") -> dict[str, Any]:
+    settings = _settings(user_id)
     if base_url.strip():
         _valid_base_url(base_url)
     settings["base_url"] = base_url.strip().rstrip("/")
@@ -68,20 +88,23 @@ def save_settings(base_url: str, model: str, api_key: str | None = None, clear_a
         settings["api_key"] = ""
     elif api_key is not None and api_key.strip():
         settings["api_key"] = api_key.strip()
-    set_setting("llm_settings", settings)
-    return public_settings()
+    key = "llm_settings" if str(user_id or "local-user") == "local-user" else f"llm_settings:{str(user_id).strip()}"
+    set_setting(key, settings)
+    return public_settings(user_id)
 
 
-async def fetch_models(base_url: str | None = None, api_key: str | None = None) -> list[dict[str, Any]]:
-    settings = _settings()
+async def fetch_models(base_url: str | None = None, api_key: str | None = None, user_id: str = "local-user") -> list[dict[str, Any]]:
+    settings = _settings(user_id)
     resolved_base = (base_url or settings.get("base_url", "")).strip()
     resolved_key = api_key if api_key is not None else settings.get("api_key", "")
     root = _api_root(resolved_base)
     url = f"{root}/models"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0), follow_redirects=False, trust_env=False) as client:
             response = await client.get(url, headers=_headers(resolved_key))
         response.raise_for_status()
+        if len(response.content) > MAX_MODEL_RESPONSE_BYTES:
+            raise LLMError("模型列表响应过大，已停止读取。")
         payload = response.json()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:300] if exc.response is not None else str(exc)
@@ -98,8 +121,8 @@ async def fetch_models(base_url: str | None = None, api_key: str | None = None) 
     return sorted(models, key=lambda item: item["id"].lower())
 
 
-async def chat_completion(messages: list[dict[str, Any]], *, model: str | None = None, temperature: float = 0.2) -> str:
-    settings = _settings()
+async def chat_completion(messages: list[dict[str, Any]], *, model: str | None = None, temperature: float = 0.2, user_id: str = "local-user") -> str:
+    settings = _settings(user_id)
     base_url = settings.get("base_url", "")
     api_key = settings.get("api_key", "")
     resolved_model = model or settings.get("model", "")
@@ -108,9 +131,11 @@ async def chat_completion(messages: list[dict[str, Any]], *, model: str | None =
     url = f"{_api_root(base_url)}/chat/completions"
     payload = {"model": resolved_model, "messages": messages, "temperature": temperature}
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0), follow_redirects=False, trust_env=False) as client:
             response = await client.post(url, headers=_headers(api_key), json=payload)
         response.raise_for_status()
+        if len(response.content) > MAX_CHAT_RESPONSE_BYTES:
+            raise LLMError("模型响应过大，已停止读取。")
         data = response.json()
         return str(data["choices"][0]["message"].get("content", "")).strip()
     except httpx.HTTPStatusError as exc:
@@ -120,7 +145,7 @@ async def chat_completion(messages: list[dict[str, Any]], *, model: str | None =
         raise LLMError(f"模型响应无效：{exc}") from exc
 
 
-async def tutor_response(question: dict[str, Any], user_answer: str, request: str = "分析我的错误") -> dict[str, Any]:
+async def tutor_response(question: dict[str, Any], user_answer: str, request: str = "分析我的错误", user_id: str = "local-user") -> dict[str, Any]:
     solution = question.get("solution_markdown") or "当前来源没有提供该题解析。"
     messages = [
         {
@@ -141,11 +166,11 @@ async def tutor_response(question: dict[str, Any], user_answer: str, request: st
             ),
         },
     ]
-    content = await chat_completion(messages, temperature=0.15)
-    return {"content": content, "model": _settings().get("model", "")}
+    content = await chat_completion(messages, temperature=0.15, user_id=user_id)
+    return {"content": content, "model": _settings(user_id).get("model", "")}
 
 
-async def hint_response(question: dict[str, Any], user_answer: str = "", request: str = "给我解题思路") -> dict[str, Any]:
+async def hint_response(question: dict[str, Any], user_answer: str = "", request: str = "给我解题思路", user_id: str = "local-user") -> dict[str, Any]:
     """Return a progressive hint for an active training question.
 
     The source answer/solution is supplied as context so the configured model
@@ -175,5 +200,5 @@ async def hint_response(question: dict[str, Any], user_answer: str = "", request
             ),
         },
     ]
-    content = await chat_completion(messages, temperature=0.25)
-    return {"content": content, "model": _settings().get("model", "")}
+    content = await chat_completion(messages, temperature=0.25, user_id=user_id)
+    return {"content": content, "model": _settings(user_id).get("model", "")}

@@ -157,7 +157,7 @@ def test_secondary_views_do_not_repeat_global_page_heading() -> None:
     app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
 
     assert 'class="view-intro' not in html_source
-    assert html_source.count('class="view-contextbar"') == 6
+    assert html_source.count('class="view-contextbar"') == 7  # admin access-control view is also a secondary surface
     assert 'id="refresh-analytics"' not in html_source
     assert 'id="reload-blocks"' not in html_source
     assert "function refreshCurrentView" in app_source
@@ -422,6 +422,24 @@ def test_block_stack_has_accessible_motion_and_tablet_layout_guards() -> None:
     assert "@media (min-width: 761px) and (max-width: 860px)" in styles
     assert "@media (min-width: 861px) and (max-width: 1100px)" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles
+
+
+def test_account_settings_and_admin_surface_use_shared_session_identity() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="auth-screen"' in markup
+    assert 'id="register-form"' in markup
+    assert 'id="view-admin"' in markup
+    assert 'id="preferences-settings-form"' in markup
+    assert "credentials: \"same-origin\"" in source
+    assert 'headers.set("X-CSRF-Token", state.csrfToken)' in source
+    assert "function resetUserScopedState" in source
+    assert "function simulationPointerKey" in source
+    assert "/api/admin/users/" in source
+    assert ".auth-screen" in styles
+    assert ".admin-user-row" in styles
 
 
 def test_tex_normalization_preserves_array_row_break_before_command() -> None:
@@ -757,6 +775,15 @@ def test_openai_compatible_url_normalization() -> None:
     assert _api_root("http://127.0.0.1:11434/v1/models") == "http://127.0.0.1:11434/v1"
 
 
+def test_llm_target_validation_blocks_metadata_and_credential_urls() -> None:
+    from app.services.llm import LLMError, _valid_base_url
+
+    with pytest.raises(LLMError):
+        _valid_base_url("http://169.254.169.254/latest/meta-data")
+    with pytest.raises(LLMError):
+        _valid_base_url("http://user:secret@example.test/v1")
+
+
 def test_model_settings_preserve_and_mask_local_key(tmp_path: Path) -> None:
     import app.database as database
     from app.services.llm import public_settings, save_settings
@@ -873,6 +900,130 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
         assert simulation_submit.status_code == 200
         submitted_question = next(item for item in simulation_submit.json()["questions"] if item["id"] == simulation_question["id"])
         assert len(submitted_question["attempt"]["attachments"]) == 1
+    finally:
+        database.DB_PATH = original_db_path
+        database.ROOT_DIR = original_database_root
+        database.UPLOADS_DIR = original_uploads_dir
+        main_module.ROOT_DIR = original_main_root
+        main_module.UPLOADS_DIR = original_main_uploads
+
+
+def test_auth_sessions_rbac_and_per_user_data_isolation(tmp_path: Path) -> None:
+    """The browser identity, not a submitted user_id, owns every private record."""
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    import app.main as main_module
+    from app.main import app
+    import app.services.auth as auth_service
+
+    original_db_path = database.DB_PATH
+    original_database_root = database.ROOT_DIR
+    original_uploads_dir = database.UPLOADS_DIR
+    original_main_root = main_module.ROOT_DIR
+    original_main_uploads = main_module.UPLOADS_DIR
+    database.DB_PATH = tmp_path / "auth.sqlite3"
+    database.ROOT_DIR = tmp_path
+    database.UPLOADS_DIR = tmp_path / "data" / "uploads"
+    main_module.ROOT_DIR = tmp_path
+    main_module.UPLOADS_DIR = tmp_path / "data" / "uploads"
+    auth_service._RATE_LIMIT_BUCKETS.clear()
+    question = next(item for item in load_questions() if item["question_type"] == "choice" and item["has_answer"])
+    try:
+        with TestClient(app) as client:
+            # A pre-account local workspace remains usable and is claimed by
+            # the first account during registration.
+            legacy_attempt = client.post(
+                f"/api/questions/{question['id']}/attempts",
+                json={"user_id": "local-user", "answer": question["answer_markdown"], "mode": "practice"},
+            )
+            assert legacy_attempt.status_code == 200
+            assert client.get("/api/auth/me").status_code == 401
+
+            registered = client.post(
+                "/api/auth/register",
+                json={"username": "admin_one", "email": "admin@example.test", "display_name": "管理员", "password": "correct-horse-battery"},
+            )
+            assert registered.status_code == 200
+            admin_payload = registered.json()
+            admin = admin_payload["user"]
+            admin_csrf = admin_payload["csrf_token"]
+            assert admin["role"] == "admin"
+            assert isinstance(admin["preferences"], dict)
+            assert not {"password_hash", "id_hash", "csrf_hash"} & set(admin)
+            assert client.get("/api/auth/me").json()["user"]["id"] == admin["id"]
+            assert client.get("/api/progress").json()["attempts"] == 1
+            health_headers = client.get("/api/health").headers
+            assert health_headers["x-content-type-options"] == "nosniff"
+            assert health_headers["cache-control"] == "no-store"
+
+            # Mutating requests require the double-submit CSRF token.
+            missing_csrf = client.post(
+                f"/api/questions/{question['id']}/attempts",
+                json={"answer": question["answer_markdown"], "mode": "practice"},
+            )
+            assert missing_csrf.status_code == 403
+
+            created_note = client.post(
+                "/api/workbench/notes",
+                headers={"X-CSRF-Token": admin_csrf},
+                json={"title": "管理员私有笔记", "content_markdown": "仅管理员可见"},
+            )
+            assert created_note.status_code == 200
+            upload = client.post(
+                "/api/uploads/answer-image",
+                headers={"X-CSRF-Token": admin_csrf},
+                data={"question_id": question["id"]},
+                files={"file": ("private.png", b"\x89PNG\r\n\x1a\nprivate", "image/png")},
+            )
+            assert upload.status_code == 200
+
+            # A second account receives an isolated workspace and cannot enter
+            # admin APIs or spoof the first account through query/body fields.
+            client_two = TestClient(app)
+            try:
+                registered_two = client_two.post(
+                    "/api/auth/register",
+                    json={"username": "learner_two", "email": "learner@example.test", "display_name": "学习者", "password": "another-secure-pass"},
+                )
+                assert registered_two.status_code == 200
+                learner_csrf = registered_two.json()["csrf_token"]
+                learner = registered_two.json()["user"]
+                assert learner["role"] == "user"
+                assert client_two.get("/api/admin/overview").status_code == 403
+                assert client_two.get("/api/progress", params={"user_id": admin["id"]}).json()["attempts"] == 0
+                assert client_two.get("/api/workbench/notes", params={"user_id": admin["id"]}).json()["items"] == []
+                assert client_two.get(f"/api/attachments/{upload.json()['attachment_id']}", params={"user_id": learner["id"]}).status_code == 404
+
+                learner_attempt = client_two.post(
+                    f"/api/questions/{question['id']}/attempts",
+                    headers={"X-CSRF-Token": learner_csrf},
+                    json={"user_id": admin["id"], "answer": question["answer_markdown"], "mode": "practice"},
+                )
+                assert learner_attempt.status_code == 200
+                assert client.get("/api/progress", params={"user_id": learner["id"]}).json()["attempts"] == 1
+
+                # Only the admin session can change roles and server binding.
+                assert client_two.post("/api/server/settings", headers={"X-CSRF-Token": learner_csrf}, json={"host": "127.0.0.1", "port": 8001}).status_code == 403
+                promoted = client.patch(
+                    f"/api/admin/users/{learner['id']}",
+                    headers={"X-CSRF-Token": admin_csrf},
+                    json={"role": "admin", "is_active": True, "display_name": "学习管理员"},
+                )
+                assert promoted.status_code == 200
+                assert promoted.json()["user"]["role"] == "admin"
+                assert client.get("/api/admin/audit").json()["items"]
+                # Deactivation revokes all sessions, so the old learner cookie
+                # cannot be reused after an administrator change.
+                deactivated = client.patch(
+                    f"/api/admin/users/{learner['id']}",
+                    headers={"X-CSRF-Token": admin_csrf},
+                    json={"role": "user", "is_active": False, "display_name": "学习者"},
+                )
+                assert deactivated.status_code == 200
+                assert client_two.get("/api/auth/me").status_code == 401
+            finally:
+                client_two.close()
     finally:
         database.DB_PATH = original_db_path
         database.ROOT_DIR = original_database_root

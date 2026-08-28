@@ -9,7 +9,28 @@
     <link rel="stylesheet" href="/static/styles.css" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
   </head>
-  <body>
+  <body class="auth-pending">
+    <section class="auth-screen" id="auth-screen" hidden>
+      <div class="auth-card">
+        <div class="auth-brand"><div class="brand-mark">∑</div><div><div class="brand-name">砺数</div><div class="brand-subtitle">PRIVATE STUDY SPACE</div></div></div>
+        <div class="auth-copy"><span class="eyebrow">LOCAL ACCOUNT</span><h1 id="auth-title">登录你的学习空间</h1><p id="auth-description">登录后，作答、笔记、训练进度和模型配置都会只属于当前账户。</p></div>
+        <form id="login-form" class="auth-form">
+          <label class="field-label">用户名或邮箱<input id="login-identifier" type="text" autocomplete="username" required maxlength="254" placeholder="例如 math_learner" /></label>
+          <label class="field-label">密码<input id="login-password" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="至少 8 个字符" /></label>
+          <button type="submit" class="primary-button auth-submit">登录 <span>→</span></button>
+        </form>
+        <form id="register-form" class="auth-form" hidden>
+          <label class="field-label">用户名<input id="register-username" type="text" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_\-]{3,32}" placeholder="3–32 位字母、数字、下划线或短横线" /></label>
+          <label class="field-label">邮箱（可选）<input id="register-email" type="email" autocomplete="email" maxlength="254" placeholder="用于账户识别，也可以留空" /></label>
+          <label class="field-label">显示名称<input id="register-display-name" type="text" autocomplete="nickname" maxlength="80" placeholder="例如 小林" /></label>
+          <label class="field-label">设置密码<input id="register-password" type="password" autocomplete="new-password" required minlength="8" maxlength="128" placeholder="至少 8 个字符，不含空格" /></label>
+          <button type="submit" class="primary-button auth-submit">创建账户 <span>→</span></button>
+        </form>
+        <div class="auth-switch-row"><span id="auth-switch-copy">还没有账户？</span><button type="button" class="text-button" id="auth-switch">注册新账户</button></div>
+        <p class="form-status auth-status" id="auth-status" role="alert" aria-live="polite"></p>
+        <p class="auth-security-note">本地优先：密码只保存为不可逆摘要，学习数据按账户隔离。</p>
+      </div>
+    </section>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-lockup">
@@ -30,6 +51,7 @@
           <button class="nav-item" data-view="simulation"><span class="nav-index">05</span><span>模拟考</span></button>
           <button class="nav-item" data-view="analytics"><span class="nav-index">06</span><span>学习分析</span></button>
           <button class="nav-item settings-nav" data-view="settings"><span class="nav-index">07</span><span>设置</span><span class="status-dot" id="model-status-dot"></span></button>
+          <button class="nav-item admin-nav" id="admin-nav" data-view="admin" hidden><span class="nav-index">08</span><span>管理后台</span><span class="status-dot admin-dot"></span></button>
         </nav>
 
         <div class="sidebar-bottom">
@@ -48,7 +70,8 @@
             <h1 id="view-title">今天，把薄弱处练成得分点</h1>
           </div>
           <div class="topbar-actions">
-            <div class="user-chip"><span class="user-avatar">L</span><span>本地学习者</span></div>
+            <div class="user-chip"><span class="user-avatar" id="user-avatar">L</span><span id="user-chip-name">本地学习者</span></div>
+            <button class="quiet-button" id="logout-button" type="button" hidden>退出登录</button>
             <button class="quiet-button" id="refresh-button" title="刷新当前数据">↻ 刷新</button>
           </div>
         </header>
@@ -268,6 +291,29 @@
           <div class="view-contextbar"><p>模型与服务配置保存在本机；监听地址和端口保存后，使用启动脚本重启服务才会生效。</p><div class="connection-badge" id="connection-badge"><span></span>模型未配置</div></div>
           <div class="settings-layout">
             <div class="settings-stack">
+              <form class="settings-card paper-panel account-settings-card" id="profile-settings-form">
+                <div class="settings-card-head"><div><span class="eyebrow">ACCOUNT / PROFILE</span><h3>账户资料</h3></div><span class="settings-lock" id="account-role-badge">⌁ 用户</span></div>
+                <div class="server-form-grid"><label class="field-label">用户名 <span>用户名用于登录，不能在这里修改</span><input id="account-username" type="text" readonly /></label><label class="field-label">邮箱 <span>可选，用于登录</span><input id="account-email" type="email" maxlength="254" autocomplete="email" /></label></div>
+                <label class="field-label">显示名称 <span>会显示在学习空间顶部</span><input id="account-display-name" type="text" maxlength="80" required autocomplete="nickname" /></label>
+                <div class="settings-actions"><button type="submit" class="primary-button">保存账户资料</button><span class="form-status" id="profile-settings-status"></span></div>
+              </form>
+
+              <form class="settings-card paper-panel" id="preferences-settings-form">
+                <div class="settings-card-head"><div><span class="eyebrow">STUDY / PREFERENCES</span><h3>学习偏好</h3></div><span class="settings-lock">⌁ PERSONAL</span></div>
+                <div class="server-form-grid"><label class="field-label">主题 <span>只影响当前账户</span><select id="account-theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><label class="field-label">每日目标（题） <span>用于总览提醒</span><input id="account-daily-goal" type="number" min="5" max="240" step="1" /></label></div>
+                <div class="server-form-grid"><label class="field-label">专项训练题数 <span>每组最多 15 题</span><input id="account-practice-count" type="number" min="1" max="15" step="1" /></label><label class="field-label">默认考试 <span>当前题库为数学二</span><select id="account-exam-type"><option value="数学二">数学二</option></select></label></div>
+                <label class="settings-check"><input id="account-sound-enabled" type="checkbox" /> <span>启用轻提示音（未来训练反馈使用）</span></label>
+                <div class="settings-actions"><button type="submit" class="primary-button">保存学习偏好</button><span class="form-status" id="preferences-settings-status"></span></div>
+              </form>
+
+              <form class="settings-card paper-panel" id="password-settings-form">
+                <div class="settings-card-head"><div><span class="eyebrow">ACCOUNT / SECURITY</span><h3>修改密码</h3></div><span class="settings-lock">⌁ SESSION</span></div>
+                <label class="field-label">当前密码<input id="current-password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required /></label>
+                <label class="field-label">新密码 <span>至少 8 个字符，不含空格</span><input id="new-password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+                <div class="settings-actions"><button type="submit" class="primary-button">更新密码</button><button type="button" class="secondary-button" id="revoke-other-sessions">退出其他设备</button><span class="form-status" id="password-settings-status"></span></div>
+                <div class="account-sessions-list" id="account-sessions-list"><span class="muted-copy">正在读取登录设备……</span></div>
+              </form>
+
               <form class="settings-card paper-panel" id="model-settings-form">
                 <div class="settings-card-head"><div><span class="eyebrow">ONE API ENTRY</span><h3>连接模型服务</h3></div><span class="settings-lock">⌁ LOCAL</span></div>
                 <label class="field-label">Base URL <span>例如 http://127.0.0.1:11434/v1</span><input id="base-url" type="url" placeholder="https://api.example.com/v1" autocomplete="url" /></label>
@@ -280,6 +326,7 @@
 
               <form class="settings-card paper-panel server-settings-card" id="server-settings-form">
                 <div class="settings-card-head"><div><span class="eyebrow">SERVER / BINDING</span><h3>后端服务</h3></div><span class="settings-lock" id="server-binding-mode">⌁ 读取中</span></div>
+                <div class="permission-note" id="server-settings-permission">只有管理员可以修改服务监听配置。</div>
                 <div class="server-form-grid">
                   <label class="field-label">监听地址 <span>127.0.0.1 仅本机；0.0.0.0 允许局域网/公网访问</span><input id="server-host" type="text" inputmode="text" placeholder="127.0.0.1" autocomplete="off" /></label>
                   <label class="field-label">端口 <span>1–65535，常用 8000</span><input id="server-port" type="number" min="1" max="65535" step="1" placeholder="8000" /></label>
@@ -297,6 +344,12 @@
               <div class="aside-card warning-card"><span class="eyebrow">BOUNDARY</span><h3>模型只做分析辅助</h3><p>题目和来源解析优先来自本地真题库。模型请求会携带当前题面、你的作答以及来源解析；若来源没有解析，模型必须明确说明，不应凭空补答案。</p></div>
             </div>
           </div>
+        </section>
+
+        <section class="view" id="view-admin">
+          <div class="view-contextbar"><p>管理账户状态、角色和最近安全事件。管理员只能管理身份元数据，不会直接读取用户的题目答案或笔记正文。</p><div class="connection-badge" id="admin-access-badge"><span></span>管理员权限</div></div>
+          <div class="admin-metric-grid"><div class="metric-card"><span class="eyebrow">ACCOUNTS</span><strong id="admin-users-count">—</strong><small>注册账户</small></div><div class="metric-card"><span class="eyebrow">ACTIVE</span><strong id="admin-active-users-count">—</strong><small>启用用户</small></div><div class="metric-card"><span class="eyebrow">SESSIONS</span><strong id="admin-sessions-count">—</strong><small>活跃会话</small></div><div class="metric-card"><span class="eyebrow">ACTIVITY</span><strong id="admin-attempts-count">—</strong><small>累计作答</small></div></div>
+          <div class="admin-layout"><section class="settings-card paper-panel"><div class="settings-card-head"><div><span class="eyebrow">USER DIRECTORY</span><h3>账户管理</h3></div><span class="settings-lock">⌁ RBAC</span></div><div class="admin-users-table" id="admin-users-table"><div class="loading-card">正在读取账户……</div></div></section><section class="settings-card paper-panel"><div class="settings-card-head"><div><span class="eyebrow">SECURITY LOG</span><h3>安全事件</h3></div><span class="settings-lock">⌁ AUDIT</span></div><div class="admin-audit-list" id="admin-audit-list"><div class="loading-card">正在读取事件……</div></div></section></div>
         </section>
       </main>
     </div>

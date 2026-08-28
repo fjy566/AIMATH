@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -49,6 +49,33 @@ from app.database import (
     upsert_simulation_answer,
 )
 from app.services.content import question_store
+from app.services.auth import (
+    AuthContext,
+    AuthValidationError,
+    admin_overview,
+    authenticate_user,
+    change_password,
+    check_rate_limit,
+    clear_session_cookies,
+    create_session,
+    create_user,
+    current_csrf_token,
+    get_preferences,
+    has_admin,
+    list_audit_events,
+    list_sessions,
+    list_users,
+    require_admin,
+    require_user,
+    revoke_other_sessions,
+    revoke_session,
+    set_csrf_cookie,
+    set_session_cookies,
+    update_preferences,
+    update_profile,
+    update_user_by_admin,
+    user_count,
+)
 from app.services.concepts import MATH2_CONCEPT_IDS, concept_descriptor
 from app.services.grading import grade_question
 from app.services.learner import (
@@ -95,15 +122,77 @@ app = FastAPI(title="AI Math · 考研数学学练系统", version="1.0.0", life
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.url.path.startswith("/api/"):
+        # Prevent a shared browser profile from serving one account's cached
+        # progress or settings after logout/login as another account.
+        response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+def _user_id(context: AuthContext, supplied: str | None = None) -> str:
+    """Use the session identity; only an unclaimed legacy workspace may pass its old id."""
+    if context.legacy:
+        return str(supplied or context.user_id or "local-user").strip()[:100] or "local-user"
+    return context.user_id
+
+
+def _request_ip(request: Request) -> str:
+    return (request.client.host if request.client else "")[:64]
+
+
+def _validate_answer_maps(
+    answers: dict[str, str],
+    self_grades: dict[str, float],
+    attachment_ids: dict[str, list[str]],
+    allowed_ids: set[str],
+) -> None:
+    submitted_ids = set(answers) | set(self_grades) | set(attachment_ids)
+    unknown = submitted_ids - allowed_ids
+    if unknown:
+        raise HTTPException(status_code=400, detail="提交中包含不属于当前题组的题目。")
+    if any(len(str(value)) > 300000 for value in answers.values()):
+        raise HTTPException(status_code=413, detail="单题答案不能超过 300000 个字符。")
+    if any(len(items) > 8 for items in attachment_ids.values()):
+        raise HTTPException(status_code=400, detail="单题最多关联 8 个附件。")
+
+
+def _auth_payload(user: dict[str, Any], csrf_token: str, expires_at: str) -> dict[str, Any]:
+    return {"user": user, "csrf_token": csrf_token, "session_expires_at": expires_at}
+
+
+def _image_magic_matches(content_type: str, content: bytes) -> bool:
+    signatures = {
+        "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg": content.startswith(b"\xff\xd8\xff"),
+        "image/gif": content.startswith((b"GIF87a", b"GIF89a")),
+        "image/webp": len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP",
+    }
+    return bool(signatures.get(content_type, False))
+
+
 class AttemptRequest(BaseModel):
     user_id: str = "local-user"
-    answer: str = ""
+    answer: str = Field(default="", max_length=300000)
     self_grade: float | None = Field(default=None, ge=0, le=1)
     duration_seconds: int = Field(default=0, ge=0, le=86400)
     hints_used: int = Field(default=0, ge=0, le=100)
-    error_type: str = ""
-    mode: str = "practice"
-    attachment_ids: list[str] = Field(default_factory=list)
+    error_type: str = Field(default="", max_length=200)
+    mode: str = Field(default="practice", max_length=40)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=8)
 
 
 class SimulationCreateRequest(BaseModel):
@@ -115,9 +204,9 @@ class SimulationCreateRequest(BaseModel):
 
 class SimulationSubmitRequest(BaseModel):
     user_id: str = "local-user"
-    answers: dict[str, str] = Field(default_factory=dict)
-    self_grades: dict[str, float] = Field(default_factory=dict)
-    attachment_ids: dict[str, list[str]] = Field(default_factory=dict)
+    answers: dict[str, str] = Field(default_factory=dict, max_length=30)
+    self_grades: dict[str, float] = Field(default_factory=dict, max_length=30)
+    attachment_ids: dict[str, list[str]] = Field(default_factory=dict, max_length=30)
 
 
 class PracticeSessionCreateRequest(BaseModel):
@@ -139,33 +228,33 @@ class ClassificationCorrectionRequest(BaseModel):
 
 class PracticeSessionDataRequest(BaseModel):
     user_id: str = "local-user"
-    answers: dict[str, str] = Field(default_factory=dict)
-    self_grades: dict[str, float] = Field(default_factory=dict)
-    attachment_ids: dict[str, list[str]] = Field(default_factory=dict)
+    answers: dict[str, str] = Field(default_factory=dict, max_length=15)
+    self_grades: dict[str, float] = Field(default_factory=dict, max_length=15)
+    attachment_ids: dict[str, list[str]] = Field(default_factory=dict, max_length=15)
 
 
 class ModelSettingsRequest(BaseModel):
-    base_url: str
-    model: str = ""
-    api_key: str | None = None
+    base_url: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=200)
+    api_key: str | None = Field(default=None, max_length=500)
     clear_api_key: bool = False
 
 
 class ModelFetchRequest(BaseModel):
-    base_url: str | None = None
-    api_key: str | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_key: str | None = Field(default=None, max_length=500)
 
 
 class ServerSettingsRequest(BaseModel):
-    host: str = "127.0.0.1"
+    host: str = Field(default="127.0.0.1", max_length=253)
     port: int = Field(default=8000, ge=1, le=65535)
-    public_url: str = ""
+    public_url: str = Field(default="", max_length=2048)
 
 
 class TutorRequest(BaseModel):
     user_id: str = "local-user"
-    answer: str = ""
-    request: str = "分析我的错误"
+    answer: str = Field(default="", max_length=300000)
+    request: str = Field(default="分析我的错误", max_length=500)
 
 
 class NoteRequest(BaseModel):
@@ -190,6 +279,42 @@ class WorkbenchImportRequest(BaseModel):
     user_id: str = "local-user"
     notes: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
     template_overrides: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
+class AuthRegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    email: str = Field(default="", max_length=254)
+    display_name: str = Field(default="", max_length=80)
+
+
+class AuthLoginRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+    email: str = Field(default="", max_length=254)
+
+
+class PreferencesUpdateRequest(BaseModel):
+    theme: str = "system"
+    default_exam_type: str = "数学二"
+    daily_goal: int = Field(default=30, ge=5, le=240)
+    practice_count: int = Field(default=15, ge=1, le=15)
+    sound_enabled: bool = False
+
+
+class AdminUserUpdateRequest(BaseModel):
+    role: str = "user"
+    is_active: bool = True
+    display_name: str = Field(min_length=1, max_length=80)
 
 
 def _question_override(question: dict[str, Any], user_id: str = "local-user", overrides: dict[str, dict[str, Any]] | None = None) -> dict[str, Any] | None:
@@ -344,6 +469,147 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api/auth/bootstrap")
+def auth_bootstrap() -> dict[str, Any]:
+    return {"registration_enabled": True, "has_users": user_count() > 0, "has_admin": has_admin()}
+
+
+@app.post("/api/auth/register")
+def auth_register(payload: AuthRegisterRequest, request: Request, response: Response) -> dict[str, Any]:
+    check_rate_limit(request, "register")
+    try:
+        user, is_first = create_user(
+            payload.username,
+            payload.password,
+            email=payload.email,
+            display_name=payload.display_name,
+            ip_address=_request_ip(request),
+        )
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token, csrf_token, expires_at = create_session(user["id"], request)
+    set_session_cookies(response, request, token, csrf_token)
+    return {**_auth_payload(user, csrf_token, expires_at), "first_account_is_admin": is_first}
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: AuthLoginRequest, request: Request, response: Response) -> dict[str, Any]:
+    check_rate_limit(request, "login")
+    user = authenticate_user(payload.identifier, payload.password, ip_address=_request_ip(request))
+    if user is None:
+        raise HTTPException(status_code=401, detail="账号或密码错误。")
+    token, csrf_token, expires_at = create_session(user["id"], request)
+    set_session_cookies(response, request, token, csrf_token)
+    return _auth_payload(user, csrf_token, expires_at)
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request, response: Response, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if context.legacy:
+        raise HTTPException(status_code=401, detail="当前工作区尚未注册账户。")
+    csrf_token = current_csrf_token(request, context)
+    set_csrf_cookie(response, request, csrf_token)
+    return _auth_payload(context.user, csrf_token, "")
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request, response: Response, context: AuthContext = Depends(require_user)) -> dict[str, str]:
+    if context.session_hash:
+        revoke_session(context.session_hash, context.user_id)
+    clear_session_cookies(response)
+    return {"status": "logged_out"}
+
+
+@app.post("/api/auth/change-password")
+def auth_change_password(payload: ChangePasswordRequest, request: Request, response: Response, context: AuthContext = Depends(require_user)) -> dict[str, str]:
+    if context.legacy:
+        raise HTTPException(status_code=401, detail="请先注册账户后再修改密码。")
+    try:
+        change_password(context.user_id, payload.current_password, payload.new_password, ip_address=_request_ip(request))
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    clear_session_cookies(response)
+    return {"status": "password_changed", "message": "密码已更新，请重新登录。"}
+
+
+@app.get("/api/auth/sessions")
+def auth_sessions(context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if context.legacy:
+        return {"items": []}
+    return {"items": list_sessions(context.user_id, context.session_hash)}
+
+
+@app.post("/api/auth/sessions/revoke-others")
+def auth_revoke_other_sessions(context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if context.legacy:
+        return {"revoked": 0}
+    return {"revoked": revoke_other_sessions(context.user_id, context.session_hash)}
+
+
+@app.get("/api/settings")
+def account_settings(context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if context.legacy:
+        return {"profile": context.user, "preferences": {"theme": "system", "default_exam_type": "数学二", "daily_goal": 30, "practice_count": 15, "sound_enabled": False}, "sessions": []}
+    return {
+        "profile": context.user,
+        "preferences": get_preferences(context.user_id),
+        "sessions": list_sessions(context.user_id, context.session_hash),
+    }
+
+
+@app.patch("/api/settings/profile")
+def account_profile_update(payload: ProfileUpdateRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if context.legacy:
+        raise HTTPException(status_code=401, detail="请先注册账户后再修改账户资料。")
+    try:
+        profile = update_profile(_user_id(context, context.user_id), display_name=payload.display_name, email=payload.email)
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"profile": profile}
+
+
+@app.patch("/api/settings/preferences")
+def account_preferences_update(payload: PreferencesUpdateRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if context.legacy:
+        raise HTTPException(status_code=401, detail="请先注册账户后再修改学习偏好。")
+    try:
+        preferences = update_preferences(context.user_id, payload.model_dump())
+    except (AuthValidationError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"preferences": preferences}
+
+
+@app.get("/api/admin/overview")
+def get_admin_overview(_: AuthContext = Depends(require_admin)) -> dict[str, Any]:
+    return admin_overview()
+
+
+@app.get("/api/admin/users")
+def get_admin_users(_: AuthContext = Depends(require_admin)) -> dict[str, Any]:
+    return {"items": list_users()}
+
+
+@app.patch("/api/admin/users/{target_user_id}")
+def admin_update_user(target_user_id: str, payload: AdminUserUpdateRequest, request: Request, context: AuthContext = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        user = update_user_by_admin(
+            target_user_id,
+            role=payload.role,
+            is_active=payload.is_active,
+            display_name=payload.display_name,
+            actor_user_id=context.user_id,
+            ip_address=_request_ip(request),
+        )
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"user": user}
+
+
+@app.get("/api/admin/audit")
+def get_admin_audit(limit: int = Query(default=100, ge=1, le=200), _: AuthContext = Depends(require_admin)) -> dict[str, Any]:
+    return {"items": list_audit_events(limit)}
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     questions = question_store.list()
@@ -355,6 +621,7 @@ async def upload_answer_image(
     file: UploadFile = File(...),
     user_id: str = Form(default="local-user"),
     question_id: str = Form(...),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
     content_type = (file.content_type or "").lower()
     if content_type not in IMAGE_SUFFIXES:
@@ -362,6 +629,10 @@ async def upload_answer_image(
     content = await file.read(MAX_IMAGE_BYTES + 1)
     if len(content) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="图片不能超过 8 MB。")
+    if not _image_magic_matches(content_type, content):
+        raise HTTPException(status_code=415, detail="文件内容与图片类型不匹配。")
+    _question_or_404(question_id)
+    owner_id = _user_id(context, user_id)
     attachment_id = uuid.uuid4().hex
     relative_path = Path("data") / "uploads" / f"{attachment_id}{IMAGE_SUFFIXES[content_type]}"
     absolute_path = ROOT_DIR / relative_path
@@ -370,9 +641,9 @@ async def upload_answer_image(
     create_attachment(
         {
             "id": attachment_id,
-            "user_id": user_id.strip() or "local-user",
+            "user_id": owner_id,
             "question_id": question_id,
-            "filename": file.filename or "answer-image",
+            "filename": Path(file.filename or "answer-image").name[:120] or "answer-image",
             "content_type": content_type,
             "size_bytes": len(content),
             "storage_path": relative_path.as_posix(),
@@ -387,8 +658,8 @@ async def upload_answer_image(
 
 
 @app.get("/api/attachments/{attachment_id}")
-def get_attachment(attachment_id: str) -> FileResponse:
-    path = attachment_path(attachment_id)
+def get_attachment(attachment_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> FileResponse:
+    path = attachment_path(attachment_id, _user_id(context, user_id))
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="图片不存在。")
     return FileResponse(path)
@@ -401,13 +672,15 @@ def get_workbench_catalog(
     user_id: str = Query(default="local-user"),
     refresh: bool = Query(default=False),
     exclude_question_ids: list[str] = Query(default=[]),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
-    questions, _ = _questions_for_user(user_id)
-    attempt_stats = _question_attempt_stats(user_id)
+    owner_id = _user_id(context, user_id)
+    questions, _ = _questions_for_user(owner_id)
+    attempt_stats = _question_attempt_stats(owner_id)
     if concept_id or subtype_id:
         if not concept_id or not subtype_id:
             raise HTTPException(status_code=400, detail="选择知识块和细分题型后才能读取模板。")
-        override = get_template_override(user_id.strip() or "local-user", concept_id, subtype_id)
+        override = get_template_override(owner_id, concept_id, subtype_id)
         try:
             template = build_workbench_template(
                 questions,
@@ -429,11 +702,12 @@ def get_workbench_catalog(
 
 
 @app.put("/api/workbench/templates/{concept_id}/{subtype_id}")
-def save_workbench_template(concept_id: str, subtype_id: str, payload: TemplateUpdateRequest) -> dict[str, Any]:
+def save_workbench_template(concept_id: str, subtype_id: str, payload: TemplateUpdateRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     if not is_valid_subtype(concept_id, subtype_id):
         raise HTTPException(status_code=400, detail="无效的知识块或细分题型。")
+    owner_id = _user_id(context, payload.user_id)
     saved = upsert_template_override({
-        "user_id": payload.user_id.strip() or "local-user",
+        "user_id": owner_id,
         "concept_id": concept_id,
         "question_type": subtype_id,
         "overview": payload.overview.strip(),
@@ -441,16 +715,16 @@ def save_workbench_template(concept_id: str, subtype_id: str, payload: TemplateU
         "mistakes": [item.strip() for item in payload.mistakes if item.strip()],
         "memory_aid": payload.memory_aid.strip(),
     })
-    questions, _ = _questions_for_user(payload.user_id)
+    questions, _ = _questions_for_user(owner_id)
     template = build_workbench_template(questions, concept_id, subtype_id, saved)
-    return {"template": _attach_workbench_attempt_stats(template, _question_attempt_stats(payload.user_id))}
+    return {"template": _attach_workbench_attempt_stats(template, _question_attempt_stats(owner_id))}
 
 
 @app.get("/api/workbench/templates/{concept_id}/{subtype_id}/versions")
-def get_workbench_template_versions(concept_id: str, subtype_id: str, user_id: str = "local-user") -> dict[str, Any]:
+def get_workbench_template_versions(concept_id: str, subtype_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     if not is_valid_subtype(concept_id, subtype_id):
         raise HTTPException(status_code=400, detail="无效的知识块或细分题型。")
-    return {"items": list_template_versions(user_id.strip() or "local-user", concept_id, subtype_id)}
+    return {"items": list_template_versions(_user_id(context, user_id), concept_id, subtype_id)}
 
 
 @app.get("/api/workbench/notes")
@@ -459,27 +733,28 @@ def get_workbench_notes(
     search: str = "",
     concept_id: str = "",
     favorite: bool = False,
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
-    return {"items": list_notes(user_id.strip() or "local-user", search=search, concept_id=concept_id, favorite_only=favorite)}
+    return {"items": list_notes(_user_id(context, user_id), search=search, concept_id=concept_id, favorite_only=favorite)}
 
 
 @app.post("/api/workbench/notes")
-def create_workbench_note(payload: NoteRequest) -> dict[str, Any]:
-    item = _normalize_note_payload(payload, user_id=payload.user_id)
+def create_workbench_note(payload: NoteRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    item = _normalize_note_payload(payload, user_id=_user_id(context, payload.user_id))
     return {"note": create_note(item)}
 
 
 @app.get("/api/workbench/notes/{note_id}")
-def get_workbench_note(note_id: str, user_id: str = "local-user") -> dict[str, Any]:
-    note = get_note(note_id, user_id.strip() or "local-user")
+def get_workbench_note(note_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    note = get_note(note_id, _user_id(context, user_id))
     if note is None:
         raise HTTPException(status_code=404, detail="笔记不存在。")
     return {"note": note}
 
 
 @app.put("/api/workbench/notes/{note_id}")
-def update_workbench_note(note_id: str, payload: NoteRequest) -> dict[str, Any]:
-    user_id = payload.user_id.strip() or "local-user"
+def update_workbench_note(note_id: str, payload: NoteRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    user_id = _user_id(context, payload.user_id)
     if get_note(note_id, user_id) is None:
         raise HTTPException(status_code=404, detail="笔记不存在。")
     item = _normalize_note_payload(payload, user_id=user_id, note_id=note_id)
@@ -490,23 +765,23 @@ def update_workbench_note(note_id: str, payload: NoteRequest) -> dict[str, Any]:
 
 
 @app.delete("/api/workbench/notes/{note_id}")
-def delete_workbench_note(note_id: str, user_id: str = "local-user") -> dict[str, Any]:
-    if not delete_note(note_id, user_id.strip() or "local-user"):
+def delete_workbench_note(note_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    if not delete_note(note_id, _user_id(context, user_id)):
         raise HTTPException(status_code=404, detail="笔记不存在。")
     return {"status": "deleted", "note_id": note_id}
 
 
 @app.get("/api/workbench/notes/{note_id}/versions")
-def get_workbench_note_versions(note_id: str, user_id: str = "local-user") -> dict[str, Any]:
-    normalized_user_id = user_id.strip() or "local-user"
+def get_workbench_note_versions(note_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    normalized_user_id = _user_id(context, user_id)
     if get_note(note_id, normalized_user_id) is None:
         raise HTTPException(status_code=404, detail="笔记不存在。")
     return {"items": list_note_versions(note_id, normalized_user_id)}
 
 
 @app.post("/api/workbench/notes/{note_id}/restore/{version_id}")
-def restore_workbench_note_version(note_id: str, version_id: int, user_id: str = "local-user") -> dict[str, Any]:
-    note = restore_note_version(note_id, version_id, user_id.strip() or "local-user")
+def restore_workbench_note_version(note_id: str, version_id: int, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    note = restore_note_version(note_id, version_id, _user_id(context, user_id))
     if note is None:
         raise HTTPException(status_code=404, detail="笔记版本不存在。")
     return {"note": note}
@@ -516,6 +791,7 @@ def restore_workbench_note_version(note_id: str, version_id: int, user_id: str =
 async def upload_workbench_note_asset(
     file: UploadFile = File(...),
     user_id: str = Form(default="local-user"),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
     content_type = (file.content_type or "").lower()
     if content_type not in IMAGE_SUFFIXES:
@@ -523,6 +799,9 @@ async def upload_workbench_note_asset(
     content = await file.read(MAX_IMAGE_BYTES + 1)
     if len(content) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="图片不能超过 8 MB。")
+    if not _image_magic_matches(content_type, content):
+        raise HTTPException(status_code=415, detail="文件内容与图片类型不匹配。")
+    owner_id = _user_id(context, user_id)
     asset_id = uuid.uuid4().hex
     relative_path = Path("data") / "uploads" / "notes" / f"{asset_id}{IMAGE_SUFFIXES[content_type]}"
     absolute_path = ROOT_DIR / relative_path
@@ -530,8 +809,8 @@ async def upload_workbench_note_asset(
     absolute_path.write_bytes(content)
     create_note_asset({
         "id": asset_id,
-        "user_id": user_id.strip() or "local-user",
-        "filename": file.filename or "note-image",
+        "user_id": owner_id,
+        "filename": Path(file.filename or "note-image").name[:120] or "note-image",
         "content_type": content_type,
         "size_bytes": len(content),
         "storage_path": relative_path.as_posix(),
@@ -546,16 +825,16 @@ async def upload_workbench_note_asset(
 
 
 @app.get("/api/workbench/note-assets/{asset_id}")
-def get_workbench_note_asset(asset_id: str) -> FileResponse:
-    path = note_asset_path(asset_id)
+def get_workbench_note_asset(asset_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> FileResponse:
+    path = note_asset_path(asset_id, _user_id(context, user_id))
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="笔记图片不存在。")
     return FileResponse(path)
 
 
 @app.get("/api/workbench/export")
-def export_workbench(user_id: str = "local-user") -> dict[str, Any]:
-    normalized_user_id = user_id.strip() or "local-user"
+def export_workbench(user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    normalized_user_id = _user_id(context, user_id)
     notes = list_notes(normalized_user_id)
     versions = {note["id"]: list_note_versions(note["id"], normalized_user_id) for note in notes}
     return {
@@ -570,8 +849,8 @@ def export_workbench(user_id: str = "local-user") -> dict[str, Any]:
 
 
 @app.post("/api/workbench/import")
-def import_workbench(payload: WorkbenchImportRequest) -> dict[str, Any]:
-    user_id = payload.user_id.strip() or "local-user"
+def import_workbench(payload: WorkbenchImportRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    user_id = _user_id(context, payload.user_id)
     imported_notes = 0
     imported_templates = 0
     for raw_note in payload.notes:
@@ -669,8 +948,9 @@ def list_questions(
     scope: str | None = None,
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
-    normalized_user = user_id.strip() or "local-user"
+    normalized_user = _user_id(context, user_id)
     overrides = list_question_classification_overrides(normalized_user)
     attempt_stats = _question_attempt_stats(normalized_user)
     if subtype_id and subtype_descriptor(subtype_id) is None:
@@ -699,14 +979,15 @@ def list_questions(
 
 
 @app.get("/api/questions/{question_id}")
-def get_question(question_id: str, reveal: bool = False, user_id: str = "local-user") -> dict[str, Any]:
-    return _question_public(_question_or_404(question_id), reveal=reveal, user_id=user_id, attempt_stats=_question_attempt_stats(user_id))
+def get_question(question_id: str, reveal: bool = False, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    owner_id = _user_id(context, user_id)
+    return _question_public(_question_or_404(question_id), reveal=reveal, user_id=owner_id, attempt_stats=_question_attempt_stats(owner_id))
 
 
 @app.put("/api/questions/{question_id}/classification")
-def correct_question_classification(question_id: str, payload: ClassificationCorrectionRequest) -> dict[str, Any]:
+def correct_question_classification(question_id: str, payload: ClassificationCorrectionRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     question = _question_or_404(question_id)
-    user_id = payload.user_id.strip() or "local-user"
+    user_id = _user_id(context, payload.user_id)
     if payload.concept_id not in MATH2_CONCEPT_IDS:
         raise HTTPException(status_code=400, detail="纠正分类必须选择数学二大纲内知识块。")
     if not is_valid_subtype(payload.concept_id, payload.subtype_id):
@@ -724,14 +1005,15 @@ def correct_question_classification(question_id: str, payload: ClassificationCor
 
 
 @app.post("/api/questions/{question_id}/attempts")
-def create_attempt(question_id: str, payload: AttemptRequest) -> dict[str, Any]:
+def create_attempt(question_id: str, payload: AttemptRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     question = _question_or_404(question_id)
-    effective_question = _effective_question(question, _question_override(question, payload.user_id))
+    owner_id = _user_id(context, payload.user_id)
+    effective_question = _effective_question(question, _question_override(question, owner_id))
     result = grade_question(question, payload.answer, payload.self_grade)
     error_type = payload.error_type.strip() or result.get("error_type", "")
     attempt_id = insert_attempt(
         {
-            "user_id": payload.user_id.strip() or "local-user",
+            "user_id": owner_id,
             "question_id": question_id,
             "answer": payload.answer,
             "correct": result.get("correct"),
@@ -748,26 +1030,28 @@ def create_attempt(question_id: str, payload: AttemptRequest) -> dict[str, Any]:
     )
     link_attachments(
         payload.attachment_ids,
-        user_id=payload.user_id.strip() or "local-user",
+        user_id=owner_id,
         question_id=question_id,
         attempt_id=attempt_id,
     )
     result["error_type"] = error_type
     response = _attempt_response(question, result, attempt_id)
-    response["attempt_summary"] = _question_attempt_stats(payload.user_id).get(question_id, _empty_attempt_summary())
+    response["attempt_summary"] = _question_attempt_stats(owner_id).get(question_id, _empty_attempt_summary())
     return response
 
 
 @app.get("/api/progress")
-def progress(user_id: str = "local-user") -> dict[str, Any]:
-    questions, _ = _questions_for_user(user_id)
-    return progress_summary(fetch_attempts(user_id), questions)
+def progress(user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    owner_id = _user_id(context, user_id)
+    questions, _ = _questions_for_user(owner_id)
+    return progress_summary(fetch_attempts(owner_id), questions)
 
 
 @app.get("/api/analytics")
-def analytics(user_id: str = "local-user", exam_type: str = "数学二") -> dict[str, Any]:
-    questions, _ = _questions_for_user(user_id)
-    return learning_analytics(questions, fetch_attempts(user_id), exam_type=exam_type)
+def analytics(user_id: str = "local-user", exam_type: str = "数学二", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    owner_id = _user_id(context, user_id)
+    questions, _ = _questions_for_user(owner_id)
+    return learning_analytics(questions, fetch_attempts(owner_id), exam_type=exam_type)
 
 
 @app.get("/api/practice/next")
@@ -777,15 +1061,17 @@ def practice_next(
     concept_id: str | None = None,
     subtype_id: str | None = None,
     limit: int = Query(default=8, ge=1, le=30),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, Any]:
-    attempts = fetch_attempts(user_id)
-    questions, overrides = _questions_for_user(user_id)
+    owner_id = _user_id(context, user_id)
+    attempts = fetch_attempts(owner_id)
+    questions, overrides = _questions_for_user(owner_id)
     attempt_stats = question_attempt_summaries(attempts)
     items = recommended_questions(questions, attempts, exam_type=exam_type, concept_id=concept_id, limit=limit)
     if subtype_id:
         items = [item for item in items if subtype_id in question_subtype_ids(item)]
     return {
-        "items": [_question_public(item, user_id=user_id, classification_overrides=overrides, attempt_stats=attempt_stats) for item in items],
+        "items": [_question_public(item, user_id=owner_id, classification_overrides=overrides, attempt_stats=attempt_stats) for item in items],
         "concept_id": concept_id,
         "subtype_id": subtype_id,
         "exam_type": exam_type,
@@ -793,16 +1079,17 @@ def practice_next(
 
 
 @app.get("/api/study/blocks")
-def study_block_endpoint(user_id: str = "local-user", limit: int = Query(default=6, ge=1, le=12)) -> dict[str, Any]:
-    questions, overrides = _questions_for_user(user_id)
-    attempts = fetch_attempts(user_id)
+def study_block_endpoint(user_id: str = "local-user", limit: int = Query(default=6, ge=1, le=12), context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    owner_id = _user_id(context, user_id)
+    questions, overrides = _questions_for_user(owner_id)
+    attempts = fetch_attempts(owner_id)
     attempt_stats = question_attempt_summaries(attempts)
     blocks = study_blocks(questions, attempts, limit=limit)
     return {
         "blocks": [
             {
                 **block,
-                "questions": [_question_public(item, user_id=user_id, classification_overrides=overrides, attempt_stats=attempt_stats) for item in block["questions"]],
+                "questions": [_question_public(item, user_id=owner_id, classification_overrides=overrides, attempt_stats=attempt_stats) for item in block["questions"]],
             }
             for block in blocks
         ]
@@ -857,19 +1144,16 @@ def _practice_session_or_404(session_id: str, user_id: str) -> dict[str, Any]:
 
 def _validate_practice_payload(session: dict[str, Any], payload: PracticeSessionDataRequest) -> None:
     allowed = set(session["question_ids"])
-    submitted_ids = set(payload.answers) | set(payload.self_grades) | set(payload.attachment_ids)
-    unknown = submitted_ids - allowed
-    if unknown:
-        raise HTTPException(status_code=400, detail="提交中包含不属于本训练会话的题目。")
+    _validate_answer_maps(payload.answers, payload.self_grades, payload.attachment_ids, allowed)
 
 
 @app.post("/api/practice/sessions")
-def create_practice_session_endpoint(payload: PracticeSessionCreateRequest) -> dict[str, Any]:
+def create_practice_session_endpoint(payload: PracticeSessionCreateRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     if payload.question_type and payload.question_type not in {"choice", "fill", "solution"}:
         raise HTTPException(status_code=400, detail="不支持的题型。")
     if payload.subtype_id and not is_valid_subtype(payload.concept_id, payload.subtype_id):
         raise HTTPException(status_code=400, detail="所选细分题型不属于该知识块。")
-    user_id = payload.user_id.strip() or "local-user"
+    user_id = _user_id(context, payload.user_id)
     attempts = fetch_attempts(user_id)
     questions, _ = _questions_for_user(user_id)
     selected = randomized_practice_questions(
@@ -901,14 +1185,14 @@ def create_practice_session_endpoint(payload: PracticeSessionCreateRequest) -> d
 
 
 @app.get("/api/practice/sessions/{session_id}")
-def get_practice_session_endpoint(session_id: str, user_id: str = "local-user") -> dict[str, Any]:
-    session = _practice_session_or_404(session_id, user_id)
+def get_practice_session_endpoint(session_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    session = _practice_session_or_404(session_id, _user_id(context, user_id))
     return practice_session_view(session, reveal=session.get("status") == "finished")
 
 
 @app.put("/api/practice/sessions/{session_id}")
-def save_practice_session_endpoint(session_id: str, payload: PracticeSessionDataRequest) -> dict[str, Any]:
-    session = _practice_session_or_404(session_id, payload.user_id)
+def save_practice_session_endpoint(session_id: str, payload: PracticeSessionDataRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    session = _practice_session_or_404(session_id, _user_id(context, payload.user_id))
     if session.get("status") == "finished":
         return practice_session_view(session, reveal=True)
     _validate_practice_payload(session, payload)
@@ -935,8 +1219,8 @@ def save_practice_session_endpoint(session_id: str, payload: PracticeSessionData
 
 
 @app.post("/api/practice/sessions/{session_id}/submit")
-def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDataRequest) -> dict[str, Any]:
-    session = _practice_session_or_404(session_id, payload.user_id)
+def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDataRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    session = _practice_session_or_404(session_id, _user_id(context, payload.user_id))
     if session.get("status") == "finished":
         return practice_session_view(session, reveal=True)
     _validate_practice_payload(session, payload)
@@ -991,13 +1275,14 @@ def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDa
 
 
 @app.get("/api/forecast")
-def score_forecast(user_id: str = "local-user", exam_type: str = "数学二") -> dict[str, Any]:
-    questions, _ = _questions_for_user(user_id)
-    return forecast_score(questions, fetch_attempts(user_id), exam_type=exam_type)
+def score_forecast(user_id: str = "local-user", exam_type: str = "数学二", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    owner_id = _user_id(context, user_id)
+    questions, _ = _questions_for_user(owner_id)
+    return forecast_score(questions, fetch_attempts(owner_id), exam_type=exam_type)
 
 
 @app.post("/api/simulations")
-def create_simulation_endpoint(payload: SimulationCreateRequest) -> dict[str, Any]:
+def create_simulation_endpoint(payload: SimulationCreateRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     pool = [question for question in question_store.list() if question.get("exam_type") == payload.exam_type]
     if not pool:
         raise HTTPException(status_code=404, detail="当前题库没有该考试类型。")
@@ -1011,7 +1296,7 @@ def create_simulation_endpoint(payload: SimulationCreateRequest) -> dict[str, An
     create_simulation(
         {
             "id": simulation_id,
-            "user_id": payload.user_id.strip() or "local-user",
+            "user_id": _user_id(context, payload.user_id),
             "exam_type": payload.exam_type,
             "year": year,
             "question_ids": question_ids,
@@ -1045,19 +1330,25 @@ def simulation_view(simulation: dict[str, Any] | None, reveal: bool = False) -> 
 
 
 @app.get("/api/simulations/{simulation_id}")
-def get_simulation_endpoint(simulation_id: str) -> dict[str, Any]:
+def get_simulation_endpoint(simulation_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     simulation = get_simulation(simulation_id)
+    if simulation is not None and simulation.get("user_id") != _user_id(context, user_id):
+        raise HTTPException(status_code=404, detail="模拟考试不存在。")
     return simulation_view(simulation, reveal=bool(simulation and simulation.get("status") == "finished"))
 
 
 @app.delete("/api/simulations/{simulation_id}")
-def cancel_simulation_endpoint(simulation_id: str, user_id: str = "local-user") -> dict[str, str]:
+def cancel_simulation_endpoint(simulation_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, str]:
     simulation = get_simulation(simulation_id)
     if simulation is None:
         raise HTTPException(status_code=404, detail="模拟考试不存在。")
-    normalized_user_id = user_id.strip() or "local-user"
+    normalized_user_id = _user_id(context, user_id)
     if simulation.get("user_id") != normalized_user_id:
-        raise HTTPException(status_code=403, detail="没有权限取消这套模拟考。")
+        # Keep the pre-account compatibility response for old callers, while
+        # authenticated users receive a non-enumerating 404.
+        if context.legacy:
+            raise HTTPException(status_code=403, detail="没有权限取消这套模拟考。")
+        raise HTTPException(status_code=404, detail="模拟考试不存在。")
     if simulation.get("status") == "finished":
         raise HTTPException(status_code=409, detail="已交卷的模拟考不能取消。")
     if not delete_simulation(simulation_id):
@@ -1066,16 +1357,20 @@ def cancel_simulation_endpoint(simulation_id: str, user_id: str = "local-user") 
 
 
 @app.post("/api/simulations/{simulation_id}/submit")
-def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> dict[str, Any]:
+def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     simulation = get_simulation(simulation_id)
     if simulation is None:
         raise HTTPException(status_code=404, detail="模拟考试不存在。")
+    owner_id = _user_id(context, payload.user_id)
+    if simulation.get("user_id") != owner_id:
+        raise HTTPException(status_code=404, detail="模拟考试不存在。")
     if simulation.get("status") == "finished":
         return simulation_view(simulation, reveal=True)
+    _validate_answer_maps(payload.answers, payload.self_grades, payload.attachment_ids, set(simulation["question_ids"]))
     total = 0.0
     for question_id in simulation["question_ids"]:
         question = _question_or_404(question_id)
-        effective_question = _effective_question(question, _question_override(question, payload.user_id))
+        effective_question = _effective_question(question, _question_override(question, owner_id))
         answer = payload.answers.get(question_id, "")
         self_grade = payload.self_grades.get(question_id)
         result = grade_question(question, answer, self_grade)
@@ -1092,7 +1387,7 @@ def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> d
         )
         attempt_id = insert_attempt(
             {
-                "user_id": payload.user_id.strip() or simulation.get("user_id", "local-user"),
+                "user_id": owner_id,
                 "question_id": question_id,
                 "answer": answer,
                 "correct": result.get("correct"),
@@ -1109,7 +1404,7 @@ def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> d
         )
         link_attachments(
             payload.attachment_ids.get(question_id, []),
-            user_id=payload.user_id.strip() or simulation.get("user_id", "local-user"),
+            user_id=owner_id,
             question_id=question_id,
             attempt_id=attempt_id,
             simulation_id=simulation_id,
@@ -1119,34 +1414,34 @@ def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest) -> d
 
 
 @app.get("/api/llm/settings")
-def llm_settings() -> dict[str, Any]:
-    return public_settings()
+def llm_settings(context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    return public_settings(context.user_id if not context.legacy else "local-user")
 
 
 @app.post("/api/llm/settings")
-def save_llm_settings(payload: ModelSettingsRequest) -> dict[str, Any]:
+def save_llm_settings(payload: ModelSettingsRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     try:
-        return save_settings(payload.base_url, payload.model, payload.api_key, payload.clear_api_key)
+        return save_settings(payload.base_url, payload.model, payload.api_key, payload.clear_api_key, _user_id(context))
     except LLMError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/llm/models")
-async def llm_models(payload: ModelFetchRequest) -> dict[str, Any]:
+async def llm_models(payload: ModelFetchRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     try:
-        models = await fetch_models(payload.base_url, payload.api_key)
+        models = await fetch_models(payload.base_url, payload.api_key, _user_id(context))
         return {"models": models}
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/server/settings")
-def get_server_settings() -> dict[str, Any]:
+def get_server_settings(_: AuthContext = Depends(require_user)) -> dict[str, Any]:
     return server_settings()
 
 
 @app.post("/api/server/settings")
-def update_server_settings(payload: ServerSettingsRequest) -> dict[str, Any]:
+def update_server_settings(payload: ServerSettingsRequest, _: AuthContext = Depends(require_admin)) -> dict[str, Any]:
     try:
         return save_server_settings(payload.host, payload.port, payload.public_url)
     except ServerSettingsError as exc:
@@ -1154,18 +1449,18 @@ def update_server_settings(payload: ServerSettingsRequest) -> dict[str, Any]:
 
 
 @app.post("/api/questions/{question_id}/tutor")
-async def tutor(question_id: str, payload: TutorRequest) -> dict[str, Any]:
+async def tutor(question_id: str, payload: TutorRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     question = _question_or_404(question_id)
     try:
-        return await tutor_response(question, payload.answer, payload.request)
+        return await tutor_response(question, payload.answer, payload.request, user_id=_user_id(context, payload.user_id))
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/questions/{question_id}/hint")
-async def question_hint(question_id: str, payload: TutorRequest) -> dict[str, Any]:
+async def question_hint(question_id: str, payload: TutorRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     question = _question_or_404(question_id)
     try:
-        return await hint_response(question, payload.answer, payload.request or "给我解题思路")
+        return await hint_response(question, payload.answer, payload.request or "给我解题思路", user_id=_user_id(context, payload.user_id))
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

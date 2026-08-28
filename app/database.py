@@ -38,6 +38,52 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                email TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'admin')),
+                is_active INTEGER NOT NULL DEFAULT 1,
+                preferences_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email
+                ON users(email COLLATE NOCASE) WHERE email <> '';
+
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                id_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                csrf_hash TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                ip_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, last_seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
+            CREATE TABLE IF NOT EXISTS auth_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                actor_user_id TEXT,
+                action TEXT NOT NULL,
+                target_user_id TEXT,
+                ip_address TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY(target_user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_audit_created ON auth_audit_events(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_auth_audit_user ON auth_audit_events(user_id, created_at DESC);
+
             CREATE TABLE IF NOT EXISTS attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
@@ -224,6 +270,9 @@ def init_db() -> None:
         practice_columns = {row["name"] for row in connection.execute("PRAGMA table_info(practice_sessions)").fetchall()}
         if "subtype_id" not in practice_columns:
             connection.execute("ALTER TABLE practice_sessions ADD COLUMN subtype_id TEXT NOT NULL DEFAULT ''")
+        user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+        if user_columns and "preferences_json" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN preferences_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def set_setting(key: str, value: Any) -> None:
@@ -617,12 +666,18 @@ def attachments_for_practice_session(session_id: str, question_id: str) -> list[
     return [_attachment_public(row) for row in rows]
 
 
-def attachment_path(attachment_id: str) -> Path | None:
+def attachment_path(attachment_id: str, user_id: str | None = None) -> Path | None:
     with get_connection() as connection:
-        row = connection.execute(
-            "SELECT storage_path FROM answer_attachments WHERE id = ?",
-            (attachment_id,),
-        ).fetchone()
+        if user_id is None:
+            row = connection.execute(
+                "SELECT storage_path FROM answer_attachments WHERE id = ?",
+                (attachment_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT storage_path FROM answer_attachments WHERE id = ? AND user_id = ?",
+                (attachment_id, user_id),
+            ).fetchone()
     if row is None:
         return None
     path = (ROOT_DIR / row["storage_path"]).resolve()
