@@ -390,6 +390,40 @@ def test_block_training_uses_compact_stack_and_single_question_navigation() -> N
     assert ".practice-session-question[hidden]" in styles
 
 
+def test_answer_boards_share_touch_handwriting_drafts_and_fullscreen_controls() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function renderHandwritingPad" in source
+    assert "function bindHandwritingPads" in source
+    assert "function answerHandwritingKey" in source
+    assert "HANDWRITING_STORAGE_PREFIX" in source
+    assert "data-handwriting-canvas" in source
+    assert "pointerdown" in source and "pointermove" in source
+    assert "data-handwriting-fullscreen" in source
+    assert "handwritingchange" in source
+    assert "renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === \"modal\" })" in source
+    assert "contextId: simulation.id" in source
+    assert ".handwriting-canvas {" in styles
+    assert "touch-action: none" in styles
+    assert ".handwriting-pad:fullscreen" in styles
+    assert "@media (pointer: coarse)" in styles
+
+
+def test_block_stack_has_accessible_motion_and_tablet_layout_guards() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert "style=\"--stack-index:${blockIndex}\"" in source
+    assert "block-stack-content-inner" in source
+    assert ".block-stack-card:not([open]) > .block-stack-content" in styles
+    assert "grid-template-rows: 1fr" in styles and "grid-template-rows: 0fr" in styles
+    assert "@keyframes stack-card-in" in styles
+    assert "@media (min-width: 761px) and (max-width: 860px)" in styles
+    assert "@media (min-width: 861px) and (max-width: 1100px)" in styles
+    assert "@media (prefers-reduced-motion: reduce)" in styles
+
+
 def test_tex_normalization_preserves_array_row_break_before_command() -> None:
     from app.services.workbench import _normalize_template_formula
 

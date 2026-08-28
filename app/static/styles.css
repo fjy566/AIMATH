@@ -210,7 +210,9 @@ select:focus, input:focus, textarea:focus { border-color: var(--blue); box-shado
 .block-stack-metrics > span { color: var(--accent-strong); font: 10px var(--mono); }
 .block-stack-reason { max-width: 76ch; margin-top: 9px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .block-stack-reason p { margin: 0; }
-.block-stack-content { padding: 0 22px 22px; }
+.block-stack-content { padding: 0; }
+.block-stack-content-inner { min-height: 0; overflow: hidden; }
+.block-stack-content-body { min-height: 0; padding: 0 22px 22px; }
 .full-block-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .full-block-head h3 { margin: 7px 0 4px; font: 500 25px var(--serif); }
 .full-block-head p { margin: 0; color: var(--muted); font-size: 12px; }
@@ -1300,7 +1302,8 @@ body.theme-dark .block-stack-card[open] .block-stack-summary, body.theme-dark .p
   .template-answer-structure-head { display: block; }
   .template-answer-structure-head small { display: block; max-width: none; margin-top: 7px; text-align: left; }
   .template-answer-structure-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .block-stack-summary, .block-stack-content { padding-right: 14px; padding-left: 14px; }
+  .block-stack-summary { padding-right: 14px; padding-left: 14px; }
+  .block-stack-content-body { padding-right: 14px; padding-left: 14px; }
   .block-stack-summary { align-items: flex-start; }
   .block-stack-reason { display: none; }
   .practice-question-navigator { grid-template-columns: 1fr; gap: 9px; padding: 12px 14px; }
@@ -1394,4 +1397,120 @@ body.theme-dark .attempt-status-unseen { color: #e9d5a4; border-color: #7e6c4a; 
   .analytics-subtype-row > span:nth-child(2) { display: none; }
   .analytics-subtype-header > span:nth-child(2) { display: none; }
   .practice-question-history { margin-left: 0; }
+}
+
+/* Shared handwriting surface: vector-backed, touch-first and intentionally
+   quiet so it supports the existing answer editor instead of competing with
+   the question. */
+.answer-editor-surface { display: grid; gap: 11px; min-width: 0; }
+.handwriting-pad { min-width: 0; padding: 12px; border: 1px solid #b9d4ce; border-radius: 14px; background: rgba(239,248,244,.84); box-shadow: 0 8px 20px rgba(28,81,78,.05); transition: border-color .22s ease, box-shadow .22s ease, background-color .22s ease, transform .22s cubic-bezier(.16,1,.3,1); }
+.handwriting-pad:hover { border-color: #8db8af; box-shadow: 0 11px 24px rgba(28,81,78,.08); transform: translateY(-1px); }
+.handwriting-pad.is-readonly { background: rgba(246,250,248,.75); }
+.handwriting-pad-head { display: flex; align-items: center; justify-content: space-between; gap: 11px; }
+.handwriting-pad-head > div:first-child { display: grid; gap: 2px; min-width: 0; }
+.handwriting-pad-head strong { color: var(--ink-soft); font-size: 12px; }
+.handwriting-pad-head > div:first-child span { color: var(--accent-strong); font: 10px var(--mono); }
+.handwriting-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
+.handwriting-action { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 34px; min-height: 34px; padding: 6px 9px; border: 1px solid #b3cec8; border-radius: 8px; color: var(--accent-strong); background: rgba(251,254,252,.84); font-size: 10px; transition: transform .18s cubic-bezier(.16,1,.3,1), color .18s ease, border-color .18s ease, background-color .18s ease, box-shadow .18s ease; }
+.handwriting-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-strong); background: #fff; box-shadow: 0 4px 10px rgba(13,112,106,.10); transform: translateY(-1px); }
+.handwriting-action:active:not(:disabled) { transform: scale(.97); }
+.handwriting-action:disabled { cursor: not-allowed; opacity: .42; }
+.handwriting-action.icon-action { width: 34px; padding: 5px; font-size: 17px; line-height: 1; }
+.handwriting-fullscreen-button { color: #835e3f; border-color: #d6c2a6; background: #fbf3e7; }
+.handwriting-fullscreen-button:hover:not(:disabled) { color: #70492e; border-color: #bd9c78; background: #fff8ee; }
+.handwriting-canvas-wrap { position: relative; min-height: 190px; margin-top: 10px; overflow: hidden; border: 1px solid #c4d9d3; border-radius: 10px; background-color: #fbfefc; background-image: repeating-linear-gradient(0deg, transparent 0 31px, rgba(13,112,106,.10) 32px), linear-gradient(90deg, rgba(181,91,76,.13) 0 1px, transparent 1px 100%); background-size: 100% 32px, 100% 100%; box-shadow: inset 0 1px 3px rgba(24,55,59,.05); transition: border-color .2s ease, background-color .2s ease, opacity .2s ease; }
+.handwriting-canvas-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(13,112,106,.11), inset 0 1px 3px rgba(24,55,59,.05); }
+.handwriting-canvas { display: block; width: 100%; height: 260px; cursor: crosshair; touch-action: none; -ms-touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.handwriting-canvas:focus-visible { outline: 3px solid rgba(13,112,106,.24); outline-offset: -4px; }
+.handwriting-empty { position: absolute; inset: 50% 16px auto; color: #91a19f; font-size: 11px; text-align: center; transform: translateY(-50%); pointer-events: none; transition: opacity .18s ease, transform .2s ease; }
+.handwriting-pad.has-content .handwriting-empty { opacity: 0; transform: translateY(-44%); }
+.handwriting-pad-foot { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-top: 7px; color: var(--muted); font: 9px/1.45 var(--mono); }
+.handwriting-pad-foot span:last-child { text-align: right; }
+.handwriting-pad.is-collapsed .handwriting-canvas-wrap, .handwriting-pad.is-collapsed .handwriting-pad-foot { display: none; }
+.handwriting-pad.is-collapsed { background: rgba(239,248,244,.62); }
+.handwriting-pad:fullscreen, .handwriting-pad.is-fullscreen-fallback { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; width: 100vw; height: 100vh; height: 100dvh; min-height: 100vh; min-height: 100dvh; padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); border: 0; border-radius: 0; background: #eef4f1; box-shadow: 0 0 0 100vmax rgba(15,45,50,.72); transform: none; }
+.handwriting-pad:fullscreen .handwriting-canvas-wrap, .handwriting-pad.is-fullscreen-fallback .handwriting-canvas-wrap { display: block; flex: 1; min-height: 0; margin-top: 14px; }
+.handwriting-pad:fullscreen .handwriting-canvas, .handwriting-pad.is-fullscreen-fallback .handwriting-canvas { height: 100%; }
+.handwriting-pad:fullscreen .handwriting-pad-foot, .handwriting-pad.is-fullscreen-fallback .handwriting-pad-foot { display: flex; }
+.handwriting-pad:fullscreen .handwriting-pad-foot, .handwriting-pad.is-fullscreen-fallback .handwriting-pad-foot { padding-bottom: max(2px, env(safe-area-inset-bottom)); }
+body.handwriting-fullscreen-open { overflow: hidden; }
+body.theme-dark .handwriting-pad { border-color: var(--line); background: #173b3e; }
+body.theme-dark .handwriting-pad.is-readonly, body.theme-dark .handwriting-pad.is-collapsed { background: #153236; }
+body.theme-dark .handwriting-action { color: var(--accent-strong); border-color: #4b837d; background: #1a4547; }
+body.theme-dark .handwriting-fullscreen-button { color: #e6c899; border-color: #806c4d; background: #40392a; }
+body.theme-dark .handwriting-canvas-wrap { border-color: #4b837d; background-color: #112a2e; background-image: repeating-linear-gradient(0deg, transparent 0 31px, rgba(103,195,182,.12) 32px), linear-gradient(90deg, rgba(225,135,113,.20) 0 1px, transparent 1px 100%); }
+body.theme-dark .handwriting-empty { color: #77908c; }
+body.theme-dark .handwriting-pad:fullscreen, body.theme-dark .handwriting-pad.is-fullscreen-fallback { background: #10282c; }
+
+/* A one-column disclosure stack keeps long block-training pages scannable.
+   The inner wrapper lets the disclosure animate its grid track without
+   forcing the browser to recalculate a large max-height on every frame. */
+.blocks-layout:not(.practice-active) { grid-template-columns: minmax(0, 1fr); gap: 13px; }
+.block-stack-card { position: relative; overflow: clip; box-shadow: 0 7px 21px rgba(28,81,78,.055); animation: stack-card-in .42s cubic-bezier(.16,1,.3,1) both; animation-delay: calc(var(--stack-index, 0) * 45ms); }
+.block-stack-card:nth-child(2n) { box-shadow: 0 9px 24px rgba(28,81,78,.07); }
+.block-stack-summary { position: relative; padding-right: 47px; transition: background-color .22s ease, transform .22s cubic-bezier(.16,1,.3,1); }
+.block-stack-summary:hover { background: rgba(236,246,242,.7); }
+.block-stack-summary::after { position: absolute; top: 50%; right: 20px; color: var(--accent); content: "⌄"; font: 17px/1 var(--sans); transform: translateY(-58%) rotate(-90deg); transition: transform .28s cubic-bezier(.16,1,.3,1), color .2s ease; }
+.block-stack-card[open] .block-stack-summary::after { transform: translateY(-42%); }
+.block-stack-card > .block-stack-content { display: grid; grid-template-rows: 1fr; overflow: hidden; opacity: 1; transform: none; transition: grid-template-rows .38s cubic-bezier(.16,1,.3,1), opacity .24s ease, transform .32s cubic-bezier(.16,1,.3,1); }
+.block-stack-card:not([open]) > .block-stack-content { grid-template-rows: 0fr; opacity: 0; transform: translateY(-7px); pointer-events: none; }
+@keyframes stack-card-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+@media (min-width: 861px) and (max-width: 1100px) {
+  .sidebar { width: 220px; padding-right: 16px; padding-left: 16px; }
+  .main-content { width: calc(100% - 220px); margin-left: 220px; padding: 28px 24px 70px; }
+  .topbar { gap: 16px; }
+  .hero-grid { grid-template-columns: minmax(0, 1fr) minmax(240px, .72fr); }
+  .block-type-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .simulation-workspace { grid-template-columns: minmax(0, 1fr) 250px; }
+  .workbench-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  .formula-editor-layout { grid-template-columns: minmax(0, 1fr) minmax(220px, .8fr); }
+}
+
+@media (min-width: 761px) and (max-width: 860px) {
+  .app-shell { display: block; }
+  .sidebar { position: static; width: 100%; min-height: 0; padding: 14px 18px 11px; }
+  .sidebar-rule, .nav-caption, .sidebar-bottom { display: none; }
+  .brand-lockup { justify-content: center; }
+  .main-content { width: 100%; margin-left: 0; padding: 24px max(20px, env(safe-area-inset-left)) 60px; }
+  .main-nav { display: flex; gap: 4px; margin-top: 13px; overflow-x: auto; scrollbar-width: thin; }
+  .nav-item { flex: 0 0 auto; width: auto; padding: 9px 11px; }
+  .nav-index { display: none; }
+  .hero-grid, .metric-grid, .block-preview-grid, .question-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .library-layout, .settings-layout { grid-template-columns: 1fr; }
+  .library-aside, .settings-help { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .formula-editor-layout { grid-template-columns: 1fr; }
+  .formula-preview-pane { order: -1; }
+  .simulation-workspace { grid-template-columns: minmax(0, 1fr) 220px; }
+  .workbench-shell { grid-template-columns: 1fr; }
+  .workbench-sidebar { position: static; max-height: none; }
+  .workbench-concept-list { display: flex; overflow-x: auto; }
+  .workbench-concept-item { flex: 0 0 170px; }
+}
+
+@media (pointer: coarse) {
+  button, select, input, textarea, .upload-button { min-height: 44px; }
+  input, select, textarea { font-size: 16px; }
+  .handwriting-action { min-width: 44px; min-height: 44px; }
+  .handwriting-canvas { height: clamp(240px, 42vw, 360px); }
+  .block-stack-summary { min-height: 68px; }
+  .choice-option { min-height: 68px; }
+  .formula-tool, .formula-category-tab, .beginner-formula-tool, .structure-action { min-height: 44px; }
+  .practice-question-tab { min-width: 42px; width: 42px; height: 42px; }
+}
+
+@media (max-width: 760px) {
+  .handwriting-pad { padding: 10px; }
+  .handwriting-pad-head { align-items: flex-start; flex-direction: column; }
+  .handwriting-actions { justify-content: flex-start; width: 100%; }
+  .handwriting-fullscreen-button { flex: 1 1 auto; }
+  .handwriting-pad-foot { align-items: flex-start; flex-direction: column; }
+  .handwriting-pad-foot span:last-child { text-align: left; }
+  .block-stack-summary { padding-right: 39px; }
+  .block-stack-summary::after { right: 13px; }
+  .blocks-layout:not(.practice-active) { gap: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .handwriting-pad, .handwriting-action, .handwriting-canvas-wrap, .handwriting-empty, .block-stack-card, .block-stack-summary, .block-stack-summary::after, .block-stack-card > .block-stack-content { transition: none !important; animation: none !important; }
 }

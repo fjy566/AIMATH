@@ -494,6 +494,324 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill",
   </div>`;
 }
 
+// Shared touch-first handwriting surface. Strokes are persisted as normalized
+// vectors so a draft survives resizing and fullscreen editing without bitmap
+// quality loss.
+const HANDWRITING_STORAGE_PREFIX = "ai-math-handwriting-v1:";
+const HANDWRITING_STATE = new WeakMap();
+const HANDWRITING_MAX_STROKES = 320;
+const HANDWRITING_MAX_POINTS = 6000;
+
+function answerHandwritingKey(mode, questionId, contextId = "") {
+  const scope = String(mode || "modal");
+  const context = contextId ? `${String(contextId)}:` : "";
+  return `${scope}:${context}${String(questionId || "unknown")}`;
+}
+
+function handwritingStorageKey(key) {
+  return `${HANDWRITING_STORAGE_PREFIX}${encodeURIComponent(String(key || "unknown"))}`;
+}
+
+function normalizeHandwritingStrokes(strokes) {
+  if (!Array.isArray(strokes)) return [];
+  const normalized = [];
+  let pointBudget = HANDWRITING_MAX_POINTS;
+  for (const stroke of strokes.slice(-HANDWRITING_MAX_STROKES)) {
+    if (pointBudget <= 0) break;
+    const points = Array.isArray(stroke?.points)
+      ? stroke.points.slice(-Math.min(HANDWRITING_MAX_POINTS, pointBudget)).map((point) => ({
+        x: Math.max(0, Math.min(1, Number(point?.x) || 0)),
+        y: Math.max(0, Math.min(1, Number(point?.y) || 0)),
+        p: Math.max(.08, Math.min(1, Number(point?.p) || .5)),
+      })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+      : [];
+    if (points.length) {
+      normalized.push({ width: Math.max(1, Math.min(8, Number(stroke?.width) || 2.4)), points });
+      pointBudget -= points.length;
+    }
+  }
+  return normalized;
+}
+
+function readHandwritingDraft(key) {
+  try {
+    const raw = localStorage.getItem(handwritingStorageKey(key));
+    if (!raw) return { strokes: [], updatedAt: "" };
+    const parsed = JSON.parse(raw);
+    return { strokes: normalizeHandwritingStrokes(parsed?.strokes), updatedAt: String(parsed?.updatedAt || "") };
+  } catch {
+    return { strokes: [], updatedAt: "" };
+  }
+}
+
+function handwritingHasDraft(key) {
+  return readHandwritingDraft(key).strokes.length > 0;
+}
+
+function handwritingPadHasContent(pad) {
+  const stateForPad = pad ? HANDWRITING_STATE.get(pad) : null;
+  return Boolean(stateForPad?.strokes?.length || (pad?.dataset.handwritingKey && handwritingHasDraft(pad.dataset.handwritingKey)));
+}
+
+function handwritingFormatUpdatedAt(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `保存于 ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function writeHandwritingDraft(stateForPad) {
+  if (!stateForPad?.key) return "";
+  const strokes = normalizeHandwritingStrokes(stateForPad.strokes);
+  const updatedAt = new Date().toISOString();
+  try {
+    if (strokes.length) localStorage.setItem(handwritingStorageKey(stateForPad.key), JSON.stringify({ version: 1, updatedAt, strokes }));
+    else localStorage.removeItem(handwritingStorageKey(stateForPad.key));
+  } catch {
+    // Private browsing or a full storage quota should not block writing.
+  }
+  stateForPad.strokes = strokes;
+  stateForPad.updatedAt = strokes.length ? updatedAt : "";
+  return updatedAt;
+}
+
+function handwritingPoint(canvas, event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))),
+    p: Math.max(.08, Math.min(1, Number(event.pressure) > 0 ? Number(event.pressure) : .5)),
+  };
+}
+
+function drawHandwritingStroke(context, stroke, width, height, color = "#173f45") {
+  const points = stroke?.points || [];
+  if (!points.length) return;
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  if (points.length === 1) {
+    const point = points[0];
+    context.beginPath();
+    context.arc(point.x * width, point.y * height, Math.max(1.2, (stroke.width || 2.4) * (0.65 + point.p * .35)), 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+    return;
+  }
+  context.beginPath();
+  context.moveTo(points[0].x * width, points[0].y * height);
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const point = points[index];
+    context.quadraticCurveTo(previous.x * width, previous.y * height, (previous.x + point.x) * width / 2, (previous.y + point.y) * height / 2);
+  }
+  const last = points[points.length - 1];
+  context.lineTo(last.x * width, last.y * height);
+  context.lineWidth = Math.max(1.2, (stroke.width || 2.4) * (0.76 + last.p * .24));
+  context.stroke();
+  context.restore();
+}
+
+function drawHandwritingPad(pad) {
+  const stateForPad = HANDWRITING_STATE.get(pad);
+  const canvas = pad?.querySelector("[data-handwriting-canvas]");
+  if (!stateForPad || !canvas) return;
+  const context = stateForPad.context || canvas.getContext("2d");
+  if (!context) return;
+  stateForPad.context = context;
+  const width = stateForPad.width || Math.max(1, canvas.clientWidth || 640);
+  const height = stateForPad.height || Math.max(1, canvas.clientHeight || 260);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const ratio = stateForPad.dpr || 1;
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const ink = getComputedStyle(pad).getPropertyValue("--ink-soft").trim() || "#173f45";
+  stateForPad.strokes.forEach((stroke) => drawHandwritingStroke(context, stroke, width, height, ink));
+  pad.classList.toggle("has-content", stateForPad.strokes.length > 0);
+  const empty = pad.querySelector("[data-handwriting-empty]");
+  if (empty) empty.hidden = stateForPad.strokes.length > 0;
+  const undo = pad.querySelector("[data-handwriting-undo]");
+  const redo = pad.querySelector("[data-handwriting-redo]");
+  const clear = pad.querySelector("[data-handwriting-clear]");
+  if (undo) undo.disabled = stateForPad.readonly || !stateForPad.strokes.length;
+  if (redo) redo.disabled = stateForPad.readonly || !stateForPad.redo.length;
+  if (clear) clear.disabled = stateForPad.readonly || !stateForPad.strokes.length;
+}
+
+function resizeHandwritingPad(pad) {
+  const stateForPad = HANDWRITING_STATE.get(pad);
+  const canvas = pad?.querySelector("[data-handwriting-canvas]");
+  if (!stateForPad || !canvas) return;
+  const width = Math.max(280, Math.floor(canvas.parentElement?.clientWidth || canvas.clientWidth || 640));
+  const height = Math.max(190, Math.floor(canvas.clientHeight || 260));
+  const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  if (stateForPad.width === width && stateForPad.height === height && stateForPad.dpr === dpr) {
+    drawHandwritingPad(pad);
+    return;
+  }
+  stateForPad.width = width;
+  stateForPad.height = height;
+  stateForPad.dpr = dpr;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  drawHandwritingPad(pad);
+}
+
+function dispatchHandwritingChange(pad, source = "draw") {
+  pad?.dispatchEvent(new CustomEvent("handwritingchange", { bubbles: true, detail: { key: pad.dataset.handwritingKey || "", source, hasContent: handwritingPadHasContent(pad) } }));
+}
+
+function updateHandwritingStatus(pad, message = "") {
+  const stateForPad = HANDWRITING_STATE.get(pad);
+  if (!stateForPad) return;
+  const status = pad.querySelector("[data-handwriting-status]");
+  const updated = pad.querySelector("[data-handwriting-updated]");
+  if (status) status.textContent = message || (stateForPad.strokes.length ? "已自动保存" : stateForPad.readonly ? "只读查看" : "未开始");
+  if (updated) updated.textContent = stateForPad.updatedAt ? handwritingFormatUpdatedAt(stateForPad.updatedAt) : "手写草稿只保存在本机";
+}
+
+function saveHandwritingPad(pad, source = "save") {
+  const stateForPad = HANDWRITING_STATE.get(pad);
+  if (!stateForPad || stateForPad.readonly) return;
+  writeHandwritingDraft(stateForPad);
+  updateHandwritingStatus(pad);
+  drawHandwritingPad(pad);
+  dispatchHandwritingChange(pad, source);
+}
+
+function setHandwritingFullscreen(pad, active) {
+  if (!pad) return;
+  pad.classList.toggle("is-fullscreen-fallback", active);
+  pad.classList.toggle("is-fullscreen-active", active || document.fullscreenElement === pad);
+  document.body.classList.toggle("handwriting-fullscreen-open", Boolean(active || document.fullscreenElement));
+  const button = pad.querySelector("[data-handwriting-fullscreen]");
+  if (button) button.textContent = active || document.fullscreenElement === pad ? "退出全屏" : (pad.classList.contains("is-readonly") ? "全屏查看" : "全屏书写");
+  window.requestAnimationFrame?.(() => resizeHandwritingPad(pad));
+}
+
+async function toggleHandwritingFullscreen(pad) {
+  if (document.fullscreenElement === pad) {
+    await document.exitFullscreen?.();
+    return;
+  }
+  if (pad.classList.contains("is-fullscreen-fallback")) {
+    setHandwritingFullscreen(pad, false);
+    return;
+  }
+  try {
+    if (pad.requestFullscreen) {
+      await pad.requestFullscreen();
+      setHandwritingFullscreen(pad, true);
+      return;
+    }
+  } catch {
+    // Embedded browsers may refuse the API; use the fixed-position fallback.
+  }
+  setHandwritingFullscreen(pad, true);
+}
+
+function bindHandwritingDocumentEvents() {
+  if (document.documentElement.dataset.handwritingEventsBound === "true") return;
+  document.documentElement.dataset.handwritingEventsBound = "true";
+  document.addEventListener("fullscreenchange", () => $$('[data-handwriting-pad]').forEach((pad) => setHandwritingFullscreen(pad, document.fullscreenElement === pad || pad.classList.contains("is-fullscreen-fallback"))));
+  window.addEventListener("resize", () => $$('[data-handwriting-pad]').forEach(resizeHandwritingPad), { passive: true });
+}
+
+function bindHandwritingPads(root = document) {
+  bindHandwritingDocumentEvents();
+  const pads = [];
+  if (root?.matches?.("[data-handwriting-pad]")) pads.push(root);
+  pads.push(...$$('[data-handwriting-pad]', root));
+  pads.forEach((pad) => {
+    if (pad.dataset.handwritingBound === "true") return;
+    pad.dataset.handwritingBound = "true";
+    const key = pad.dataset.handwritingKey || "unknown";
+    const saved = readHandwritingDraft(key);
+    const stateForPad = { key, readonly: pad.dataset.handwritingReadonly === "true", strokes: saved.strokes, redo: [], updatedAt: saved.updatedAt, width: 0, height: 0, dpr: 1, activeStroke: null, context: null, drawFrame: 0 };
+    HANDWRITING_STATE.set(pad, stateForPad);
+    const canvas = pad.querySelector("[data-handwriting-canvas]");
+    const wrap = pad.querySelector("[data-handwriting-canvas-wrap]");
+    const finishStroke = () => {
+      if (!stateForPad.activeStroke) return;
+      stateForPad.activeStroke = null;
+      saveHandwritingPad(pad, "draw");
+    };
+    const scheduleDraw = () => {
+      if (stateForPad.drawFrame) return;
+      stateForPad.drawFrame = window.requestAnimationFrame?.(() => { stateForPad.drawFrame = 0; drawHandwritingPad(pad); }) || 0;
+      if (!stateForPad.drawFrame) drawHandwritingPad(pad);
+    };
+    canvas?.addEventListener("pointerdown", (event) => {
+      if (stateForPad.readonly || event.button > 0) return;
+      event.preventDefault();
+      canvas.setPointerCapture?.(event.pointerId);
+      const stroke = { width: event.pointerType === "pen" ? 2.1 : 2.5, points: [handwritingPoint(canvas, event)] };
+      stateForPad.strokes.push(stroke);
+      stateForPad.redo = [];
+      stateForPad.activeStroke = stroke;
+      scheduleDraw();
+    });
+    canvas?.addEventListener("pointermove", (event) => {
+      if (!stateForPad.activeStroke) return;
+      event.preventDefault();
+      (event.getCoalescedEvents?.() || [event]).forEach((pointEvent) => {
+        if (stateForPad.activeStroke.points.length < HANDWRITING_MAX_POINTS) stateForPad.activeStroke.points.push(handwritingPoint(canvas, pointEvent));
+      });
+      scheduleDraw();
+    });
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => canvas?.addEventListener(name, finishStroke));
+    canvas?.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && pad.classList.contains("is-fullscreen-fallback")) { event.preventDefault(); setHandwritingFullscreen(pad, false); }
+    });
+    pad.querySelector("[data-handwriting-toggle]")?.addEventListener("click", () => {
+      const collapsed = pad.classList.toggle("is-collapsed");
+      const button = pad.querySelector("[data-handwriting-toggle]");
+      button?.setAttribute("aria-expanded", String(!collapsed));
+      const label = button?.querySelector("[data-handwriting-toggle-label]");
+      if (label) label.textContent = collapsed ? "展开手写" : "收起手写";
+      window.requestAnimationFrame?.(() => resizeHandwritingPad(pad));
+    });
+    pad.querySelector("[data-handwriting-fullscreen]")?.addEventListener("click", () => toggleHandwritingFullscreen(pad));
+    pad.querySelector("[data-handwriting-undo]")?.addEventListener("click", () => {
+      if (stateForPad.readonly || !stateForPad.strokes.length) return;
+      stateForPad.redo.push(stateForPad.strokes.pop());
+      saveHandwritingPad(pad, "undo");
+    });
+    pad.querySelector("[data-handwriting-redo]")?.addEventListener("click", () => {
+      if (stateForPad.readonly || !stateForPad.redo.length) return;
+      stateForPad.strokes.push(stateForPad.redo.pop());
+      saveHandwritingPad(pad, "redo");
+    });
+    pad.querySelector("[data-handwriting-clear]")?.addEventListener("click", () => {
+      if (stateForPad.readonly || !stateForPad.strokes.length) return;
+      if (typeof window.confirm === "function" && !window.confirm("清空当前手写步骤吗？")) return;
+      stateForPad.redo = stateForPad.strokes.slice();
+      stateForPad.strokes = [];
+      saveHandwritingPad(pad, "clear");
+    });
+    if (typeof ResizeObserver !== "undefined" && wrap) new ResizeObserver(() => resizeHandwritingPad(pad)).observe(wrap);
+    resizeHandwritingPad(pad);
+    updateHandwritingStatus(pad);
+    drawHandwritingPad(pad);
+  });
+}
+
+function renderHandwritingPad({ key = "unknown", readonly = false, expanded = false } = {}) {
+  return `<section class="handwriting-pad ${readonly ? "is-readonly" : ""} ${expanded ? "" : "is-collapsed"}" data-handwriting-pad data-handwriting-key="${escapeAttr(key)}" data-handwriting-readonly="${readonly ? "true" : "false"}">
+    <div class="handwriting-pad-head"><div><strong>手写步骤</strong><span data-handwriting-status aria-live="polite">${readonly ? "只读查看" : "未开始"}</span></div><div class="handwriting-actions">
+      <button type="button" class="handwriting-action" data-handwriting-toggle aria-expanded="${expanded ? "true" : "false"}"><span aria-hidden="true">⌁</span><span data-handwriting-toggle-label>${expanded ? "收起手写" : "展开手写"}</span></button>
+      <button type="button" class="handwriting-action handwriting-fullscreen-button" data-handwriting-fullscreen>${readonly ? "全屏查看" : "全屏书写"}</button>
+      <button type="button" class="handwriting-action icon-action" data-handwriting-undo aria-label="撤销手写" ${readonly ? "disabled" : ""}>↶</button>
+      <button type="button" class="handwriting-action icon-action" data-handwriting-redo aria-label="恢复手写" ${readonly ? "disabled" : ""}>↷</button>
+      <button type="button" class="handwriting-action" data-handwriting-clear ${readonly ? "disabled" : ""}>清空</button>
+    </div></div>
+    <div class="handwriting-canvas-wrap" data-handwriting-canvas-wrap><canvas class="handwriting-canvas" data-handwriting-canvas tabindex="0" role="img" aria-label="手写解题步骤区域"></canvas><span class="handwriting-empty" data-handwriting-empty>在这里书写解题步骤 · 支持手指、触控笔和鼠标</span></div>
+    <div class="handwriting-pad-foot"><span data-handwriting-updated>手写草稿只保存在本机</span><span>笔画可随时撤销、清空或全屏编辑</span></div>
+  </section>`;
+}
+
 function renderFormulaEditor({ id, value = "", readonly = false, answerAttribute = "", label = "LaTeX 作答", placeholder = "先写文字，再用工具插入公式，例如：函数在区间上连续。", questionType = "fill" }) {
   const editorId = domId(id);
   const inputId = editorId === "modal-answer" ? "answer-input" : `${editorId}-input`;
@@ -526,16 +844,17 @@ function renderChoiceEditor({ question, value = "", readonly = false, answerAttr
   </div>`;
 }
 
-function renderAnswerEditor(question, { mode = "modal", value = "", readonly = false } = {}) {
+function renderAnswerEditor(question, { mode = "modal", value = "", readonly = false, contextId = "", draftKey = "" } = {}) {
   const answerAttribute = mode === "practice"
     ? `data-practice-answer="${escapeAttr(question.id)}"`
     : mode === "simulation"
       ? `data-sim-answer="${escapeAttr(question.id)}"`
       : "";
+  const handwritingKey = draftKey || answerHandwritingKey(mode, question.id, contextId);
   if (question.question_type === "choice") {
-    return renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` });
+    return `<div class="answer-editor-surface">${renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` })}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`;
   }
-  return renderFormulaEditor({
+  const editor = renderFormulaEditor({
     id: mode === "modal" ? "modal-answer" : `${mode}-answer-${question.id}`,
     value,
     readonly,
@@ -544,6 +863,7 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
     placeholder: question.question_type === "fill" ? "输入最终结果，点击工具插入分数、根式、积分等公式。" : "先写解题步骤，公式直接点工具插入，需要时再修改字母或数字。",
     questionType: question.question_type,
   });
+  return `<div class="answer-editor-surface">${editor}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`;
 }
 
 function insertFormulaSnippet(field, button) {
@@ -926,6 +1246,7 @@ function bindAnswerEditors(root = document) {
       }
     });
   });
+  bindHandwritingPads(root);
 }
 
 function typeLabel(type) {
@@ -1132,8 +1453,20 @@ function simulationDraftForQuestion(simulation, question, draft = readSimulation
   };
 }
 
+function simulationHandwritingKey(simulation, questionId) {
+  return answerHandwritingKey("simulation", questionId, simulation?.id || "draft");
+}
+
 function simulationDataField(root, attribute, dataKey, questionId) {
   return $$(`[${attribute}]`, root).find((field) => field.dataset[dataKey] === String(questionId));
+}
+
+function simulationQuestionHasDraft(simulation, question, draft = readSimulationDraft(simulation), root = null) {
+  const answerField = root ? simulationDataField(root, "data-sim-answer", "simAnswer", question.id) : null;
+  const gradeField = root ? simulationDataField(root, "data-sim-grade", "simGrade", question.id) : null;
+  const answer = answerField ? answerField.value : draft.answers[question.id] ?? question.attempt?.answer ?? "";
+  const selfGrade = gradeField ? gradeField.value : draft.selfGrades[question.id] ?? "";
+  return Boolean(String(answer || "").trim() || String(selfGrade || "").trim() || handwritingHasDraft(simulationHandwritingKey(simulation, question.id)));
 }
 
 function collectSimulationDraft(root = document) {
@@ -1150,16 +1483,13 @@ function saveSimulationDraft(root = document) {
   const draft = collectSimulationDraft(root);
   const hasAnswer = Object.values(draft.answers).some((value) => String(value || "").trim());
   const hasGrade = Object.values(draft.selfGrades).some((value) => String(value || "").trim());
-  if (hasAnswer || hasGrade) localStorage.setItem(simulationDraftKey(simulation.id), JSON.stringify(draft));
+  const hasHandwriting = (simulation.questions || []).some((question) => handwritingHasDraft(simulationHandwritingKey(simulation, question.id)));
+  if (hasAnswer || hasGrade || hasHandwriting) localStorage.setItem(simulationDraftKey(simulation.id), JSON.stringify(draft));
   else localStorage.removeItem(simulationDraftKey(simulation.id));
 }
 
 function simulationQuestionAnswered(simulation, question, root = document, draft = readSimulationDraft(simulation)) {
-  const answerField = simulationDataField(root, "data-sim-answer", "simAnswer", question.id);
-  const gradeField = simulationDataField(root, "data-sim-grade", "simGrade", question.id);
-  const answer = answerField ? answerField.value : draft.answers[question.id] ?? question.attempt?.answer ?? "";
-  const selfGrade = gradeField ? gradeField.value : draft.selfGrades[question.id] ?? "";
-  return Boolean(String(answer || "").trim() || String(selfGrade || "").trim());
+  return simulationQuestionHasDraft(simulation, question, draft, root);
 }
 
 function simulationAnsweredCount(simulation = state.currentSimulation, root = document) {
@@ -1171,15 +1501,9 @@ function simulationAnsweredCount(simulation = state.currentSimulation, root = do
 function renderSimulationAnswerCard(simulation, finished) {
   const questions = simulation.questions || [];
   const draft = readSimulationDraft(simulation);
-  const answered = questions.filter((question) => {
-    const answer = draft.answers[question.id] ?? question.attempt?.answer ?? "";
-    const selfGrade = draft.selfGrades[question.id] ?? "";
-    return Boolean(String(answer || "").trim() || String(selfGrade || "").trim());
-  }).length;
+  const answered = questions.filter((question) => simulationQuestionHasDraft(simulation, question, draft)).length;
   const cardMarkup = questions.map((question, index) => {
-    const answer = draft.answers[question.id] ?? question.attempt?.answer ?? "";
-    const selfGrade = draft.selfGrades[question.id] ?? "";
-    const isAnswered = Boolean(String(answer || "").trim() || String(selfGrade || "").trim());
+    const isAnswered = simulationQuestionHasDraft(simulation, question, draft);
     const isCurrent = index === state.simulationCurrentIndex;
     const status = isAnswered ? "已作答" : "未作答";
     return `<button type="button" class="simulation-card-item ${isAnswered ? "answered" : "unanswered"} ${isCurrent ? "current" : ""}" data-sim-card data-sim-index="${index}" data-sim-question="${escapeAttr(question.id)}" aria-label="第 ${question.number} 题，${status}" ${isCurrent ? 'aria-current="true"' : ""}><span class="simulation-card-number">${String(index + 1).padStart(2, "0")}</span><span class="simulation-card-type">${escapeHtml(typeLabel(question.question_type))}</span></button>`;
@@ -1261,6 +1585,7 @@ function bindSimulationPlatform(root) {
   root.addEventListener("change", (event) => {
     if (event.target?.matches?.("[data-sim-answer], [data-sim-grade]")) updateDraft();
   });
+  root.addEventListener("handwritingchange", updateDraft);
   root.addEventListener("focusin", (event) => {
     const question = event.target.closest?.(".simulation-question[data-sim-index]");
     if (question) setSimulationCurrent(question.dataset.simIndex, root);
@@ -1285,7 +1610,7 @@ function canLeaveSimulation(nextView) {
   if (!simulation || simulation.status === "finished" || state.view !== "simulation" || nextView === "simulation") return true;
   const answered = simulationAnsweredCount(simulation, $("simulation-container") || document);
   const total = simulation.questions?.length || 0;
-  return window.confirm(`模拟考尚未交卷，当前已答 ${answered} / ${total} 题。离开后计时仍会继续，已输入的文字答案会保留。确定离开吗？`);
+  return window.confirm(`模拟考尚未交卷，当前已答 ${answered} / ${total} 题。离开后计时仍会继续，文字与手写草稿会保留。确定离开吗？`);
 }
 
 function handleSimulationBeforeUnload(event) {
@@ -2666,13 +2991,17 @@ function renderFullBlock(block, blockIndex = 0) {
     </article>`;
   }).join("");
   const samples = (block.questions || []).slice(0, 3).map((question, index) => `<div class="block-question" data-question-id="${escapeAttr(question.id)}"><span class="block-question-number">0${index + 1}</span><div class="block-question-main"><div class="block-question-preview markdown-body">${renderQuestionPreview(question.question_markdown, 260)}</div><p class="question-concepts">${questionConceptMarkup(question)}${questionSubtypeMarkup(question)}</p>${questionAttemptMarkup(question, true)}${classificationEditorMarkup(question, "block")}</div><small>${questionDifficultyMarkup(question)} ${formatScore(question.points)}分 · ${question.year}</small></div>`).join("");
-  return `<details class="full-block-card block-stack-card" data-block-stack ${blockIndex === 0 ? "open" : ""}>
+  return `<details class="full-block-card block-stack-card" data-block-stack style="--stack-index:${blockIndex}" ${blockIndex === 0 ? "open" : ""}>
     <summary class="block-stack-summary"><div class="full-block-head"><div><span class="eyebrow">${escapeHtml(concept.subject || "知识块")}</span><h3>${escapeHtml(concept.name || "未分类")}</h3><p>${concept.attempts || 0} 次作答 · ${concept.accuracy == null ? "暂无正确率" : `${formatScore(concept.accuracy)}% 正确`} · ${(block.subtypes || []).length} 类具体考法</p></div><div class="block-stack-metrics"><div class="mastery-number">${formatScore(concept.mastery ?? 22)}%</div><span data-block-stack-state>${blockIndex === 0 ? "收起" : "展开"}</span></div></div><div class="block-stack-reason">${renderLearningText(block.reason || "根据当前掌握度安排训练")}</div></summary>
     <div class="block-stack-content">
-      <div class="progress-line"><span style="--progress:${(value / 100).toFixed(3)}"></span></div>
-      <div class="block-type-grid">${subtypeCards || typeCards || `<p class="muted-copy">该知识块暂时没有可用的细分题型。</p>`}</div>
-      <div class="block-sample-head"><span class="eyebrow">题目预览</span><span>点击题目可直接作答</span></div>
-      <div class="block-question-list">${samples || `<p class="muted-copy">暂无推荐题目。</p>`}</div>
+      <div class="block-stack-content-inner">
+        <div class="block-stack-content-body">
+          <div class="progress-line"><span style="--progress:${(value / 100).toFixed(3)}"></span></div>
+          <div class="block-type-grid">${subtypeCards || typeCards || `<p class="muted-copy">该知识块暂时没有可用的细分题型。</p>`}</div>
+          <div class="block-sample-head"><span class="eyebrow">题目预览</span><span>点击题目可直接作答</span></div>
+          <div class="block-question-list">${samples || `<p class="muted-copy">暂无推荐题目。</p>`}</div>
+        </div>
+      </div>
     </div>
   </details>`;
 }
@@ -2706,7 +3035,14 @@ function renderPracticeAttachments(items = []) {
 
 function practiceQuestionIsAnswered(question) {
   const answerState = question?.answer_state || {};
-  return Boolean((answerState.answer || "").trim() || answerState.self_grade != null);
+  return Boolean((answerState.answer || "").trim() || answerState.self_grade != null || handwritingHasDraft(answerHandwritingKey("practice", question?.id)));
+}
+
+function practiceCardHasDraft(card) {
+  if (!card) return false;
+  const answer = card.querySelector("[data-practice-answer]")?.value.trim() || "";
+  const grade = card.querySelector("[data-practice-grade]");
+  return Boolean(answer || (grade && grade.value !== "") || handwritingPadHasContent(card.querySelector("[data-handwriting-pad]")));
 }
 
 function renderPracticeSession() {
@@ -2744,17 +3080,14 @@ function renderPracticeSession() {
   bindAnswerEditors($('blocks-container'));
   bindClassificationControls($("blocks-container"));
   bindPracticeSession();
+  window.requestAnimationFrame?.(() => $("blocks-container").querySelectorAll("[data-handwriting-pad]").forEach(resizeHandwritingPad));
 }
 
 function updatePracticeSessionStatus() {
   const session = state.practiceSession;
   if (!session || session.status === "finished") return;
   const root = $("blocks-container");
-  const answered = $$('[data-practice-question-card]', root).filter((card) => {
-    const answer = card.querySelector('[data-practice-answer]')?.value.trim() || "";
-    const grade = card.querySelector('[data-practice-grade]');
-    return Boolean(answer || (grade && grade.value !== ""));
-  }).length;
+  const answered = $$('[data-practice-question-card]', root).filter(practiceCardHasDraft).length;
   const status = root.querySelector(".practice-session-status span");
   if (status) status.textContent = `已填写 ${answered} / ${session.questions.length} 题 · 可随时保存草稿`;
   updatePracticeQuestionNavigator();
@@ -2763,9 +3096,7 @@ function updatePracticeSessionStatus() {
 function updatePracticeQuestionNavigator() {
   const root = $("blocks-container");
   $$('[data-practice-question-card]', root).forEach((card, index) => {
-    const answer = card.querySelector('[data-practice-answer]')?.value.trim() || "";
-    const grade = card.querySelector('[data-practice-grade]');
-    const complete = Boolean(answer || (grade && grade.value !== ""));
+    const complete = practiceCardHasDraft(card);
     const button = $$('[data-practice-question-index]', root)[index];
     button?.classList.toggle("is-complete", complete);
     button?.setAttribute("aria-label", `第 ${index + 1} 题${complete ? "，已填写" : ""}`);
@@ -2790,6 +3121,7 @@ function selectPracticeQuestion(index, focusAnswer = false) {
   const position = $("practice-question-position");
   if (position) position.textContent = `第 ${state.practiceQuestionIndex + 1} / ${cards.length} 题`;
   cards[state.practiceQuestionIndex].scrollIntoView({ behavior: "smooth", block: "start" });
+  window.requestAnimationFrame?.(() => cards[state.practiceQuestionIndex].querySelectorAll("[data-handwriting-pad]").forEach(resizeHandwritingPad));
   if (focusAnswer) cards[state.practiceQuestionIndex].querySelector('[data-formula-input], [data-choice-editor]')?.focus({ preventScroll: true });
 }
 
@@ -2797,6 +3129,10 @@ function bindPracticeSession() {
   const root = $("blocks-container");
   $$('[data-practice-answer]', root).forEach((field) => field.addEventListener("input", updatePracticeSessionStatus));
   $$('[data-practice-grade]', root).forEach((field) => field.addEventListener("change", updatePracticeSessionStatus));
+  if (root.dataset.practiceHandwritingBound !== "true") {
+    root.dataset.practiceHandwritingBound = "true";
+    root.addEventListener("handwritingchange", updatePracticeSessionStatus);
+  }
   $$('[data-practice-image]', root).forEach((input) => input.addEventListener("change", () => {
     const status = $$('[data-practice-image-status]', root).find((item) => item.dataset.practiceImageStatus === input.dataset.practiceImage);
     const error = validateImageFile(input.files?.[0]);
@@ -2897,7 +3233,7 @@ async function refreshPracticeSession() {
   const session = state.practiceSession;
   const button = $("refresh-practice-session");
   if (!session) return;
-  const hasDraft = $$('[data-practice-answer]').some((field) => field.value.trim()) || $$('[data-practice-grade]').some((field) => field.value !== "") || $$('[data-practice-image]').some((input) => input.files?.length);
+  const hasDraft = $$('[data-practice-answer]').some((field) => field.value.trim()) || $$('[data-practice-grade]').some((field) => field.value !== "") || $$('[data-handwriting-pad]').some(handwritingPadHasContent) || $$('[data-practice-image]').some((input) => input.files?.length);
   if (hasDraft && !window.confirm("换一组题会丢弃当前未提交的草稿，已提交的历史记录不会丢失。确定换题吗？")) return;
   const currentIds = (session.questions || []).map((question) => question.id).filter(Boolean);
   await startPracticeSession(session.concept_id, session.question_type || "", session.subtype_id || "", currentIds, button);
@@ -2983,6 +3319,7 @@ async function openQuestion(questionId) {
     $("modal-source").textContent = `SOURCE · ${question.source_path || "本地题库"}`;
     $("question-modal").classList.add("open");
     $("question-modal").setAttribute("aria-hidden", "false");
+    window.requestAnimationFrame?.(() => $("modal-answer-editor").querySelectorAll("[data-handwriting-pad]").forEach(resizeHandwritingPad));
     window.setTimeout(() => $("answer-input")?.focus(), 120);
   } catch (error) {
     showToast(`打开题目失败：${error.message}`, true);
@@ -2990,6 +3327,9 @@ async function openQuestion(questionId) {
 }
 
 function closeQuestion() {
+  const fullscreenPad = $("modal-answer-editor")?.querySelector("[data-handwriting-pad]");
+  if (fullscreenPad?.classList.contains("is-fullscreen-fallback")) setHandwritingFullscreen(fullscreenPad, false);
+  if (document.fullscreenElement === fullscreenPad) document.exitFullscreen?.();
   $("question-modal").classList.remove("open");
   $("question-modal").setAttribute("aria-hidden", "true");
   state.currentQuestion = null;
@@ -3187,6 +3527,7 @@ function renderSimulation() {
   bindAnswerEditors(container);
   bindSimulationUploads(container);
   bindSimulationPlatform(container);
+  window.requestAnimationFrame?.(() => container.querySelectorAll("[data-handwriting-pad]").forEach(resizeHandwritingPad));
 }
 
 function renderSimulationPaper(simulation, finished) {
@@ -3195,7 +3536,7 @@ function renderSimulationPaper(simulation, finished) {
   const questionMarkup = questions.map((question, index) => {
     const draftValue = simulationDraftForQuestion(simulation, question, draft);
     const gradeMarkup = question.question_type === "solution" ? `<div class="sim-self-grade"><span>解答题自评</span><select data-sim-grade="${escapeAttr(question.id)}"><option value="" ${draftValue.selfGrade === "" ? "selected" : ""}>暂不自评</option><option value="1" ${String(draftValue.selfGrade) === "1" ? "selected" : ""}>完整正确（100%）</option><option value="0.7" ${String(draftValue.selfGrade) === "0.7" ? "selected" : ""}>主要正确（70%）</option><option value="0.4" ${String(draftValue.selfGrade) === "0.4" ? "selected" : ""}>部分得到（40%）</option><option value="0" ${String(draftValue.selfGrade) === "0" ? "selected" : ""}>不会/错误（0%）</option></select></div>` : "";
-    const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
+    const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer, contextId: simulation.id })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
     return `<article class="simulation-question" data-sim-index="${index}"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
   }).join("");
   const simulationHeaderAction = finished ? "" : `<div class="simulation-header-actions"><button type="button" class="secondary-button simulation-cancel-button" id="cancel-simulation">取消模拟考</button><div class="simulation-clock" id="simulation-clock">180:00</div></div>`;
