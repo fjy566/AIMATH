@@ -12,7 +12,11 @@ const state = {
   authenticated: false,
   authMode: "login",
   adminUsers: [],
+  adminUsersAll: [],
   adminAudit: [],
+  adminAuditAll: [],
+  adminUserFilters: { search: "", role: "", status: "" },
+  adminAuditFilters: { action: "", search: "" },
   accountSettings: null,
   stats: null,
   progress: null,
@@ -4145,25 +4149,65 @@ const authActionLabels = {
   logout: "退出登录",
   "password-changed": "修改密码",
   "admin-user-updated": "管理员更新账户",
+  "admin-sessions-revoked": "管理员撤销会话",
   "legacy-data-migrated": "迁移旧数据",
 };
+
+function applyAdminFilters() {
+  const userFilters = state.adminUserFilters || {};
+  const userSearch = String(userFilters.search || "").trim().toLocaleLowerCase();
+  state.adminUsers = (state.adminUsersAll || []).filter((user) => {
+    const haystack = [user.username, user.email, user.display_name].join(" ").toLocaleLowerCase();
+    const matchesSearch = !userSearch || haystack.includes(userSearch);
+    const matchesRole = !userFilters.role || user.role === userFilters.role;
+    const matchesStatus = !userFilters.status || (userFilters.status === "active" ? user.is_active : !user.is_active);
+    return matchesSearch && matchesRole && matchesStatus;
+  });
+
+  const auditFilters = state.adminAuditFilters || {};
+  const auditSearch = String(auditFilters.search || "").trim().toLocaleLowerCase();
+  state.adminAudit = (state.adminAuditAll || []).filter((event) => {
+    const matchesAction = !auditFilters.action || event.action === auditFilters.action;
+    const haystack = [event.action, event.actor_username, event.user_username, event.target_username, event.ip_address, event.detail]
+      .join(" ")
+      .toLocaleLowerCase();
+    return matchesAction && (!auditSearch || haystack.includes(auditSearch));
+  });
+  renderAdminUsers();
+  renderAdminAudit();
+}
+
+function syncAdminAuditActions() {
+  const select = $("admin-audit-action");
+  if (!select) return;
+  const current = state.adminAuditFilters?.action || "";
+  const actions = [...new Set((state.adminAuditAll || []).map((event) => event.action).filter(Boolean))].sort();
+  select.innerHTML = `<option value="">全部事件</option>${actions.map((action) => `<option value="${escapeAttr(action)}">${escapeHtml(authActionLabels[action] || action)}</option>`).join("")}`;
+  select.value = actions.includes(current) ? current : "";
+  if (!actions.includes(current)) state.adminAuditFilters.action = "";
+}
 
 function renderAdminUsers() {
   const root = $("admin-users-table");
   if (!root) return;
   const users = state.adminUsers || [];
+  const total = (state.adminUsersAll || []).length;
+  const resultCount = $("admin-user-result-count");
+  if (resultCount) resultCount.textContent = `${users.length} / ${total} 个账户`;
   root.innerHTML = users.length
-    ? `<div class="admin-user-head"><span>账户</span><span>角色与状态</span><span>操作</span></div>${users.map((user) => `<article class="admin-user-row" data-admin-user="${escapeAttr(user.id)}"><div class="admin-user-identity"><strong>${escapeHtml(user.display_name || user.username)}</strong><span>@${escapeHtml(user.username)}${user.email ? ` · ${escapeHtml(user.email)}` : ""}</span><small>注册于 ${escapeHtml(formatDateTime(user.created_at))}${user.last_login_at ? ` · 最近登录 ${escapeHtml(formatDateTime(user.last_login_at))}` : ""}</small></div><div class="admin-user-controls"><label>角色<select data-admin-role ${user.id === state.userId ? "disabled" : ""}><option value="user" ${user.role === "user" ? "selected" : ""}>普通用户</option><option value="admin" ${user.role === "admin" ? "selected" : ""}>管理员</option></select></label><label class="admin-active-toggle"><input type="checkbox" data-admin-active ${user.is_active ? "checked" : ""} ${user.id === state.userId ? "disabled" : ""} />启用</label></div><div class="admin-user-actions"><input type="text" data-admin-display value="${escapeAttr(user.display_name || user.username)}" maxlength="80" aria-label="${escapeAttr(user.username)} 显示名称" /><button type="button" class="secondary-button" data-admin-save>保存</button><span class="form-status" data-admin-status></span></div></article>`).join("")}`
-    : `<div class="empty-state compact-empty"><h3>暂无账户</h3><p>注册后账户会显示在这里。</p></div>`;
+    ? `<div class="admin-user-head"><span>账户</span><span>角色与状态</span><span>操作</span></div>${users.map((user) => { const sessionCount = Number(user.active_session_count || 0); const isCurrent = user.id === state.userId; return `<article class="admin-user-row" data-admin-user="${escapeAttr(user.id)}"><div class="admin-user-identity"><div class="admin-user-name-line"><strong>${escapeHtml(user.display_name || user.username)}</strong><span class="admin-state-chip ${user.is_active ? "is-active" : "is-inactive"}">${user.is_active ? "已启用" : "已停用"}</span></div><span>@${escapeHtml(user.username)}${user.email ? ` · ${escapeHtml(user.email)}` : ""}</span><small>注册于 ${escapeHtml(formatDateTime(user.created_at))}${user.last_login_at ? ` · 最近登录 ${escapeHtml(formatDateTime(user.last_login_at))}` : ""}</small><small>${Number(user.attempt_count || 0)} 次作答 · ${Number(user.note_count || 0)} 条笔记 · ${sessionCount} 个活跃会话</small></div><div class="admin-user-controls"><label>角色<select data-admin-role ${isCurrent ? "disabled" : ""}><option value="user" ${user.role === "user" ? "selected" : ""}>普通用户</option><option value="admin" ${user.role === "admin" ? "selected" : ""}>管理员</option></select></label><label class="admin-active-toggle"><input type="checkbox" data-admin-active ${user.is_active ? "checked" : ""} ${isCurrent ? "disabled" : ""} />启用</label></div><div class="admin-user-actions"><input type="text" data-admin-display value="${escapeAttr(user.display_name || user.username)}" maxlength="80" aria-label="${escapeAttr(user.username)} 显示名称" /><div class="admin-user-action-buttons"><button type="button" class="secondary-button" data-admin-save>保存</button><button type="button" class="secondary-button admin-revoke-button" data-admin-revoke-sessions ${isCurrent || sessionCount === 0 ? "disabled" : ""} title="${isCurrent ? "不能撤销当前管理员会话" : sessionCount ? `撤销 ${sessionCount} 个活跃会话` : "没有可撤销的会话"}">撤销会话</button></div><span class="form-status" data-admin-status></span></div></article>`; }).join("")}`
+    : `<div class="empty-state compact-empty"><h3>${total ? "没有匹配账户" : "暂无账户"}</h3><p>${total ? "调整搜索条件或筛选器后重试。" : "注册后账户会显示在这里。"}</p></div>`;
 }
 
 function renderAdminAudit() {
   const root = $("admin-audit-list");
   if (!root) return;
   const events = state.adminAudit || [];
+  const resultCount = $("admin-audit-result-count");
+  if (resultCount) resultCount.textContent = `${events.length} / ${(state.adminAuditAll || []).length} 条事件`;
   root.innerHTML = events.length
     ? events.map((event) => `<article class="admin-audit-row"><div><strong>${escapeHtml(authActionLabels[event.action] || event.action)}</strong><span>${escapeHtml(event.actor_username || event.user_username || "系统")}${event.target_username ? ` → ${escapeHtml(event.target_username)}` : ""}</span></div><time>${escapeHtml(formatDateTime(event.created_at))}</time><small>${escapeHtml(event.detail || event.ip_address || "")}</small></article>`).join("")
-    : `<div class="empty-state compact-empty"><h3>暂无安全事件</h3><p>登录、注册和权限变更会记录在这里。</p></div>`;
+    : `<div class="empty-state compact-empty"><h3>${(state.adminAuditAll || []).length ? "没有匹配事件" : "暂无安全事件"}</h3><p>${(state.adminAuditAll || []).length ? "调整事件类型或搜索词后重试。" : "登录、注册和权限变更会记录在这里。"}</p></div>`;
 }
 
 async function loadAdmin() {
@@ -4172,18 +4216,21 @@ async function loadAdmin() {
     const [overview, users, audit] = await Promise.all([
       fetchJSON("/api/admin/overview"),
       fetchJSON("/api/admin/users"),
-      fetchJSON("/api/admin/audit?limit=100"),
+      fetchJSON("/api/admin/audit?limit=200"),
     ]);
     $("admin-users-count").textContent = overview.users ?? "—";
     $("admin-active-users-count").textContent = overview.active_users ?? "—";
+    $("admin-admins-count").textContent = overview.admins ?? "—";
     $("admin-sessions-count").textContent = overview.active_sessions ?? "—";
     $("admin-attempts-count").textContent = overview.attempts ?? "—";
-    state.adminUsers = users.items || [];
-    state.adminAudit = audit.items || [];
-    renderAdminUsers();
-    renderAdminAudit();
+    $("admin-audit-count").textContent = overview.audit_events ?? audit.items?.length ?? "—";
+    state.adminUsersAll = users.items || [];
+    state.adminAuditAll = audit.items || [];
+    syncAdminAuditActions();
+    applyAdminFilters();
   } catch (error) {
     $("admin-users-table").innerHTML = `<div class="loading-card">读取管理数据失败：${escapeHtml(error.message)}</div>`;
+    $("admin-audit-list").innerHTML = `<div class="loading-card">读取安全事件失败：${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -4210,11 +4257,64 @@ async function updateAdminUser(row) {
   }
 }
 
+async function revokeAdminUserSessions(row) {
+  const target = row?.dataset.adminUser;
+  if (!target) return;
+  const user = (state.adminUsersAll || []).find((item) => item.id === target);
+  if (!user || user.id === state.userId) return;
+  const sessionCount = Number(user.active_session_count || 0);
+  if (!sessionCount || !window.confirm(`确定撤销 ${user.display_name || user.username} 的 ${sessionCount} 个活跃会话吗？该账户需要重新登录。`)) return;
+  const button = row.querySelector("[data-admin-revoke-sessions]");
+  const status = row.querySelector("[data-admin-status]");
+  if (button) { button.disabled = true; button.setAttribute("aria-busy", "true"); }
+  if (status) { status.textContent = "撤销中……"; status.classList.remove("error"); }
+  try {
+    const result = await fetchJSON(`/api/admin/users/${encodeURIComponent(target)}/sessions/revoke`, { ...jsonOptions({}), method: "POST" });
+    showToast(`已撤销 ${result.revoked || 0} 个会话。`);
+    await loadAdmin();
+  } catch (error) {
+    if (status) { status.textContent = `失败：${error.message}`; status.classList.add("error"); }
+  } finally {
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+  }
+}
+
+function exportAdminAudit() {
+  const events = state.adminAudit || [];
+  if (!events.length) { showToast("当前筛选没有可导出的安全事件。", true); return; }
+  const csvCell = (value) => {
+    let text = String(value ?? "").replace(/\r?\n/g, " ");
+    if (/^[-=+@]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
+  const header = ["时间", "事件", "操作者", "目标账户", "IP", "详情"];
+  const rows = events.map((event) => [event.created_at, authActionLabels[event.action] || event.action, event.actor_username || event.user_username || "系统", event.target_username || "", event.ip_address || "", event.detail || ""]);
+  const csv = "\ufeff" + [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `ai-math-security-log-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast(`已导出 ${events.length} 条安全事件。`);
+}
+
 function bindAdminControls() {
   $("admin-users-table")?.addEventListener("click", (event) => {
-    const button = event.target.closest?.("[data-admin-save]");
-    if (button) updateAdminUser(button.closest("[data-admin-user]"));
+    const row = event.target.closest?.("[data-admin-user]");
+    const saveButton = event.target.closest?.("[data-admin-save]");
+    const revokeButton = event.target.closest?.("[data-admin-revoke-sessions]");
+    if (saveButton && row) updateAdminUser(row);
+    if (revokeButton && row) revokeAdminUserSessions(row);
   });
+  $("admin-user-search")?.addEventListener("input", (event) => { state.adminUserFilters.search = event.target.value; applyAdminFilters(); });
+  $("admin-user-role-filter")?.addEventListener("change", (event) => { state.adminUserFilters.role = event.target.value; applyAdminFilters(); });
+  $("admin-user-status-filter")?.addEventListener("change", (event) => { state.adminUserFilters.status = event.target.value; applyAdminFilters(); });
+  $("admin-audit-search")?.addEventListener("input", (event) => { state.adminAuditFilters.search = event.target.value; applyAdminFilters(); });
+  $("admin-audit-action")?.addEventListener("change", (event) => { state.adminAuditFilters.action = event.target.value; applyAdminFilters(); });
+  $("admin-audit-export")?.addEventListener("click", exportAdminAudit);
 }
 
 function bindAuthControls() {
@@ -4225,9 +4325,13 @@ function bindAuthControls() {
     if (!input) return;
     const visible = input.type === "text";
     input.type = visible ? "password" : "text";
-    button.textContent = visible ? "显示" : "隐藏";
+    const secretName = button.dataset.secretName || "密码";
+    const nextLabel = `${visible ? "显示" : "隐藏"}${secretName}`;
     button.setAttribute("aria-pressed", String(!visible));
-    button.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
+    button.setAttribute("aria-label", nextLabel);
+    button.setAttribute("title", nextLabel);
+    const srLabel = button.querySelector(".sr-only");
+    if (srLabel) srLabel.textContent = nextLabel;
     input.focus({ preventScroll: true });
   }));
   $("login-form")?.addEventListener("submit", submitAuthForm);

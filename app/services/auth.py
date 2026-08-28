@@ -161,10 +161,41 @@ def get_user(user_id: str, *, include_inactive: bool = False) -> dict[str, Any] 
     return public_user(row) if row is not None else None
 
 
-def list_users() -> list[dict[str, Any]]:
+def list_users(*, search: str = "", role: str = "", status: str = "") -> list[dict[str, Any]]:
+    """Return identity and aggregate activity metadata for the admin directory.
+
+    The query intentionally stays at metadata level: administrators can see
+    account state and counts, but never answer, note, or preference content.
+    Filters are applied in SQL so a growing local user directory does not
+    require sending the full list to the browser before it can be narrowed.
+    """
+    now = utc_now()
+    conditions = ["1 = 1"]
+    params: list[Any] = [now]
+    normalized_search = str(search or "").strip()[:80]
+    if normalized_search:
+        like = f"%{normalized_search}%"
+        conditions.append("(u.username LIKE ? OR u.email LIKE ? OR u.display_name LIKE ?)")
+        params.extend([like, like, like])
+    if role in {"user", "admin"}:
+        conditions.append("u.role = ?")
+        params.append(role)
+    if status in {"active", "inactive"}:
+        conditions.append("u.is_active = ?")
+        params.append(1 if status == "active" else 0)
+    where = " AND ".join(conditions)
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT * FROM users ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at ASC"
+            f"""
+            SELECT u.*,
+                (SELECT COUNT(*) FROM auth_sessions s WHERE s.user_id = u.id AND s.expires_at > ?) AS active_session_count,
+                (SELECT COUNT(*) FROM attempts a WHERE a.user_id = u.id) AS attempt_count,
+                (SELECT COUNT(*) FROM notes n WHERE n.user_id = u.id) AS note_count
+            FROM users u
+            WHERE {where}
+            ORDER BY CASE u.role WHEN 'admin' THEN 0 ELSE 1 END, u.is_active DESC, u.created_at ASC
+            """,
+            params,
         ).fetchall()
     users = [public_user(row) for row in rows]
     # The admin directory only needs identity and status metadata; personal
@@ -465,6 +496,33 @@ def revoke_session(session_hash: str, user_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+def revoke_user_sessions_by_admin(target_user_id: str, *, actor_user_id: str, ip_address: str = "") -> int:
+    """Revoke every session for another account and record the action.
+
+    An administrator can already revoke their own other sessions from account
+    settings. Blocking self-revocation here prevents an admin action from
+    deleting the session that is currently authorizing the request.
+    """
+    if target_user_id == actor_user_id:
+        raise AuthValidationError("请在账户设置中退出管理员自己的其他设备。")
+    with get_connection() as connection:
+        target = connection.execute("SELECT id FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if target is None:
+            raise AuthValidationError("账户不存在。")
+        cursor = connection.execute("DELETE FROM auth_sessions WHERE user_id = ?", (target_user_id,))
+        revoked = int(cursor.rowcount)
+        _audit(
+            connection,
+            "admin-sessions-revoked",
+            user_id=actor_user_id,
+            actor_user_id=actor_user_id,
+            target_user_id=target_user_id,
+            ip_address=ip_address,
+            detail=f"sessions={revoked}",
+        )
+    return revoked
+
+
 def update_profile(user_id: str, *, display_name: str, email: str) -> dict[str, Any]:
     normalized_email = normalize_email(email)
     display = str(display_name or "").strip()[:80]
@@ -546,19 +604,35 @@ def update_user_by_admin(target_user_id: str, *, role: str, is_active: bool, dis
     return public_user(row) if row else {}
 
 
-def list_audit_events(limit: int = 100) -> list[dict[str, Any]]:
+def list_audit_events(limit: int = 100, *, action: str = "", search: str = "") -> list[dict[str, Any]]:
     safe_limit = max(1, min(200, int(limit)))
+    conditions = ["1 = 1"]
+    params: list[Any] = []
+    normalized_action = str(action or "").strip()[:80]
+    if normalized_action:
+        conditions.append("a.action = ?")
+        params.append(normalized_action)
+    normalized_search = str(search or "").strip()[:100]
+    if normalized_search:
+        like = f"%{normalized_search}%"
+        conditions.append(
+            "(COALESCE(u.username, '') LIKE ? OR COALESCE(actor.username, '') LIKE ? "
+            "OR COALESCE(target.username, '') LIKE ? OR a.detail LIKE ? OR a.ip_address LIKE ?)"
+        )
+        params.extend([like, like, like, like, like])
+    params.append(safe_limit)
     with get_connection() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT a.*, u.username AS user_username, actor.username AS actor_username, target.username AS target_username
             FROM auth_audit_events a
             LEFT JOIN users u ON u.id = a.user_id
             LEFT JOIN users actor ON actor.id = a.actor_user_id
             LEFT JOIN users target ON target.id = a.target_user_id
+            WHERE {' AND '.join(conditions)}
             ORDER BY a.created_at DESC LIMIT ?
             """,
-            (safe_limit,),
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -571,4 +645,13 @@ def admin_overview() -> dict[str, Any]:
         sessions = connection.execute("SELECT COUNT(*) AS count FROM auth_sessions WHERE expires_at > ?", (utc_now(),)).fetchone()["count"]
         attempts = connection.execute("SELECT COUNT(*) AS count FROM attempts").fetchone()["count"]
         notes = connection.execute("SELECT COUNT(*) AS count FROM notes").fetchone()["count"]
-    return {"users": int(users), "active_users": int(active_users), "admins": int(admins), "active_sessions": int(sessions), "attempts": int(attempts), "notes": int(notes)}
+        audit_events = connection.execute("SELECT COUNT(*) AS count FROM auth_audit_events").fetchone()["count"]
+    return {
+        "users": int(users),
+        "active_users": int(active_users),
+        "admins": int(admins),
+        "active_sessions": int(sessions),
+        "attempts": int(attempts),
+        "notes": int(notes),
+        "audit_events": int(audit_events),
+    }

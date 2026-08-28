@@ -69,6 +69,7 @@ from app.services.auth import (
     require_user,
     revoke_other_sessions,
     revoke_session,
+    revoke_user_sessions_by_admin,
     set_csrf_cookie,
     set_session_cookies,
     update_preferences,
@@ -587,8 +588,13 @@ def get_admin_overview(_: AuthContext = Depends(require_admin)) -> dict[str, Any
 
 
 @app.get("/api/admin/users")
-def get_admin_users(_: AuthContext = Depends(require_admin)) -> dict[str, Any]:
-    return {"items": list_users()}
+def get_admin_users(
+    search: str = Query(default="", max_length=80),
+    role: str = Query(default="", max_length=12),
+    status: str = Query(default="", max_length=12),
+    _: AuthContext = Depends(require_admin),
+) -> dict[str, Any]:
+    return {"items": list_users(search=search, role=role, status=status)}
 
 
 @app.patch("/api/admin/users/{target_user_id}")
@@ -607,9 +613,27 @@ def admin_update_user(target_user_id: str, payload: AdminUserUpdateRequest, requ
     return {"user": user}
 
 
+@app.post("/api/admin/users/{target_user_id}/sessions/revoke")
+def admin_revoke_user_sessions(target_user_id: str, request: Request, context: AuthContext = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        revoked = revoke_user_sessions_by_admin(
+            target_user_id,
+            actor_user_id=context.user_id,
+            ip_address=_request_ip(request),
+        )
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"revoked": revoked}
+
+
 @app.get("/api/admin/audit")
-def get_admin_audit(limit: int = Query(default=100, ge=1, le=200), _: AuthContext = Depends(require_admin)) -> dict[str, Any]:
-    return {"items": list_audit_events(limit)}
+def get_admin_audit(
+    limit: int = Query(default=100, ge=1, le=200),
+    action: str = Query(default="", max_length=80),
+    search: str = Query(default="", max_length=100),
+    _: AuthContext = Depends(require_admin),
+) -> dict[str, Any]:
+    return {"items": list_audit_events(limit, action=action, search=search)}
 
 
 @app.get("/api/health")

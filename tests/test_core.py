@@ -438,8 +438,13 @@ def test_account_settings_and_admin_surface_use_shared_session_identity() -> Non
     assert "function resetUserScopedState" in source
     assert "function simulationPointerKey" in source
     assert "/api/admin/users/" in source
+    assert "admin-user-search" in markup
+    assert "admin-audit-export" in markup
+    assert "password-toggle-icon" in markup
+    assert "admin-sessions-revoked" in source
     assert ".auth-screen" in styles
     assert ".admin-user-row" in styles
+    assert ".admin-toolbar" in styles
 
 
 def test_tex_normalization_preserves_array_row_break_before_command() -> None:
@@ -1009,6 +1014,10 @@ def test_auth_sessions_rbac_and_per_user_data_isolation(tmp_path: Path) -> None:
                 learner = registered_two.json()["user"]
                 assert learner["role"] == "user"
                 assert client_two.get("/api/admin/overview").status_code == 403
+                filtered_users = client.get("/api/admin/users", params={"search": "learner_two", "role": "user", "status": "active"})
+                assert filtered_users.status_code == 200
+                assert len(filtered_users.json()["items"]) == 1
+                assert filtered_users.json()["items"][0]["attempt_count"] == 0
                 assert client_two.get("/api/progress", params={"user_id": admin["id"]}).json()["attempts"] == 0
                 assert client_two.get("/api/workbench/notes", params={"user_id": admin["id"]}).json()["items"] == []
                 assert client_two.get(f"/api/attachments/{upload.json()['attachment_id']}", params={"user_id": learner["id"]}).status_code == 404
@@ -1031,6 +1040,13 @@ def test_auth_sessions_rbac_and_per_user_data_isolation(tmp_path: Path) -> None:
                 assert promoted.status_code == 200
                 assert promoted.json()["user"]["role"] == "admin"
                 assert client.get("/api/admin/audit").json()["items"]
+                revoked = client.post(
+                    f"/api/admin/users/{learner['id']}/sessions/revoke",
+                    headers={"X-CSRF-Token": admin_csrf},
+                )
+                assert revoked.status_code == 200
+                assert revoked.json()["revoked"] >= 1
+                assert client.get("/api/admin/audit", params={"action": "admin-sessions-revoked"}).json()["items"]
                 # Deactivation revokes all sessions, so the old learner cookie
                 # cannot be reused after an administrator change.
                 deactivated = client.patch(
