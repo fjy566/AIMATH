@@ -32,23 +32,153 @@ _TEX_COMMAND_NAMES = (
     "Big|big|bigl|bigr|bigg|Bigg|Bigl|Bigr|Biggl|Biggr|cup|cap|setminus|circ|"
     "perp|downarrow|uparrow|triangle|ker|pmod|mod"
 )
-_TEX_COMMAND_RE = re.compile(rf"(?<!\\)\\\\(?=(?:{_TEX_COMMAND_NAMES})(?![A-Za-z]))")
-_TEX_LONG_ESCAPE_RE = re.compile(rf"(?<!\\)(?:\\\\){{2,}}(?=(?:{_TEX_COMMAND_NAMES})(?![A-Za-z]))")
-
-
-def _normalize_template_prose(value: str) -> str:
-    """Collapse accidental double escapes in one-line template guidance."""
-    return str(value or "").replace("\\\\", "\\")
+_TEX_COMMAND_TOKEN_RE = re.compile(r"[A-Za-z]+")
+_TEX_COMMAND_NAME_SET = frozenset(_TEX_COMMAND_NAMES.split("|"))
+_TEX_ENV_TOKEN_RE = re.compile(r"(?:begin|end)\s*\{([^{}]+)\}")
+_TEX_ALIGNMENT_ENVS = frozenset(
+    {
+        "array",
+        "cases",
+        "dcases",
+        "rcases",
+        "aligned",
+        "alignedat",
+        "gathered",
+        "gather",
+        "align",
+        "align*",
+        "alignat",
+        "alignat*",
+        "matrix",
+        "pmatrix",
+        "bmatrix",
+        "Bmatrix",
+        "vmatrix",
+        "Vmatrix",
+        "smallmatrix",
+    }
+)
+_TEX_FORMULA_SEGMENT_RE = re.compile(
+    r"\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^\$\n]+\$"
+)
 
 
 def _normalize_template_formula(value: str) -> str:
-    """Normalize doubled TeX command escapes without destroying matrix rows."""
+    """Normalize TeX escapes without destroying matrix/cases row breaks."""
     formula = str(value or "")
-    # A raw string copied through two serializers can contain four or more
-    # slashes before a command.  Collapse only even runs; an odd run such as
-    # ``\\\\\\left`` is an intentional array row break followed by a command.
-    formula = _TEX_LONG_ESCAPE_RE.sub(lambda _match: "\\", formula)
-    return _TEX_COMMAND_RE.sub(lambda _match: "\\", formula)
+    if not formula:
+        return ""
+
+    output: list[str] = []
+    environment_stack: list[str] = []
+    brace_stack: list[bool] = []
+    substack_pending = False
+    index = 0
+    length = len(formula)
+
+    while index < length:
+        character = formula[index]
+        if character == chr(92):
+            slash_end = index
+            while slash_end < length and formula[slash_end] == chr(92):
+                slash_end += 1
+            slash_count = slash_end - index
+            following = formula[slash_end:]
+
+            # Environment markers are always single TeX commands, even when
+            # they were double-escaped by the source serializer.
+            environment = _TEX_ENV_TOKEN_RE.match(following)
+            if environment:
+                command = environment.group(0)
+                output.append(chr(92))
+                output.append(command)
+                environment_name = environment.group(1).strip()
+                if command.startswith("begin"):
+                    environment_stack.append(environment_name)
+                elif environment_stack:
+                    for position in range(len(environment_stack) - 1, -1, -1):
+                        if environment_stack[position] == environment_name:
+                            del environment_stack[position:]
+                            break
+                substack_pending = False
+                index = slash_end + len(command)
+                continue
+
+            command_match = _TEX_COMMAND_TOKEN_RE.match(following)
+            command_token = command_match.group(0) if command_match else ""
+            command = command_token if command_token in _TEX_COMMAND_NAME_SET else ""
+            next_character = following[0] if following else ""
+            in_alignment = bool(environment_stack) and environment_stack[-1] in _TEX_ALIGNMENT_ENVS
+            in_substack = any(brace_stack)
+
+            # Escaped braces are delimiters, not a row break followed by a
+            # structural group. Consume the brace here.
+            if next_character in "{}":
+                output.append(chr(92))
+                output.append(next_character)
+                substack_pending = False
+                index = slash_end + 1
+                continue
+
+            if slash_count == 1:
+                target_count = 1
+            elif in_alignment or in_substack:
+                # Two slashes are a row break. Four (or more) came from an
+                # extra serialization layer; retain the row break and add one
+                # command slash only when the next token is a command.
+                target_count = slash_count
+                if slash_count == 2 and command:
+                    target_count = 1
+                elif slash_count >= 4:
+                    target_count = 3 if command else 2
+            else:
+                # Outside tabular contexts, a repeated slash before a command,
+                # delimiter, punctuation, whitespace, or another long run is
+                # accidental escaping and can safely become one slash.
+                suspicious = (
+                    bool(command_match)
+                    or next_character in ",;!"
+                    or (next_character.isspace() and next_character not in chr(13) + chr(10))
+                    or slash_count >= 4
+                )
+                target_count = 1 if suspicious else slash_count
+
+            output.append(chr(92) * target_count)
+            if command:
+                output.append(command)
+                substack_pending = command == "substack"
+                index = slash_end + len(command)
+            else:
+                substack_pending = False
+                index = slash_end
+            continue
+
+        if character == "{":
+            brace_stack.append(substack_pending)
+            substack_pending = False
+        elif character == "}":
+            if brace_stack:
+                brace_stack.pop()
+            substack_pending = False
+        elif substack_pending and not character.isspace():
+            substack_pending = False
+        output.append(character)
+        index += 1
+
+    return "".join(output)
+
+
+def _normalize_template_prose(value: str) -> str:
+    """Normalize embedded formulas while keeping ordinary prose readable."""
+    text = str(value or "")
+    pieces: list[str] = []
+    cursor = 0
+    for match in _TEX_FORMULA_SEGMENT_RE.finditer(text):
+        pieces.append(text[cursor : match.start()].replace(chr(92) * 2, chr(92)))
+        pieces.append(_normalize_template_formula(match.group(0)))
+        cursor = match.end()
+    pieces.append(text[cursor:].replace(chr(92) * 2, chr(92)))
+    return "".join(pieces)
 
 
 def _build_answer_structure(
@@ -2517,7 +2647,7 @@ def _build_solution_steps(subtype_id: str, subtype: dict[str, Any], patterns: li
 
 
 def _normalize_template_learning(template: dict[str, Any]) -> None:
-    """Normalize formula/prose fields recursively before API serialization."""
+    """Normalize every generated learning layer before API serialization."""
     patterns = []
     for item in template.get("construction_patterns", []) or []:
         if not isinstance(item, dict):
@@ -2545,6 +2675,20 @@ def _normalize_template_learning(template: dict[str, Any]) -> None:
             "check": _normalize_template_prose(item.get("check", "")),
         })
     template["solution_steps"] = solution_steps
+    for key in ("recognition", "exam_directions", "question_type_guides", "practice_levels", "exam_checklist"):
+        if key in template:
+            template[key] = _normalize_template_tree(template[key])
+
+
+def _normalize_template_tree(value: Any) -> Any:
+    """Apply the shared prose/formula normalizer to nested API fields."""
+    if isinstance(value, str):
+        return _normalize_template_prose(value)
+    if isinstance(value, list):
+        return [_normalize_template_tree(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_template_tree(item) for key, item in value.items()}
+    return value
 
 
 for _items in SUBTYPE_CATALOG.values():

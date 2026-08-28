@@ -358,7 +358,11 @@ def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
     markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "const TEX_COMMAND_PATTERN" in source
+    assert "const TEX_SLASH" in source
+    assert "const TEX_ALIGNMENT_ENVS" in source
     assert "function normalizeTexSource" in source
+    assert 'rendered.includes("katex-error")' in source
+    assert "alignat" in source and "dcases" in source
     assert "function renderTemplateText" in source
     assert "function renderInlineFormulaText" in source
     assert "function renderNoteMarkdownPreview" in source
@@ -505,6 +509,27 @@ def test_tex_normalization_preserves_array_row_break_before_command() -> None:
     assert _normalize_template_formula(r"$$\\\\lim_{x\\to0}x$$") == r"$$\lim_{x\to0}x$$"
     array_formula = r"$\begin{array}{l}y^{\prime}+ay=f(x),\\\left.y\right|_{x=0}=0\end{array}$"
     assert _normalize_template_formula(array_formula) == array_formula
+
+
+def test_formula_normalization_repairs_braces_and_preserves_rows() -> None:
+    from app.services.workbench import _normalize_template_formula
+
+    rank_formula = _normalize_template_formula(r"$$r(A)=\\text{阶梯形主元数}=\\max\\{\\text{非零子式阶数}\\}.$$")
+    assert rank_formula == r"$$r(A)=\text{阶梯形主元数}=\max\{\text{非零子式阶数}\}.$$"
+    cases_formula = _normalize_template_formula(r"$$f(x)=\\begin{cases}f_1(x),&x\\in I_1,\\\\f_2(x),&x\\in I_2.\\end{cases}$$")
+    assert cases_formula == r"$$f(x)=\begin{cases}f_1(x),&x\in I_1,\\f_2(x),&x\in I_2.\end{cases}$$"
+    substack_formula = _normalize_template_formula(r"$\\substack{u=1\\\\v=1}$")
+    assert substack_formula == r"$\substack{u=1\\v=1}$"
+
+
+def test_matrix_rank_construction_formula_is_ready_for_katex() -> None:
+    from app.services.workbench import build_workbench_template
+
+    template = build_workbench_template(load_questions(), "matrix", "matrix-rank")
+    rank_formula = next(item["formula"] for item in template["construction_patterns"] if item["title"] == "秩与主子式")
+    assert rank_formula == r"$$r(A)=\text{阶梯形主元数}=\max\{\text{非零子式阶数}\}.$$"
+    assert r"\\{" not in rank_formula
+    assert r"\\}" not in rank_formula
 
 
 def test_workbench_notes_assets_versions_and_template_export(tmp_path: Path) -> None:

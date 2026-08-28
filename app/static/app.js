@@ -88,18 +88,101 @@ function replaceAllLiteral(value, search, replacement) {
 // (for example "\\le"). Normalize only known command names so matrix row
 // breaks ("\\") remain intact.
 const TEX_COMMAND_PATTERN = /(?<!\\)\\\\(?=(?:begin|end|frac|dfrac|tfrac|sqrt|binom|left|right|mathrm|mathbf|mathit|text|operatorname|mathbb|mathsf|mathcal|mathscr|displaystyle|textstyle|scriptstyle|lim|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|ln|log|exp|sum|prod|int|iint|iiint|partial|nabla|infty|to|sim|le|ge|leq|geq|leqslant|geqslant|ne|neq|in|notin|subset|subseteq|forall|exists|varnothing|emptyset|Longleftrightarrow|Longrightarrow|Longleftarrow|Rightarrow|Leftrightarrow|leftarrow|rightarrow|cdot|times|pm|mp|approx|asymp|nsim|quad|qquad|det|lambda|xi|mu|alpha|beta|gamma|delta|theta|pi|Delta|Lambda|Omega|ell|eta|rho|psi|sigma|zeta|varphi|varepsilon|phi|boldsymbol|vec|overline|underline|overbrace|underbrace|widehat|hat|check|tilde|dot|ddot|cdots|ldots|dots|vdots|ddots|prime|mid|middle|boxed|hspace|limits|substack|max|min|Big|big|bigl|bigr|bigg|Bigg|Bigl|Bigr|Biggl|Biggr|cup|cap|setminus|circ|perp|downarrow|uparrow|triangle|ker|pmod|mod)\b)/g;
+const TEX_SLASH = String.fromCharCode(92);
+const TEX_COMMAND_NAMES = new Set("begin|end|frac|dfrac|tfrac|sqrt|binom|left|right|mathrm|mathbf|mathit|text|operatorname|mathbb|mathsf|mathcal|mathscr|displaystyle|textstyle|scriptstyle|lim|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|ln|log|exp|sum|prod|int|iint|iiint|partial|nabla|infty|to|sim|le|ge|leq|geq|leqslant|geqslant|ne|neq|in|notin|subset|subseteq|forall|exists|varnothing|emptyset|Longleftrightarrow|Longrightarrow|Longleftarrow|Rightarrow|Leftrightarrow|leftarrow|rightarrow|longleftarrow|longrightarrow|longleftrightarrow|xrightarrow|cdot|times|pm|mp|approx|asymp|nsim|gtrless|quad|qquad|det|lambda|xi|mu|alpha|beta|gamma|delta|theta|pi|Delta|Lambda|Phi|Omega|ell|eta|kappa|rho|psi|sigma|zeta|varphi|varepsilon|phi|boldsymbol|vec|bar|overline|underline|overbrace|underbrace|widehat|hat|check|tilde|dot|ddot|cdots|ldots|dots|vdots|ddots|prime|mid|middle|boxed|hspace|limits|substack|max|min|Big|big|bigl|bigr|bigg|Bigg|Bigl|Bigr|Biggl|Biggr|cup|cap|setminus|circ|perp|downarrow|uparrow|triangle|ker|pmod|mod".split("|"));
+const TEX_ALIGNMENT_ENVS = new Set(["array", "cases", "dcases", "rcases", "aligned", "alignedat", "gathered", "gather", "align", "align*", "alignat", "alignat*", "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix"]);
+const TEX_ENV_TOKEN_PATTERN = /^(?:begin|end)\s*\{([^{}]+)\}/;
+const FORMULA_PATTERN_ALL = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$|\\begin\{(?:cases|dcases|rcases|aligned|alignedat|array|gathered|gather|align|align\*|alignat|alignat\*|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}[\s\S]*?\\end\{(?:cases|dcases|rcases|aligned|alignedat|array|gathered|gather|align|align\*|alignat|alignat\*|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}/g;
 
 function normalizeTexSource(value) {
-  return String(value || "")
-    .replace(TEX_COMMAND_PATTERN, "\\")
-    .replace(/(?<!\\)\\\\(?=[,;!])/g, "\\");
+  const formula = String(value || "");
+  if (!formula) return "";
+  const output = [];
+  const environmentStack = [];
+  const braceStack = [];
+  let substackPending = false;
+  let index = 0;
+
+  while (index < formula.length) {
+    const character = formula[index];
+    if (character === TEX_SLASH) {
+      let slashEnd = index;
+      while (slashEnd < formula.length && formula[slashEnd] === TEX_SLASH) slashEnd += 1;
+      const slashCount = slashEnd - index;
+      const following = formula.slice(slashEnd);
+      const environment = following.match(TEX_ENV_TOKEN_PATTERN);
+      if (environment) {
+        const command = environment[0];
+        output.push(TEX_SLASH, command);
+        const environmentName = environment[1].trim();
+        if (command.startsWith("begin")) environmentStack.push(environmentName);
+        else {
+          for (let position = environmentStack.length - 1; position >= 0; position -= 1) {
+            if (environmentStack[position] === environmentName) {
+              environmentStack.splice(position);
+              break;
+            }
+          }
+        }
+        substackPending = false;
+        index = slashEnd + command.length;
+        continue;
+      }
+
+      const commandMatch = following.match(/^[A-Za-z]+/);
+      const commandToken = commandMatch ? commandMatch[0] : "";
+      const command = TEX_COMMAND_NAMES.has(commandToken) ? commandToken : "";
+      const nextCharacter = following[0] || "";
+      const inAlignment = environmentStack.length > 0 && TEX_ALIGNMENT_ENVS.has(environmentStack[environmentStack.length - 1]);
+      const inSubstack = braceStack.some(Boolean);
+
+      if (nextCharacter === "{" || nextCharacter === "}") {
+        output.push(TEX_SLASH, nextCharacter);
+        substackPending = false;
+        index = slashEnd + 1;
+        continue;
+      }
+
+      let targetCount = slashCount;
+      if (slashCount === 1) targetCount = 1;
+      else if (inAlignment || inSubstack) {
+        if (slashCount === 2 && command) targetCount = 1;
+        else if (slashCount >= 4) targetCount = command ? 3 : 2;
+      } else {
+        const suspicious = Boolean(commandMatch) || ",;!".includes(nextCharacter) || (/\s/.test(nextCharacter) && nextCharacter.charCodeAt(0) !== 13 && nextCharacter.charCodeAt(0) !== 10) || slashCount >= 4;
+        if (suspicious) targetCount = 1;
+      }
+      output.push(TEX_SLASH.repeat(targetCount));
+      if (command) {
+        output.push(command);
+        substackPending = command === "substack";
+        index = slashEnd + command.length;
+      } else {
+        substackPending = false;
+        index = slashEnd;
+      }
+      continue;
+    }
+
+    if (character === "{") {
+      braceStack.push(substackPending);
+      substackPending = false;
+    } else if (character === "}") {
+      if (braceStack.length) braceStack.pop();
+      substackPending = false;
+    } else if (substackPending && !/\s/.test(character)) {
+      substackPending = false;
+    }
+    output.push(character);
+    index += 1;
+  }
+  return output.join("");
 }
 
 function renderMarkdown(source) {
   let text = String(source || "").replace(/\r/g, "");
   const formulas = [];
-  const formulaPattern = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$|\\begin\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}[\s\S]*?\\end\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}/g;
-  text = text.replace(formulaPattern, (raw) => {
+  text = text.replace(FORMULA_PATTERN_ALL, (raw) => {
     let display = false;
     let tex = raw;
     if (raw.startsWith("$$")) {
@@ -234,12 +317,14 @@ function renderFormula(tex, display) {
   const source = normalizeTexSource(tex).trim();
   if (window.katex?.renderToString) {
     try {
-      return window.katex.renderToString(source, {
+      const rendered = window.katex.renderToString(source, {
         displayMode: display,
         throwOnError: false,
         strict: "ignore",
         trust: false,
       });
+      if (!rendered.includes("katex-error")) return rendered;
+      console.warn("KaTeX rejected formula after normalization", source);
     } catch (error) {
       console.warn("KaTeX render fallback", error);
     }
@@ -248,11 +333,9 @@ function renderFormula(tex, display) {
   return `<span class="${fallbackClass}">${escapeHtml(source)}</span>`;
 }
 
-const RICH_FORMULA_PATTERN = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$[^$\n]+\$|\\begin\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}[\s\S]*?\\end\{(?:cases|aligned|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|smallmatrix)\}/g;
-
 function renderInlineFormulaText(value) {
   const formulas = [];
-  const replaced = String(value || "").replace(/\r/g, "").replace(RICH_FORMULA_PATTERN, (raw) => {
+  const replaced = String(value || "").replace(/\r/g, "").replace(FORMULA_PATTERN_ALL, (raw) => {
     let display = false;
     let tex = raw;
     if (raw.startsWith("$$")) {
