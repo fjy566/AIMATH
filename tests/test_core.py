@@ -401,12 +401,18 @@ def test_answer_boards_share_touch_handwriting_drafts_and_fullscreen_controls() 
     assert "data-handwriting-canvas" in source
     assert "pointerdown" in source and "pointermove" in source
     assert "data-handwriting-fullscreen" in source
+    assert 'data-handwriting-tool="eraser"' in source
+    assert "globalCompositeOperation" in source
+    assert "collectHandwritingAttachments" in source
+    assert "handwritingPadToBlob" in source and "toBlob" in source
     assert "handwritingchange" in source
     assert "renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === \"modal\" })" in source
+    assert "data-answer-workspace" in source
     assert "contextId: simulation.id" in source
     assert ".handwriting-canvas {" in styles
     assert "touch-action: none" in styles
     assert ".handwriting-pad:fullscreen" in styles
+    assert ".answer-workspace" in styles
     assert "@media (pointer: coarse)" in styles
 
 

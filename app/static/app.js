@@ -521,6 +521,7 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill",
 // quality loss.
 const HANDWRITING_STORAGE_PREFIX = "ai-math-handwriting-v1:";
 const HANDWRITING_STATE = new WeakMap();
+const HANDWRITING_UPLOAD_CACHE = new Map();
 const HANDWRITING_MAX_STROKES = 320;
 const HANDWRITING_MAX_POINTS = 6000;
 
@@ -549,7 +550,8 @@ function normalizeHandwritingStrokes(strokes) {
       })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
       : [];
     if (points.length) {
-      normalized.push({ width: Math.max(1, Math.min(8, Number(stroke?.width) || 2.4)), points });
+      const mode = stroke?.mode === "eraser" ? "eraser" : "pen";
+      normalized.push({ mode, width: Math.max(1, Math.min(40, Number(stroke?.width) || (mode === "eraser" ? 14 : 2.4))), points });
       pointBudget -= points.length;
     }
   }
@@ -572,8 +574,12 @@ function handwritingHasDraft(key) {
 }
 
 function handwritingPadHasContent(pad) {
-  const stateForPad = pad ? HANDWRITING_STATE.get(pad) : null;
+  const stateForPad = handwritingStateFor(pad);
   return Boolean(stateForPad?.strokes?.length || (pad?.dataset.handwritingKey && handwritingHasDraft(pad.dataset.handwritingKey)));
+}
+
+function handwritingStateFor(pad) {
+  return pad ? HANDWRITING_STATE.get(pad) : null;
 }
 
 function handwritingFormatUpdatedAt(value) {
@@ -598,6 +604,21 @@ function writeHandwritingDraft(stateForPad) {
   return updatedAt;
 }
 
+function forgetHandwritingDraft(padOrKey) {
+  const stateForPad = typeof padOrKey === "string" ? null : handwritingStateFor(padOrKey);
+  const key = typeof padOrKey === "string" ? padOrKey : stateForPad?.key || padOrKey?.dataset?.handwritingKey;
+  if (!key) return;
+  try { localStorage.removeItem(handwritingStorageKey(key)); } catch { /* storage may be unavailable */ }
+  HANDWRITING_UPLOAD_CACHE.delete(key);
+  if (stateForPad) {
+    stateForPad.strokes = [];
+    stateForPad.redo = [];
+    stateForPad.updatedAt = "";
+    drawHandwritingPad(padOrKey);
+    updateHandwritingStatus(padOrKey, "已提交");
+  }
+}
+
 function handwritingPoint(canvas, event) {
   const rect = canvas.getBoundingClientRect();
   return {
@@ -611,6 +632,7 @@ function drawHandwritingStroke(context, stroke, width, height, color = "#173f45"
   const points = stroke?.points || [];
   if (!points.length) return;
   context.save();
+  context.globalCompositeOperation = stroke?.mode === "eraser" ? "destination-out" : "source-over";
   context.strokeStyle = color;
   context.fillStyle = color;
   context.lineCap = "round";
@@ -638,7 +660,7 @@ function drawHandwritingStroke(context, stroke, width, height, color = "#173f45"
 }
 
 function drawHandwritingPad(pad) {
-  const stateForPad = HANDWRITING_STATE.get(pad);
+  const stateForPad = handwritingStateFor(pad);
   const canvas = pad?.querySelector("[data-handwriting-canvas]");
   if (!stateForPad || !canvas) return;
   const context = stateForPad.context || canvas.getContext("2d");
@@ -658,13 +680,23 @@ function drawHandwritingPad(pad) {
   const undo = pad.querySelector("[data-handwriting-undo]");
   const redo = pad.querySelector("[data-handwriting-redo]");
   const clear = pad.querySelector("[data-handwriting-clear]");
+  const save = pad.querySelector("[data-handwriting-save]");
+  const pen = pad.querySelector('[data-handwriting-tool="pen"]');
+  const eraser = pad.querySelector('[data-handwriting-tool="eraser"]');
+  const size = pad.querySelector("[data-handwriting-size]");
+  const toolLabel = pad.querySelector("[data-handwriting-tool-label]");
   if (undo) undo.disabled = stateForPad.readonly || !stateForPad.strokes.length;
   if (redo) redo.disabled = stateForPad.readonly || !stateForPad.redo.length;
   if (clear) clear.disabled = stateForPad.readonly || !stateForPad.strokes.length;
+  if (save) save.disabled = stateForPad.readonly || !stateForPad.strokes.length;
+  if (pen) { pen.disabled = stateForPad.readonly; pen.classList.toggle("is-active", stateForPad.tool === "pen"); pen.setAttribute("aria-pressed", String(stateForPad.tool === "pen")); }
+  if (eraser) { eraser.disabled = stateForPad.readonly; eraser.classList.toggle("is-active", stateForPad.tool === "eraser"); eraser.setAttribute("aria-pressed", String(stateForPad.tool === "eraser")); }
+  if (size) { size.disabled = stateForPad.readonly; size.value = String(stateForPad.strokeWidth); }
+  if (toolLabel) toolLabel.textContent = stateForPad.tool === "eraser" ? "橡皮" : "画笔";
 }
 
 function resizeHandwritingPad(pad) {
-  const stateForPad = HANDWRITING_STATE.get(pad);
+  const stateForPad = handwritingStateFor(pad);
   const canvas = pad?.querySelector("[data-handwriting-canvas]");
   if (!stateForPad || !canvas) return;
   const width = Math.max(280, Math.floor(canvas.parentElement?.clientWidth || canvas.clientWidth || 640));
@@ -687,21 +719,33 @@ function dispatchHandwritingChange(pad, source = "draw") {
 }
 
 function updateHandwritingStatus(pad, message = "") {
-  const stateForPad = HANDWRITING_STATE.get(pad);
+  const stateForPad = handwritingStateFor(pad);
   if (!stateForPad) return;
   const status = pad.querySelector("[data-handwriting-status]");
   const updated = pad.querySelector("[data-handwriting-updated]");
-  if (status) status.textContent = message || (stateForPad.strokes.length ? "已自动保存" : stateForPad.readonly ? "只读查看" : "未开始");
-  if (updated) updated.textContent = stateForPad.updatedAt ? handwritingFormatUpdatedAt(stateForPad.updatedAt) : "手写草稿只保存在本机";
+  if (status) status.textContent = message || (stateForPad.strokes.length ? "已暂存，可提交" : stateForPad.readonly ? "已提交 · 只读查看" : "未开始");
+  if (updated) updated.textContent = stateForPad.updatedAt ? handwritingFormatUpdatedAt(stateForPad.updatedAt) : "未提交前仅保存在本机";
 }
 
 function saveHandwritingPad(pad, source = "save") {
-  const stateForPad = HANDWRITING_STATE.get(pad);
+  const stateForPad = handwritingStateFor(pad);
   if (!stateForPad || stateForPad.readonly) return;
   writeHandwritingDraft(stateForPad);
   updateHandwritingStatus(pad);
   drawHandwritingPad(pad);
   dispatchHandwritingChange(pad, source);
+}
+
+function setHandwritingTool(pad, tool = "pen") {
+  const stateForPad = handwritingStateFor(pad);
+  if (!stateForPad || stateForPad.readonly) return;
+  stateForPad.tool = tool === "eraser" ? "eraser" : "pen";
+  updateHandwritingStatus(pad, stateForPad.tool === "eraser" ? "橡皮已启用" : "画笔已启用");
+  drawHandwritingPad(pad);
+}
+
+function handwritingToolButtonMarkup(tool, label, readonly) {
+  return `<button type="button" class="handwriting-action handwriting-tool" data-handwriting-tool="${tool}" aria-label="${label}工具" title="${label}工具" aria-pressed="${tool === "pen" ? "true" : "false"}" ${readonly ? "disabled" : ""}>${label}</button>`;
 }
 
 function setHandwritingFullscreen(pad, active) {
@@ -752,7 +796,7 @@ function bindHandwritingPads(root = document) {
     pad.dataset.handwritingBound = "true";
     const key = pad.dataset.handwritingKey || "unknown";
     const saved = readHandwritingDraft(key);
-    const stateForPad = { key, readonly: pad.dataset.handwritingReadonly === "true", strokes: saved.strokes, redo: [], updatedAt: saved.updatedAt, width: 0, height: 0, dpr: 1, activeStroke: null, context: null, drawFrame: 0 };
+    const stateForPad = { key, readonly: pad.dataset.handwritingReadonly === "true", strokes: saved.strokes, redo: [], updatedAt: saved.updatedAt, width: 0, height: 0, dpr: 1, activeStroke: null, context: null, drawFrame: 0, tool: "pen", strokeWidth: 2.4 };
     HANDWRITING_STATE.set(pad, stateForPad);
     const canvas = pad.querySelector("[data-handwriting-canvas]");
     const wrap = pad.querySelector("[data-handwriting-canvas-wrap]");
@@ -770,7 +814,8 @@ function bindHandwritingPads(root = document) {
       if (stateForPad.readonly || event.button > 0) return;
       event.preventDefault();
       canvas.setPointerCapture?.(event.pointerId);
-      const stroke = { width: event.pointerType === "pen" ? 2.1 : 2.5, points: [handwritingPoint(canvas, event)] };
+      const baseWidth = Number(stateForPad.strokeWidth) || 2.4;
+      const stroke = { mode: stateForPad.tool, width: stateForPad.tool === "eraser" ? Math.max(10, baseWidth * 5) : (event.pointerType === "pen" ? baseWidth * .88 : baseWidth), points: [handwritingPoint(canvas, event)] };
       stateForPad.strokes.push(stroke);
       stateForPad.redo = [];
       stateForPad.activeStroke = stroke;
@@ -787,6 +832,19 @@ function bindHandwritingPads(root = document) {
     ["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => canvas?.addEventListener(name, finishStroke));
     canvas?.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && pad.classList.contains("is-fullscreen-fallback")) { event.preventDefault(); setHandwritingFullscreen(pad, false); }
+      if (stateForPad.readonly) return;
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) pad.querySelector("[data-handwriting-redo]")?.click();
+        else pad.querySelector("[data-handwriting-undo]")?.click();
+      } else if (!modifier && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        setHandwritingTool(pad, "eraser");
+      } else if (!modifier && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setHandwritingTool(pad, "pen");
+      }
     });
     pad.querySelector("[data-handwriting-toggle]")?.addEventListener("click", () => {
       const collapsed = pad.classList.toggle("is-collapsed");
@@ -797,6 +855,17 @@ function bindHandwritingPads(root = document) {
       window.requestAnimationFrame?.(() => resizeHandwritingPad(pad));
     });
     pad.querySelector("[data-handwriting-fullscreen]")?.addEventListener("click", () => toggleHandwritingFullscreen(pad));
+    $$('[data-handwriting-tool]', pad).forEach((button) => button.addEventListener("click", () => setHandwritingTool(pad, button.dataset.handwritingTool)));
+    pad.querySelector("[data-handwriting-size]")?.addEventListener("input", (event) => {
+      if (stateForPad.readonly) return;
+      stateForPad.strokeWidth = Math.max(1, Math.min(8, Number(event.target.value) || 2.4));
+      updateHandwritingStatus(pad, `笔画 ${stateForPad.strokeWidth.toFixed(1)} px`);
+    });
+    pad.querySelector("[data-handwriting-save]")?.addEventListener("click", () => {
+      if (stateForPad.readonly || !stateForPad.strokes.length) return;
+      saveHandwritingPad(pad, "manual-save");
+      updateHandwritingStatus(pad, "已暂存，可直接提交");
+    });
     pad.querySelector("[data-handwriting-undo]")?.addEventListener("click", () => {
       if (stateForPad.readonly || !stateForPad.strokes.length) return;
       stateForPad.redo.push(stateForPad.strokes.pop());
@@ -809,9 +878,10 @@ function bindHandwritingPads(root = document) {
     });
     pad.querySelector("[data-handwriting-clear]")?.addEventListener("click", () => {
       if (stateForPad.readonly || !stateForPad.strokes.length) return;
-      if (typeof window.confirm === "function" && !window.confirm("清空当前手写步骤吗？")) return;
+      if (typeof window.confirm === "function" && !window.confirm("清空当前手写作答吗？")) return;
       stateForPad.redo = stateForPad.strokes.slice();
       stateForPad.strokes = [];
+      HANDWRITING_UPLOAD_CACHE.delete(stateForPad.key);
       saveHandwritingPad(pad, "clear");
     });
     if (typeof ResizeObserver !== "undefined" && wrap) new ResizeObserver(() => resizeHandwritingPad(pad)).observe(wrap);
@@ -823,15 +893,19 @@ function bindHandwritingPads(root = document) {
 
 function renderHandwritingPad({ key = "unknown", readonly = false, expanded = false } = {}) {
   return `<section class="handwriting-pad ${readonly ? "is-readonly" : ""} ${expanded ? "" : "is-collapsed"}" data-handwriting-pad data-handwriting-key="${escapeAttr(key)}" data-handwriting-readonly="${readonly ? "true" : "false"}">
-    <div class="handwriting-pad-head"><div><strong>手写步骤</strong><span data-handwriting-status aria-live="polite">${readonly ? "只读查看" : "未开始"}</span></div><div class="handwriting-actions">
-      <button type="button" class="handwriting-action" data-handwriting-toggle aria-expanded="${expanded ? "true" : "false"}"><span aria-hidden="true">⌁</span><span data-handwriting-toggle-label>${expanded ? "收起手写" : "展开手写"}</span></button>
+    <div class="handwriting-pad-head"><div><strong>手写作答</strong><span data-handwriting-status aria-live="polite">${readonly ? "已提交 · 只读查看" : "未开始"}</span></div><div class="handwriting-actions" role="toolbar" aria-label="手写作答工具">
+      ${handwritingToolButtonMarkup("pen", "笔", readonly)}
+      ${handwritingToolButtonMarkup("eraser", "橡皮", readonly)}
+      <label class="handwriting-size-control"><span>粗细</span><input type="range" data-handwriting-size min="1" max="8" step="0.5" value="2.4" aria-label="笔画粗细" ${readonly ? "disabled" : ""} /></label>
+      <button type="button" class="handwriting-action" data-handwriting-toggle aria-expanded="${expanded ? "true" : "false"}"><span data-handwriting-toggle-label>${expanded ? "收起" : "展开"}</span></button>
       <button type="button" class="handwriting-action handwriting-fullscreen-button" data-handwriting-fullscreen>${readonly ? "全屏查看" : "全屏书写"}</button>
-      <button type="button" class="handwriting-action icon-action" data-handwriting-undo aria-label="撤销手写" ${readonly ? "disabled" : ""}>↶</button>
-      <button type="button" class="handwriting-action icon-action" data-handwriting-redo aria-label="恢复手写" ${readonly ? "disabled" : ""}>↷</button>
+      <button type="button" class="handwriting-action icon-action" data-handwriting-undo aria-label="撤销手写" title="撤销（Ctrl/Cmd + Z）" ${readonly ? "disabled" : ""}>↶</button>
+      <button type="button" class="handwriting-action icon-action" data-handwriting-redo aria-label="重做手写" title="重做（Ctrl/Cmd + Shift + Z）" ${readonly ? "disabled" : ""}>↷</button>
+      <button type="button" class="handwriting-action" data-handwriting-save ${readonly ? "disabled" : ""}>暂存</button>
       <button type="button" class="handwriting-action" data-handwriting-clear ${readonly ? "disabled" : ""}>清空</button>
     </div></div>
-    <div class="handwriting-canvas-wrap" data-handwriting-canvas-wrap><canvas class="handwriting-canvas" data-handwriting-canvas tabindex="0" role="img" aria-label="手写解题步骤区域"></canvas><span class="handwriting-empty" data-handwriting-empty>在这里书写解题步骤 · 支持手指、触控笔和鼠标</span></div>
-    <div class="handwriting-pad-foot"><span data-handwriting-updated>手写草稿只保存在本机</span><span>笔画可随时撤销、清空或全屏编辑</span></div>
+    <div class="handwriting-canvas-wrap" data-handwriting-canvas-wrap><canvas class="handwriting-canvas" data-handwriting-canvas tabindex="0" role="img" aria-label="手写作答区域" aria-keyshortcuts="P E Control+Z Control+Shift+Z"></canvas><span class="handwriting-empty" data-handwriting-empty>在这里完成手写答案 · 支持手指、触控笔和鼠标</span></div>
+    <div class="handwriting-pad-foot"><span data-handwriting-updated>未提交前仅保存在本机</span><span>手写内容会作为作答图片提交 · <span data-handwriting-tool-label>画笔</span></span></div>
   </section>`;
 }
 
@@ -874,8 +948,15 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
       ? `data-sim-answer="${escapeAttr(question.id)}"`
       : "";
   const handwritingKey = draftKey || answerHandwritingKey(mode, question.id, contextId);
+  const workspaceHint = question.question_type === "choice"
+    ? "选项、手写或图片"
+    : question.question_type === "fill"
+      ? "文字、公式、手写或图片"
+      : "步骤、手写或图片";
+  const workspaceState = readonly ? "已提交 · 只读查看" : "提交前可随时暂存";
+  const workspace = (content) => `<section class="answer-workspace" data-answer-workspace data-answer-question="${escapeAttr(question.id)}" data-answer-mode="${escapeAttr(mode)}"><div class="answer-workspace-head"><div><strong>作答工作区</strong><span>${escapeHtml(workspaceState)}</span></div><span class="answer-workspace-hint">${escapeHtml(workspaceHint)}</span></div>${content}</section>`;
   if (question.question_type === "choice") {
-    return `<div class="answer-editor-surface">${renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` })}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`;
+    return workspace(`<div class="answer-editor-surface">${renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` })}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`);
   }
   const editor = renderFormulaEditor({
     id: mode === "modal" ? "modal-answer" : `${mode}-answer-${question.id}`,
@@ -886,7 +967,7 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
     placeholder: question.question_type === "fill" ? "输入最终结果，点击工具插入分数、根式、积分等公式。" : "先写解题步骤，公式直接点工具插入，需要时再修改字母或数字。",
     questionType: question.question_type,
   });
-  return `<div class="answer-editor-surface">${editor}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`;
+  return workspace(`<div class="answer-editor-surface">${editor}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`);
 }
 
 function insertFormulaSnippet(field, button) {
@@ -1670,6 +1751,54 @@ async function uploadAnswerImage(file, questionId) {
   return fetchJSON("/api/uploads/answer-image", { method: "POST", body: formData });
 }
 
+function handwritingPadToBlob(pad) {
+  const canvas = pad?.querySelector("[data-handwriting-canvas]");
+  if (!canvas || typeof canvas.toBlob !== "function" || !handwritingPadHasContent(pad)) return Promise.resolve(null);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+}
+
+async function uploadHandwritingPad(pad, questionId) {
+  const stateForPad = handwritingStateFor(pad);
+  if (!stateForPad || stateForPad.readonly || !questionId || !handwritingPadHasContent(pad)) return null;
+  const cachedId = HANDWRITING_UPLOAD_CACHE.get(stateForPad.key) || pad.dataset.handwritingAttachmentId;
+  if (cachedId) return cachedId;
+  updateHandwritingStatus(pad, "正在整理手写作答……");
+  const blob = await handwritingPadToBlob(pad);
+  if (!blob) throw new Error("当前手写内容无法生成图片，请重试。");
+  const file = typeof File === "function"
+    ? new File([blob], `handwriting-${String(questionId).slice(0, 48)}.png`, { type: "image/png" })
+    : blob;
+  const uploaded = await uploadAnswerImage(file, questionId);
+  const attachmentId = uploaded?.attachment_id || "";
+  if (!attachmentId) throw new Error("手写图片上传未返回附件编号。");
+  HANDWRITING_UPLOAD_CACHE.set(stateForPad.key, attachmentId);
+  pad.dataset.handwritingAttachmentId = attachmentId;
+  updateHandwritingStatus(pad, "已准备提交");
+  return attachmentId;
+}
+
+async function collectHandwritingAttachments(root, target, { questionId = "" } = {}) {
+  const pads = $$('[data-handwriting-pad]', root);
+  for (const pad of pads) {
+    const workspace = pad.closest("[data-answer-workspace]");
+    const resolvedQuestionId = workspace?.dataset.answerQuestion || questionId;
+    if (!resolvedQuestionId) continue;
+    const attachmentId = await uploadHandwritingPad(pad, resolvedQuestionId);
+    if (!attachmentId) continue;
+    if (Array.isArray(target)) {
+      if (!target.includes(attachmentId)) target.push(attachmentId);
+    } else {
+      const current = Array.isArray(target[resolvedQuestionId]) ? target[resolvedQuestionId] : [];
+      if (!current.includes(attachmentId)) target[resolvedQuestionId] = [...current, attachmentId];
+    }
+  }
+  return target;
+}
+
+function clearHandwritingDrafts(root) {
+  $$('[data-handwriting-pad]', root).forEach((pad) => forgetHandwritingDraft(pad));
+}
+
 function simulationDraftKey(simulationId) {
   return `ai-math-simulation-draft-${state.userId || "local-user"}-${simulationId}`;
 }
@@ -1721,9 +1850,11 @@ function simulationDataField(root, attribute, dataKey, questionId) {
 function simulationQuestionHasDraft(simulation, question, draft = readSimulationDraft(simulation), root = null) {
   const answerField = root ? simulationDataField(root, "data-sim-answer", "simAnswer", question.id) : null;
   const gradeField = root ? simulationDataField(root, "data-sim-grade", "simGrade", question.id) : null;
+  const imageField = root ? simulationDataField(root, "data-sim-image", "simImage", question.id) : null;
   const answer = answerField ? answerField.value : draft.answers[question.id] ?? question.attempt?.answer ?? "";
   const selfGrade = gradeField ? gradeField.value : draft.selfGrades[question.id] ?? "";
-  return Boolean(String(answer || "").trim() || String(selfGrade || "").trim() || handwritingHasDraft(simulationHandwritingKey(simulation, question.id)));
+  const hasImage = Boolean(imageField?.files?.length || question.attempt?.attachments?.length);
+  return Boolean(String(answer || "").trim() || String(selfGrade || "").trim() || hasImage || handwritingHasDraft(simulationHandwritingKey(simulation, question.id)));
 }
 
 function collectSimulationDraft(root = document) {
@@ -1867,7 +1998,7 @@ function canLeaveSimulation(nextView) {
   if (!simulation || simulation.status === "finished" || state.view !== "simulation" || nextView === "simulation") return true;
   const answered = simulationAnsweredCount(simulation, $("simulation-container") || document);
   const total = simulation.questions?.length || 0;
-  return window.confirm(`模拟考尚未交卷，当前已答 ${answered} / ${total} 题。离开后计时仍会继续，文字与手写草稿会保留。确定离开吗？`);
+  return window.confirm(`模拟考尚未交卷，当前已答 ${answered} / ${total} 题。离开后计时仍会继续，文字与手写内容会保留。确定离开吗？`);
 }
 
 function handleSimulationBeforeUnload(event) {
@@ -3297,20 +3428,27 @@ function practiceGradeValue(value) {
 
 function renderPracticeAttachments(items = []) {
   return items.length
-    ? `<div class="practice-existing-attachments">已保存：${items.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.filename || "作答图片")}</a>`).join("、")}</div>`
+    ? `<div class="practice-existing-attachments"><span>已提交附件：</span>${items.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.filename || "作答附件")}</a>`).join("、")}</div>`
     : "";
+}
+
+function renderAnswerImageUpload({ scope, questionId, status = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB" } = {}) {
+  const safeQuestionId = escapeAttr(questionId);
+  const prefix = scope === "simulation" ? "sim" : "practice";
+  const rowClass = scope === "simulation" ? "sim-upload-row" : "practice-upload-row";
+  return `<div class="answer-support-strip"><div class="answer-support-title"><strong>图片作答</strong><span>与手写作答一样，会随提交保存</span></div><div class="${rowClass} answer-upload-row"><label class="upload-button small-upload" for="${prefix}-image-${safeQuestionId}">＋ 上传作答图片</label><input id="${prefix}-image-${safeQuestionId}" type="file" data-${prefix}-image="${safeQuestionId}" accept="image/png,image/jpeg,image/webp,image/gif" /><span data-${prefix}-image-status="${safeQuestionId}">${escapeHtml(status)}</span></div></div>`;
 }
 
 function practiceQuestionIsAnswered(question) {
   const answerState = question?.answer_state || {};
-  return Boolean((answerState.answer || "").trim() || answerState.self_grade != null || handwritingHasDraft(answerHandwritingKey("practice", question?.id)));
+  return Boolean((answerState.answer || "").trim() || answerState.self_grade != null || (answerState.attachments || []).length || handwritingHasDraft(answerHandwritingKey("practice", question?.id)));
 }
 
 function practiceCardHasDraft(card) {
   if (!card) return false;
   const answer = card.querySelector("[data-practice-answer]")?.value.trim() || "";
   const grade = card.querySelector("[data-practice-grade]");
-  return Boolean(answer || (grade && grade.value !== "") || handwritingPadHasContent(card.querySelector("[data-handwriting-pad]")));
+  return Boolean(answer || (grade && grade.value !== "") || card.querySelector(".practice-existing-attachments") || handwritingPadHasContent(card.querySelector("[data-handwriting-pad]")));
 }
 
 function renderPracticeSession() {
@@ -3332,18 +3470,19 @@ function renderPracticeSession() {
     ].map(([value, label]) => `<option value="${value}" ${selectedGrade === value ? "selected" : ""}>${label}</option>`).join("");
     const resultMarkup = finished ? `<div class="practice-answer-result ${escapeAttr(result.status || answerState.status || "manual")}"><span>${escapeHtml(resultLabel(result.status || answerState.status))}</span><b>${formatScore(answerState.score)} / ${formatScore(answerState.max_score || question.points)} 分</b>${question.answer_markdown ? `<h5>来源答案</h5><div class="markdown-body">${renderMarkdown(question.answer_markdown)}</div>` : ""}${question.solution_markdown ? `<h5>来源解析</h5><div class="markdown-body">${renderMarkdown(question.solution_markdown)}</div>` : ""}</div>` : "";
     const answerArea = renderAnswerEditor(question, { mode: "practice", value: answer, readonly: finished });
-    const uploadArea = finished ? renderPracticeAttachments(answerState.attachments || []) : `<div class="practice-upload-row"><label class="upload-button small-upload" for="practice-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="practice-image-${escapeAttr(question.id)}" type="file" data-practice-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span data-practice-image-status="${escapeAttr(question.id)}">支持图片，单张不超过 8 MB</span></div>${renderPracticeAttachments(answerState.attachments || [])}`;
+    const uploadArea = finished ? renderPracticeAttachments(answerState.attachments || []) : `${renderAnswerImageUpload({ scope: "practice", questionId: question.id })}${renderPracticeAttachments(answerState.attachments || [])}`;
     const selfGrade = question.question_type === "solution" ? `<label class="practice-grade-label">解答题自评<select data-practice-grade="${escapeAttr(question.id)}" ${finished ? "disabled" : ""}>${gradeOptions}</select></label>` : "";
+    const answerBoard = `<div class="practice-answer-grid">${answerArea}${uploadArea}${selfGrade}</div>`;
     const subtypeLine = practiceQuestionSubtypeLine(question);
     const assistMarkup = `<div class="practice-assist-actions"><span class="practice-assist-label">卡住了？</span><button type="button" class="text-button" data-practice-hint="${escapeAttr(question.id)}">问问 AI</button><button type="button" class="text-button" data-practice-source="${escapeAttr(question.id)}">查看解析</button></div><div class="practice-assist-panel" data-practice-assist="${escapeAttr(question.id)}" hidden></div>`;
-    return `<article class="practice-session-question" data-practice-question="${escapeAttr(question.id)}" data-practice-question-card="${index}" ${index === activeIndex ? "" : "hidden"}><div class="practice-question-head"><span>${String(index + 1).padStart(2, "0")} / <span data-practice-subtype-label="${escapeAttr(question.id)}">${escapeHtml(subtypeLine)}</span></span><span class="practice-question-history">${questionAttemptMarkup(question, true)}</span><b>${formatScore(question.points)} 分</b></div><div class="practice-question-body markdown-body">${renderMarkdown(question.question_markdown)}</div><div class="practice-question-tags">${questionConceptMarkup(question)}${questionSubtypeMarkup(question)}</div>${classificationEditorMarkup(question, "practice")}<div class="practice-answer-grid">${answerArea}</div>${uploadArea}${selfGrade}${assistMarkup}${resultMarkup}</article>`;
+    return `<article class="practice-session-question" data-practice-question="${escapeAttr(question.id)}" data-practice-question-card="${index}" ${index === activeIndex ? "" : "hidden"}><div class="practice-question-head"><span>${String(index + 1).padStart(2, "0")} / <span data-practice-subtype-label="${escapeAttr(question.id)}">${escapeHtml(subtypeLine)}</span></span><span class="practice-question-history">${questionAttemptMarkup(question, true)}</span><b>${formatScore(question.points)} 分</b></div><div class="practice-question-body markdown-body">${renderMarkdown(question.question_markdown)}</div><div class="practice-question-tags">${questionConceptMarkup(question)}${questionSubtypeMarkup(question)}</div>${classificationEditorMarkup(question, "practice")}${answerBoard}${assistMarkup}${resultMarkup}</article>`;
   }).join("");
   const answeredCount = questions.filter(practiceQuestionIsAnswered).length;
-  const statusLabel = finished ? `已提交 · 得分 ${formatScore(session.score)} / ${formatScore(session.max_score)} 分` : `已填写 ${answeredCount} / ${questions.length} 题 · 可随时保存草稿`;
+  const statusLabel = finished ? `已提交 · 得分 ${formatScore(session.score)} / ${formatScore(session.max_score)} 分` : `已填写 ${answeredCount} / ${questions.length} 题 · 可随时暂存`;
   const navigator = `<nav class="practice-question-navigator" aria-label="专项训练题目导航"><div><strong>题目导航</strong><span>一次专注一道，答案会在切题时保留</span></div><div class="practice-question-tabs" role="tablist">${questions.map((question, index) => `<button type="button" data-practice-question-index="${index}" class="practice-question-tab ${index === activeIndex ? "is-active" : ""} ${practiceQuestionIsAnswered(question) ? "is-complete" : ""}" aria-selected="${index === activeIndex ? "true" : "false"}" aria-label="第 ${index + 1} 题${practiceQuestionIsAnswered(question) ? "，已填写" : ""}">${index + 1}</button>`).join("")}</div></nav>`;
   const cardNavigation = `<nav class="practice-card-navigation" aria-label="上一题或下一题"><button type="button" class="quiet-button" id="practice-question-prev" ${activeIndex === 0 ? "disabled" : ""}>上一题</button><span id="practice-question-position">第 ${activeIndex + 1} / ${questions.length} 题</span><button type="button" class="secondary-button" id="practice-question-next" ${activeIndex >= questions.length - 1 ? "disabled" : ""}>下一题</button></nav>`;
   $("blocks-container").classList.add("practice-active");
-  $("blocks-container").innerHTML = `<section class="practice-session-shell"><header class="practice-session-header"><div><span class="eyebrow">TRAINING SESSION / ${escapeHtml(sessionSubtypeName)}</span><h3>${escapeHtml(conceptName(session.concept_id))} · ${escapeHtml(sessionSubtypeName)}训练</h3><p>随机抽取 ${escapeHtml(countLabel)} · 真实题库 · ${finished ? "本次已完成" : "提交后统一判题"}</p></div><div class="practice-session-actions"><button class="text-button" id="leave-practice-session">返回分块</button><button class="secondary-button" id="refresh-practice-session">换一组题</button>${finished ? "" : `<button class="secondary-button" id="save-practice-session">保存草稿</button><button class="primary-button" id="submit-practice-session">提交训练</button>`}</div></header><div class="practice-session-status"><span>${escapeHtml(statusLabel)}</span><span class="practice-session-id">${escapeHtml(session.id.slice(0, 8))}</span></div>${navigator}<div class="practice-session-list">${cards}</div>${cardNavigation}${finished ? `<footer class="practice-session-footer"><p>本次结果已经写入学习记录，可以返回分块继续训练。</p><button class="primary-button" id="back-after-practice">返回分块训练</button></footer>` : `<footer class="practice-session-footer"><p>草稿只保存到本机，不会改变掌握度；点击提交后才会计入统计。</p><button class="primary-button" id="submit-practice-session-bottom">提交 ${questions.length} 题训练</button></footer>`}</section>`;
+  $("blocks-container").innerHTML = `<section class="practice-session-shell"><header class="practice-session-header"><div><span class="eyebrow">TRAINING SESSION / ${escapeHtml(sessionSubtypeName)}</span><h3>${escapeHtml(conceptName(session.concept_id))} · ${escapeHtml(sessionSubtypeName)}训练</h3><p>随机抽取 ${escapeHtml(countLabel)} · 真实题库 · ${finished ? "本次已完成" : "提交后统一判题"}</p></div><div class="practice-session-actions"><button class="text-button" id="leave-practice-session">返回分块</button><button class="secondary-button" id="refresh-practice-session">换一组题</button>${finished ? "" : `<button class="secondary-button" id="save-practice-session">保存暂存</button><button class="primary-button" id="submit-practice-session">提交训练</button>`}</div></header><div class="practice-session-status"><span>${escapeHtml(statusLabel)}</span><span class="practice-session-id">${escapeHtml(session.id.slice(0, 8))}</span></div>${navigator}<div class="practice-session-list">${cards}</div>${cardNavigation}${finished ? `<footer class="practice-session-footer"><p>本次结果已经写入学习记录，可以返回分块继续训练。</p><button class="primary-button" id="back-after-practice">返回分块训练</button></footer>` : `<footer class="practice-session-footer"><p>未提交前，文字与手写内容仅暂存在本机；提交后会作为正式答案与图片附件保存。</p><button class="primary-button" id="submit-practice-session-bottom">提交 ${questions.length} 题训练</button></footer>`}</section>`;
   typeset($("blocks-container"));
   bindAnswerEditors($('blocks-container'));
   bindClassificationControls($("blocks-container"));
@@ -3357,7 +3496,7 @@ function updatePracticeSessionStatus() {
   const root = $("blocks-container");
   const answered = $$('[data-practice-question-card]', root).filter(practiceCardHasDraft).length;
   const status = root.querySelector(".practice-session-status span");
-  if (status) status.textContent = `已填写 ${answered} / ${session.questions.length} 题 · 可随时保存草稿`;
+  if (status) status.textContent = `已填写 ${answered} / ${session.questions.length} 题 · 可随时暂存`;
   updatePracticeQuestionNavigator();
 }
 
@@ -3474,7 +3613,7 @@ async function revealPracticeSource(questionId, root = document) {
   }
 }
 
-async function collectPracticeSessionPayload() {
+async function collectPracticeSessionPayload({ includeHandwriting = false } = {}) {
   const answers = {};
   const selfGrades = {};
   const attachmentIds = {};
@@ -3494,6 +3633,7 @@ async function collectPracticeSessionPayload() {
     input.value = "";
     if (status) status.textContent = "图片已保存到本次训练";
   }
+  if (includeHandwriting) await collectHandwritingAttachments($("blocks-container"), attachmentIds);
   return { user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds };
 }
 
@@ -3531,9 +3671,9 @@ async function savePracticeSession() {
     const payload = await collectPracticeSessionPayload();
     state.practiceSession = await fetchJSON(`/api/practice/sessions/${encodeURIComponent(session.id)}`, { ...jsonOptions(payload), method: "PUT" });
     renderPracticeSession();
-    showToast("草稿已保存到本机。继续编辑后可以再次保存。", false);
+    showToast("暂存已保存到本机。继续编辑后可以再次保存。", false);
   } catch (error) {
-    showToast(`保存草稿失败：${error.message}`, true);
+    showToast(`保存暂存失败：${error.message}`, true);
     button.disabled = false;
   }
 }
@@ -3545,8 +3685,9 @@ async function submitPracticeSession(confirmSubmit = false) {
   const buttons = [$("submit-practice-session"), $("submit-practice-session-bottom")].filter(Boolean);
   buttons.forEach((button) => { button.disabled = true; });
   try {
-    const payload = await collectPracticeSessionPayload();
+    const payload = await collectPracticeSessionPayload({ includeHandwriting: true });
     state.practiceSession = await fetchJSON(`/api/practice/sessions/${encodeURIComponent(session.id)}/submit`, jsonOptions(payload));
+    clearHandwritingDrafts($("blocks-container"));
     renderPracticeSession();
     await refreshLearningData();
     showToast(`训练已提交：${formatScore(state.practiceSession.score)} / ${formatScore(state.practiceSession.max_score)} 分。`);
@@ -3578,10 +3719,10 @@ async function openQuestion(questionId) {
     $("self-grade").value = "";
     $("self-grade-wrap").style.display = question.question_type === "solution" ? "grid" : "none";
     $("answer-hint").textContent = question.question_type === "choice"
-      ? "点击选项，或使用键盘 A-D / 1-4"
+      ? "点击选项，也可以直接手写或上传图片"
       : question.question_type === "fill"
-        ? "点击公式工具插入模板，源码与预览同步"
-        : "先写步骤，再用公式工具补充关键表达式";
+        ? "文字、公式、手写和图片都可以作为正式答案"
+        : "先写步骤，或直接手写；图片会和答案一起保存";
     $("question-result").hidden = true;
     $("tutor-box").hidden = true;
     $("modal-source").textContent = `SOURCE · ${question.source_path || "本地题库"}`;
@@ -3607,6 +3748,12 @@ function resultLabel(status) {
   return { correct: "判定正确", incorrect: "需要订正", partial: "部分得分", manual: "等待自评" }[status] || status;
 }
 
+function renderAnswerAttachmentGallery(items = [], heading = "") {
+  if (!items.length) return "";
+  const title = heading ? `<h4>${escapeHtml(heading)}</h4>` : "";
+  return `<div class="result-attachments">${title}${items.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer"><img src="${escapeAttr(item.url)}" alt="${escapeAttr(item.filename || "作答附件")}" /><span>${escapeHtml(item.filename || "作答附件")}</span></a>`).join("")}</div>`;
+}
+
 function renderQuestionResult(payload) {
   const result = payload.result || {};
   const box = $("question-result");
@@ -3615,7 +3762,7 @@ function renderQuestionResult(payload) {
   const expected = result.expected_answer || payload.answer_markdown || "";
   const solution = payload.solution_markdown || "";
   const attachments = payload.attachments || [];
-  const attachmentMarkup = attachments.length ? `<div class="result-attachments"><h4>已保存的作答图片</h4>${attachments.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer"><img src="${escapeAttr(item.url)}" alt="${escapeAttr(item.filename || "作答图片")}" /></a>`).join("")}</div>` : "";
+  const attachmentMarkup = renderAnswerAttachmentGallery(attachments, "已提交的作答附件");
   box.innerHTML = `<div class="result-head"><span class="result-status">${resultLabel(result.status)}</span><span class="result-score">${formatScore(result.score)} / ${formatScore(result.max_score)} 分</span></div>
     <div class="result-detail"><h4>${result.error_type ? `记录：${escapeHtml(result.error_type)}` : "本次判定"}</h4><p class="muted-copy">${result.status === "manual" ? "来源没有可自动比对的完整标准答案，请根据步骤选择自评分数，或使用下方 AI 复核。" : result.status === "correct" ? "这次作答已计入掌握度。继续做一题同知识块的变式题。" : "这次作答已计入薄弱项分析，建议查看来源解析后再做一题相近题。"}</p>${attachmentMarkup}${expected ? `<h4>来源答案</h4><div class="markdown-body">${renderMarkdown(expected)}</div>` : ""}${solution ? `<h4>来源解析</h4><div class="markdown-body">${renderMarkdown(solution)}</div>` : `<h4>来源解析</h4><p class="muted-copy">当前来源文件没有提供该题解析。</p>`}</div>`;
   typeset(box);
@@ -3637,6 +3784,7 @@ async function submitAnswer() {
       const uploaded = await uploadAnswerImage(imageInput.files[0], question.id);
       attachmentIds.push(uploaded.attachment_id);
     }
+    await collectHandwritingAttachments($("modal-answer-editor"), attachmentIds, { questionId: question.id });
     const payload = await fetchJSON(`/api/questions/${encodeURIComponent(question.id)}/attempts`, jsonOptions({
       user_id: state.userId,
       answer: $("answer-input").value,
@@ -3645,6 +3793,7 @@ async function submitAnswer() {
       mode: "practice",
       attachment_ids: attachmentIds,
     }));
+    clearHandwritingDrafts($("modal-answer-editor"));
     renderQuestionResult(payload);
     showToast("作答已保存，掌握度会在总览中更新。");
     await refreshLearningData();
@@ -3804,10 +3953,17 @@ function renderSimulation() {
 function renderSimulationPaper(simulation, finished) {
   const questions = simulation.questions || [];
   const draft = readSimulationDraft(simulation);
+  const renderSubmittedAnswer = (question) => {
+    const attempt = question.attempt || {};
+    const answer = String(attempt.answer || "").trim();
+    const attachments = attempt.attachments || [];
+    if (!answer && !attachments.length) return `<div class="sim-submitted-answer"><span>本题未记录文字、手写或图片答案。</span></div>`;
+    return `<section class="sim-submitted-answer"><div class="sim-submitted-answer-head"><strong>已提交作答</strong><span>${attachments.length ? `${attachments.length} 个附件` : "文字答案"}</span></div>${answer ? `<div class="markdown-body sim-submitted-answer-text">${renderMarkdown(answer)}</div>` : ""}${renderAnswerAttachmentGallery(attachments)}</section>`;
+  };
   const questionMarkup = questions.map((question, index) => {
     const draftValue = simulationDraftForQuestion(simulation, question, draft);
     const gradeMarkup = question.question_type === "solution" ? `<div class="sim-self-grade"><span>解答题自评</span><select data-sim-grade="${escapeAttr(question.id)}"><option value="" ${draftValue.selfGrade === "" ? "selected" : ""}>暂不自评</option><option value="1" ${String(draftValue.selfGrade) === "1" ? "selected" : ""}>完整正确（100%）</option><option value="0.7" ${String(draftValue.selfGrade) === "0.7" ? "selected" : ""}>主要正确（70%）</option><option value="0.4" ${String(draftValue.selfGrade) === "0.4" ? "selected" : ""}>部分得到（40%）</option><option value="0" ${String(draftValue.selfGrade) === "0" ? "selected" : ""}>不会/错误（0%）</option></select></div>` : "";
-    const answerMarkup = finished ? "" : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer, contextId: simulation.id })}<div class="sim-upload-row"><label class="upload-button small-upload" for="sim-image-${escapeAttr(question.id)}">＋ 上传过程图</label><input id="sim-image-${escapeAttr(question.id)}" type="file" data-sim-image="${escapeAttr(question.id)}" accept="image/png,image/jpeg,image/webp,image/gif" /><span class="sim-image-status" data-sim-image-status="${escapeAttr(question.id)}">可选，单张不超过 8 MB</span></div>${gradeMarkup}</div>`;
+    const answerMarkup = finished ? renderSubmittedAnswer(question) : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer, contextId: simulation.id })}${renderAnswerImageUpload({ scope: "simulation", questionId: question.id, status: "可选，单张不超过 8 MB" })}${gradeMarkup}</div>`;
     return `<article class="simulation-question" data-sim-index="${index}"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
   }).join("");
   const simulationHeaderAction = finished ? "" : `<div class="simulation-header-actions"><button type="button" class="secondary-button simulation-cancel-button" id="cancel-simulation">取消模拟考</button><div class="simulation-clock" id="simulation-clock">180:00</div></div>`;
@@ -3879,9 +4035,11 @@ async function submitSimulation(autoSubmit = false) {
       const uploaded = await uploadAnswerImage(file, input.dataset.simImage);
       attachmentIds[input.dataset.simImage] = [uploaded.attachment_id];
     }
+    await collectHandwritingAttachments($("simulation-container"), attachmentIds);
     state.currentSimulation = await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}/submit`, jsonOptions({ user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds }));
     saveSimulationPointer(state.currentSimulation.id);
     localStorage.removeItem(simulationDraftKey(simulation.id));
+    clearHandwritingDrafts($("simulation-container"));
     window.clearInterval(state.simulationTimer);
     renderSimulation();
     await refreshLearningData();
