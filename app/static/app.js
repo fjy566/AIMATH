@@ -1032,15 +1032,8 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
       ? `data-sim-answer="${escapeAttr(question.id)}"`
       : "";
   const handwritingKey = draftKey || answerHandwritingKey(mode, question.id, contextId);
-  const workspaceHint = question.question_type === "choice"
-    ? "选项、手写或图片"
-    : question.question_type === "fill"
-      ? "文字、公式、手写或图片"
-      : "步骤、手写或图片";
-  const workspaceState = readonly ? "已提交 · 只读查看" : "提交前可随时暂存";
-  const workspace = (content) => `<section class="answer-workspace" data-answer-workspace data-answer-question="${escapeAttr(question.id)}" data-answer-mode="${escapeAttr(mode)}"><div class="answer-workspace-head"><div><strong>作答工作区</strong><span>${escapeHtml(workspaceState)}</span></div><span class="answer-workspace-hint">${escapeHtml(workspaceHint)}</span></div>${content}</section>`;
   if (question.question_type === "choice") {
-    return workspace(`<div class="answer-editor-surface">${renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` })}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`);
+    return `<div class="answer-editor-surface">${renderChoiceEditor({ question, value, readonly, answerAttribute, id: mode === "modal" ? "modal-choice" : `${mode}-choice-${question.id}` })}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`;
   }
   const editor = renderFormulaEditor({
     id: mode === "modal" ? "modal-answer" : `${mode}-answer-${question.id}`,
@@ -1051,7 +1044,19 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
     placeholder: question.question_type === "fill" ? "输入最终结果，点击工具插入分数、根式、积分等公式。" : "先写解题步骤，公式直接点工具插入，需要时再修改字母或数字。",
     questionType: question.question_type,
   });
-  return workspace(`<div class="answer-editor-surface">${editor}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`);
+  return `<div class="answer-editor-surface">${editor}${renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === "modal" })}</div>`;
+}
+
+function renderAnswerWorkspace(question, { mode = "modal", value = "", readonly = false, contextId = "", draftKey = "", includeUpload = !readonly, uploadStatus = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB" } = {}) {
+  const workspaceHint = question.question_type === "choice"
+    ? "选项、手写或图片"
+    : question.question_type === "fill"
+      ? "文字、公式、手写或图片"
+      : "步骤、手写或图片";
+  const workspaceState = readonly ? "已提交 · 只读查看" : "可随时暂存";
+  const editor = renderAnswerEditor(question, { mode, value, readonly, contextId, draftKey });
+  const upload = includeUpload ? renderAnswerImageUpload({ scope: mode, questionId: question.id, status: uploadStatus }) : "";
+  return `<section class="answer-workspace" data-answer-workspace data-answer-question="${escapeAttr(question.id)}" data-answer-mode="${escapeAttr(mode)}"><div class="answer-workspace-head"><div><strong>作答工作区</strong><span>${escapeHtml(workspaceState)}</span></div><span class="answer-workspace-hint">${escapeHtml(workspaceHint)}</span></div>${editor}${upload}</section>`;
 }
 
 function insertFormulaSnippet(field, button) {
@@ -3636,9 +3641,38 @@ function renderPracticeAttachments(items = []) {
 
 function renderAnswerImageUpload({ scope, questionId, status = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB" } = {}) {
   const safeQuestionId = escapeAttr(questionId);
-  const prefix = scope === "simulation" ? "sim" : "practice";
+  const prefix = scope === "simulation" ? "sim" : scope === "practice" ? "practice" : "answer";
   const rowClass = scope === "simulation" ? "sim-upload-row" : "practice-upload-row";
-  return `<div class="answer-support-strip"><div class="answer-support-title"><strong>图片作答</strong><span>与手写作答一样，会随提交保存</span></div><div class="${rowClass} answer-upload-row"><label class="upload-button small-upload" for="${prefix}-image-${safeQuestionId}">＋ 上传作答图片</label><input id="${prefix}-image-${safeQuestionId}" type="file" data-${prefix}-image="${safeQuestionId}" accept="image/png,image/jpeg,image/webp,image/gif" /><span data-${prefix}-image-status="${safeQuestionId}">${escapeHtml(status)}</span></div></div>`;
+  const inputId = scope === "modal" ? "answer-image-input" : `${prefix}-image-${safeQuestionId}`;
+  const statusId = scope === "modal" ? ' id="answer-image-status"' : "";
+  const legacyInputAttribute = scope === "simulation" ? ` data-sim-image="${safeQuestionId}"` : scope === "practice" ? ` data-practice-image="${safeQuestionId}"` : "";
+  const legacyStatusAttribute = scope === "simulation" ? ` data-sim-image-status="${safeQuestionId}"` : scope === "practice" ? ` data-practice-image-status="${safeQuestionId}"` : "";
+  const preview = scope === "modal" ? '<div class="image-preview" id="answer-image-preview" data-answer-image-preview hidden></div>' : "";
+  return `<div class="answer-support-strip"><div class="answer-support-title"><strong>图片作答</strong><span>与手写作答一样，会随提交保存</span></div><div class="${rowClass} answer-upload-row"><label class="upload-button small-upload" for="${escapeAttr(inputId)}">＋ 上传作答图片</label><input id="${escapeAttr(inputId)}" type="file" data-answer-image="${safeQuestionId}" data-answer-image-scope="${escapeAttr(scope)}" data-answer-image-default-status="${escapeAttr(status)}"${legacyInputAttribute} accept="image/png,image/jpeg,image/webp,image/gif" /><span${statusId} data-answer-image-status="${safeQuestionId}"${legacyStatusAttribute}>${escapeHtml(status)}</span></div></div>${preview}`;
+}
+
+function bindAnswerImageUploads(root = document) {
+  $$('[data-answer-image]', root).forEach((input) => {
+    if (input.dataset.answerImageBound === "true") return;
+    input.dataset.answerImageBound = "true";
+    input.addEventListener("change", () => {
+      const status = $$('[data-answer-image-status]', root).find((item) => item.dataset.answerImageStatus === input.dataset.answerImage);
+      const preview = input.dataset.answerImageScope === "modal" ? root.querySelector("[data-answer-image-preview]") : null;
+      const file = input.files?.[0];
+      const error = validateImageFile(file);
+      if (error) {
+        input.value = "";
+        if (status) status.textContent = error;
+        if (preview) clearImagePreview(preview);
+        return;
+      }
+      if (preview) {
+        showImagePreview(file, preview, status);
+        return;
+      }
+      if (status) status.textContent = file ? `已选择：${file.name}` : input.dataset.answerImageDefaultStatus;
+    });
+  });
 }
 
 function practiceQuestionIsAnswered(question) {
@@ -3671,8 +3705,8 @@ function renderPracticeSession() {
       ["", "暂不自评"], ["1", "完整正确（100%）"], ["0.7", "主要正确（70%）"], ["0.4", "部分得到（40%）"], ["0", "不会/错误（0%）"],
     ].map(([value, label]) => `<option value="${value}" ${selectedGrade === value ? "selected" : ""}>${label}</option>`).join("");
     const resultMarkup = finished ? `<div class="practice-answer-result ${escapeAttr(result.status || answerState.status || "manual")}"><span>${escapeHtml(resultLabel(result.status || answerState.status))}</span><b>${formatScore(answerState.score)} / ${formatScore(answerState.max_score || question.points)} 分</b>${question.answer_markdown ? `<h5>来源答案</h5><div class="markdown-body">${renderMarkdown(question.answer_markdown)}</div>` : ""}${question.solution_markdown ? `<h5>来源解析</h5><div class="markdown-body">${renderMarkdown(question.solution_markdown)}</div>` : ""}</div>` : "";
-    const answerArea = renderAnswerEditor(question, { mode: "practice", value: answer, readonly: finished });
-    const uploadArea = finished ? renderPracticeAttachments(answerState.attachments || []) : `${renderAnswerImageUpload({ scope: "practice", questionId: question.id })}${renderPracticeAttachments(answerState.attachments || [])}`;
+    const answerArea = renderAnswerWorkspace(question, { mode: "practice", value: answer, readonly: finished });
+    const uploadArea = renderPracticeAttachments(answerState.attachments || []);
     const selfGrade = question.question_type === "solution" ? `<label class="practice-grade-label">解答题自评<select data-practice-grade="${escapeAttr(question.id)}" ${finished ? "disabled" : ""}>${gradeOptions}</select></label>` : "";
     const answerBoard = `<div class="practice-answer-grid">${answerArea}${uploadArea}${selfGrade}</div>`;
     const subtypeLine = practiceQuestionSubtypeLine(question);
@@ -3742,16 +3776,7 @@ function bindPracticeSession() {
     root.dataset.practiceHandwritingBound = "true";
     root.addEventListener("handwritingchange", updatePracticeSessionStatus);
   }
-  $$('[data-practice-image]', root).forEach((input) => input.addEventListener("change", () => {
-    const status = $$('[data-practice-image-status]', root).find((item) => item.dataset.practiceImageStatus === input.dataset.practiceImage);
-    const error = validateImageFile(input.files?.[0]);
-    if (error) {
-      input.value = "";
-      if (status) status.textContent = error;
-      return;
-    }
-    if (status) status.textContent = input.files?.[0] ? `已选择：${input.files[0].name}` : "支持图片，单张不超过 8 MB";
-  }));
+  bindAnswerImageUploads(root);
   $("leave-practice-session")?.addEventListener("click", () => { state.practiceSession = null; loadBlocks(); });
   $("back-after-practice")?.addEventListener("click", () => { state.practiceSession = null; loadBlocks(); });
   $("refresh-practice-session")?.addEventListener("click", refreshPracticeSession);
@@ -3912,19 +3937,12 @@ async function openQuestion(questionId) {
     bindClassificationControls($("modal-classification"));
     $("modal-question-body").innerHTML = renderMarkdown(question.question_markdown);
     typeset($("modal-question-body"));
-    $("modal-answer-editor").innerHTML = renderAnswerEditor(question, { mode: "modal" });
+    $("modal-answer-editor").innerHTML = renderAnswerWorkspace(question, { mode: "modal" });
     bindAnswerEditors($("modal-answer-editor"));
-    $("answer-image-input").value = "";
-    clearImagePreview($("answer-image-preview"));
-    $("answer-image-status").textContent = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB";
+    bindAnswerImageUploads($("modal-answer-editor"));
     $("answer-duration").value = "0";
     $("self-grade").value = "";
     $("self-grade-wrap").style.display = question.question_type === "solution" ? "grid" : "none";
-    $("answer-hint").textContent = question.question_type === "choice"
-      ? "点击选项，也可以直接手写或上传图片"
-      : question.question_type === "fill"
-        ? "文字、公式、手写和图片都可以作为正式答案"
-        : "先写步骤，或直接手写；图片会和答案一起保存";
     $("question-result").hidden = true;
     $("tutor-box").hidden = true;
     $("modal-source").textContent = `SOURCE · ${question.source_path || "本地题库"}`;
@@ -4147,7 +4165,7 @@ function renderSimulation() {
   container.innerHTML = renderSimulationPaper(simulation, false);
   typeset(container);
   bindAnswerEditors(container);
-  bindSimulationUploads(container);
+  bindAnswerImageUploads(container);
   bindSimulationPlatform(container);
   window.requestAnimationFrame?.(() => container.querySelectorAll("[data-handwriting-pad]").forEach(resizeHandwritingPad));
 }
@@ -4165,25 +4183,11 @@ function renderSimulationPaper(simulation, finished) {
   const questionMarkup = questions.map((question, index) => {
     const draftValue = simulationDraftForQuestion(simulation, question, draft);
     const gradeMarkup = question.question_type === "solution" ? `<div class="sim-self-grade"><span>解答题自评</span><select data-sim-grade="${escapeAttr(question.id)}"><option value="" ${draftValue.selfGrade === "" ? "selected" : ""}>暂不自评</option><option value="1" ${String(draftValue.selfGrade) === "1" ? "selected" : ""}>完整正确（100%）</option><option value="0.7" ${String(draftValue.selfGrade) === "0.7" ? "selected" : ""}>主要正确（70%）</option><option value="0.4" ${String(draftValue.selfGrade) === "0.4" ? "selected" : ""}>部分得到（40%）</option><option value="0" ${String(draftValue.selfGrade) === "0" ? "selected" : ""}>不会/错误（0%）</option></select></div>` : "";
-    const answerMarkup = finished ? renderSubmittedAnswer(question) : `<div class="sim-answer">${renderAnswerEditor(question, { mode: "simulation", value: draftValue.answer, contextId: simulation.id })}${renderAnswerImageUpload({ scope: "simulation", questionId: question.id, status: "可选，单张不超过 8 MB" })}${gradeMarkup}</div>`;
+    const answerMarkup = finished ? renderSubmittedAnswer(question) : `<div class="sim-answer">${renderAnswerWorkspace(question, { mode: "simulation", value: draftValue.answer, contextId: simulation.id, uploadStatus: "可选，单张不超过 8 MB" })}${gradeMarkup}</div>`;
     return `<article class="simulation-question" data-sim-index="${index}"><div class="sim-q-head"><span class="sim-q-ref">${String(index + 1).padStart(2, "0")} / 第 ${question.number} 题 · ${typeLabel(question.question_type)}</span><span class="sim-q-points">${formatScore(question.points)} 分</span></div><div class="markdown-body">${renderMarkdown(question.question_markdown)}</div>${answerMarkup}</article>`;
   }).join("");
   const simulationHeaderAction = finished ? "" : `<div class="simulation-header-actions"><button type="button" class="secondary-button simulation-cancel-button" id="cancel-simulation">取消模拟考</button><div class="simulation-clock" id="simulation-clock">180:00</div></div>`;
   return `<div class="simulation-workspace"><div class="simulation-shell"><div class="simulation-header"><div><h3>${simulation.year} 年数学二 · 全真模拟</h3><p>${questions.length} 道题 · 满分 ${formatScore(simulation.max_score)} · ${finished ? "答案与解析已开放" : "答案不会自动显示，提交后统一判定"}</p></div>${finished ? `<div class="simulation-clock" id="simulation-clock">已完成</div>` : simulationHeaderAction}</div><div class="simulation-progress"><span id="simulation-progress-bar" style="--progress:0"></span></div><div class="simulation-question-list">${questionMarkup}</div>${finished ? "" : `<div class="simulation-footer"><p>解答题若暂不自评，将被诚实记录为“待自评”，不自动猜分。</p><button class="primary-button" id="submit-simulation">提交整卷</button></div>`}</div><aside class="simulation-rail" aria-label="模拟考答题辅助栏"><div class="simulation-sticky-timer ${finished ? "finished" : ""}"><span>剩余时间</span><strong id="simulation-sticky-clock">${finished ? "已完成" : "180:00"}</strong><small>${finished ? "本套试卷已提交" : "计时不会因离开页面而暂停"}</small></div>${renderSimulationAnswerCard(simulation, finished)}</aside></div>`;
-}
-
-function bindSimulationUploads(root) {
-  $$('[data-sim-image]', root).forEach((input) => input.addEventListener("change", () => {
-    const status = $$('[data-sim-image-status]', root).find((item) => item.dataset.simImageStatus === input.dataset.simImage);
-    const file = input.files?.[0];
-    const error = validateImageFile(file);
-    if (error) {
-      input.value = "";
-      if (status) status.textContent = error;
-      return;
-    }
-    if (status) status.textContent = file ? `已选择：${file.name}` : "可选，单张不超过 8 MB";
-  }));
 }
 
 function startSimulationClock() {
@@ -4738,7 +4742,6 @@ async function init() {
   $("filter-concept")?.addEventListener("change", populateSubtypeFilter);
   $("create-simulation").addEventListener("click", createSimulation);
   $("submit-answer").addEventListener("click", submitAnswer);
-  $("answer-image-input").addEventListener("change", () => showImagePreview($("answer-image-input").files?.[0], $("answer-image-preview"), $("answer-image-status")));
   $("ask-tutor").addEventListener("click", askTutor);
   $("close-question-modal").addEventListener("click", closeQuestion);
   $("question-modal").addEventListener("click", (event) => { if (event.target === $("question-modal")) closeQuestion(); });

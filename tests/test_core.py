@@ -441,8 +441,18 @@ def test_block_training_uses_compact_stack_and_single_question_navigation() -> N
 
 def test_answer_boards_share_touch_handwriting_drafts_and_fullscreen_controls() -> None:
     source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
     styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
 
+    assert "function renderAnswerWorkspace" in source
+    assert source.count("renderAnswerWorkspace(question,") == 4
+    assert source.count("renderAnswerImageUpload(") == 2
+    assert source.count("<strong>作答工作区</strong>") == 1
+    assert "function bindAnswerImageUploads" in source
+    assert "function bindSimulationUploads" not in source
+    assert "answer-box-head" not in markup
+    assert "点击选项，也可以直接手写或上传图片" not in source
+    assert "提交前可随时暂存" not in source
     assert "function renderHandwritingPad" in source
     assert "function bindHandwritingPads" in source
     assert "function answerHandwritingKey" in source

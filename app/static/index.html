@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260830-3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260830-4" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=20260828" />
   </head>
   <body>
@@ -379,10 +379,7 @@
         <div id="modal-classification"></div>
         <div class="question-body markdown-body" id="modal-question-body"></div>
          <div class="answer-box">
-           <div class="answer-box-head"><label>作答工作区</label><span id="answer-hint">可用文字、公式、手写或图片完成答案</span></div>
            <div id="modal-answer-editor" class="modal-answer-editor"></div>
-          <div class="answer-support-strip"><div class="answer-support-title"><strong>图片作答</strong><span>与手写作答一样，会随提交保存</span></div><div class="answer-upload-row"><label class="upload-button" for="answer-image-input">＋ 上传作答图片</label><input id="answer-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /><span id="answer-image-status">支持 PNG/JPG/WebP/GIF，单张不超过 8 MB</span></div></div>
-          <div class="image-preview" id="answer-image-preview" hidden></div>
           <div class="answer-controls"><label id="self-grade-wrap">解答题自评<select id="self-grade"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></label><label>用时（分钟）<input id="answer-duration" type="number" min="0" max="1440" value="0" /></label><button class="primary-button" id="submit-answer">提交作答</button></div>
         </div>
         <div class="result-box" id="question-result" hidden></div>
@@ -393,6 +390,6 @@
 
     <div class="toast" id="toast" role="alert"></div>
     <script src="/static/vendor/katex/katex.min.js?v=20260828"></script>
-    <script src="/static/app.js?v=20260830-3"></script>
+    <script src="/static/app.js?v=20260830-4"></script>
   </body>
 </html>

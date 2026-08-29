@@ -464,9 +464,6 @@ select:focus, input:focus, textarea:focus { border-color: var(--blue); box-shado
 .tag { color: #657783; background: #e8eeee; }
 .question-body { min-height: 80px; overflow-x: auto; padding: 20px 23px; border: 1px solid var(--line-dark); background: #f5f4ee; }
 .answer-box { margin-top: 21px; padding: 17px; border: 1px solid var(--line); background: rgba(255,255,255,.56); }
-.answer-box-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.answer-box-head label { font: 500 15px var(--serif); }
-.answer-box-head span { color: var(--muted); font-size: 11px; }
 .answer-box textarea { background: var(--white); }
 .answer-upload-row, .sim-upload-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-top: 9px; }
 .answer-upload-row input[type="file"], .sim-upload-row input[type="file"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
