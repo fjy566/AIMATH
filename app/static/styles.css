@@ -1668,16 +1668,16 @@ body.auth-pending .app-shell { visibility: hidden; pointer-events: none; }
 .auth-input-shell input { padding-right: 12px; }
 .password-input-shell input { padding-right: 62px; }
 .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
-.password-toggle { position: absolute; top: 50%; right: 6px; display: grid; width: 42px; min-width: 42px; height: 42px; min-height: 42px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 10px; color: var(--blue); background: transparent; transform: translateY(-50%); }
+.password-toggle { position: absolute; inset: 0 4px 0 auto; display: grid; width: 42px; min-width: 42px; height: 42px; min-height: 42px; margin: auto 0; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 10px; color: var(--blue); background: transparent; transform: none; }
 .password-toggle-icon { display: grid; width: 21px; height: 21px; place-items: center; }
 .password-toggle-icon svg { display: block; width: 21px; height: 21px; overflow: visible; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.65; }
-.password-toggle-icon .eye-pupil { fill: currentColor; stroke: none; transition: opacity .2s ease; }
-.password-toggle-icon .eye-slash { opacity: 1; transform-origin: center; transition: opacity .2s ease, transform .2s cubic-bezier(.16,1,.3,1); }
-.password-toggle[aria-pressed="true"] .eye-slash { opacity: 0; transform: scaleX(.35); }
-.password-toggle[aria-pressed="true"] .eye-pupil { opacity: 1; }
-.password-toggle:not([aria-pressed="true"]) .eye-pupil { opacity: .68; }
-.password-toggle:hover { border-color: #b8d2cb; color: var(--accent-strong); background: #eef7f3; transform: translateY(-50%); }
-.password-toggle:active { transform: translateY(-50%) scale(.985); }
+.password-toggle-icon .eye-pupil { fill: currentColor; stroke: none; transform-box: fill-box; transform-origin: center; transition: opacity var(--motion-fast) ease, transform var(--motion-standard) var(--ease-out-expo); }
+.password-toggle-icon .eye-slash { opacity: 1; transform-box: fill-box; transform-origin: center; transition: opacity var(--motion-fast) ease, transform var(--motion-standard) var(--ease-out-expo); }
+.password-toggle[aria-pressed="true"] .eye-slash { opacity: 0; transform: scale(.45); }
+.password-toggle[aria-pressed="true"] .eye-pupil { opacity: 1; transform: scale(1); }
+.password-toggle:not([aria-pressed="true"]) .eye-pupil { opacity: .64; transform: scale(.72); }
+.password-toggle:hover { border-color: transparent; color: var(--accent-strong); background: transparent; transform: none; }
+.password-toggle:active { transform: none; }
 .auth-form-hint { display: flex; justify-content: space-between; gap: 10px; margin-top: 12px; color: #89958f; font: 9px/1.5 var(--mono); }
 .auth-submit { width: 100%; justify-content: space-between; min-height: 46px; border-radius: 9px; margin-top: 15px; }
 .auth-optional-fields { margin-top: 15px; border: 1px solid var(--line); border-radius: 10px; background: rgba(246,250,247,.62); }
@@ -1771,7 +1771,7 @@ body.theme-dark .auth-progress-bar { background: #294b4d; }
 body.theme-dark .auth-optional-fields { border-color: #34575a; background: #153236; }
 body.theme-dark .auth-optional-fields summary, body.theme-dark .auth-privacy-details { border-color: #34575a; }
 body.theme-dark .auth-optional-grid { border-color: #34575a; }
-body.theme-dark .password-toggle:hover { border-color: #4b837d; color: #d3eee7; background: #1a4547; }
+body.theme-dark .password-toggle:hover { border-color: transparent; color: #d3eee7; background: transparent; }
 body.theme-dark .auth-connection { color: #e4b3a3; }
 body.theme-dark .permission-note { border-color: #7e6c4d; color: #e8d3a4; background: #40392a; }
 body.theme-dark .settings-card.is-readonly input, body.theme-dark .settings-card.is-readonly select { background: #17363a; }
@@ -1838,11 +1838,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   outline-offset: 3px;
 }
 input:focus-visible, select:focus-visible, textarea:focus-visible { transform: translateY(-1px); }
+button.password-toggle:hover:not(:disabled), button.password-toggle:active:not(:disabled) { transform: none; }
+button.password-toggle:focus-visible { outline: 0; outline-offset: 0; box-shadow: inset 0 0 0 2px rgba(31,93,119,.28); }
+.password-input-shell input:focus-visible { transform: none; }
 button[aria-busy="true"] { cursor: wait; }
 button[aria-busy="true"]::after { display: inline-block; width: 11px; height: 11px; margin-left: 8px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; content: ""; animation: control-spin .7s linear infinite; }
 @keyframes control-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  button, input, select, textarea, summary, [role="button"], [role="tab"], .upload-button, a { transition: none !important; }
+  button, input, select, textarea, summary, [role="button"], [role="tab"], .upload-button, a, .password-toggle-icon .eye-pupil, .password-toggle-icon .eye-slash { transition: none !important; }
   button[aria-busy="true"]::after, .auth-connection-dot, .auth-card, .auth-form-enter, .auth-optional-fields[open] > .auth-optional-grid, .auth-privacy-details[open] > p { animation: none !important; }
 }

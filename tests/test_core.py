@@ -890,9 +890,14 @@ def test_auth_shell_has_a_no_blank_fallback_and_progressive_fields() -> None:
     assert 'id="auth-retry"' in html_source
     assert 'id="register-optional-fields"' in html_source
     assert 'data-password-toggle' in html_source
+    assert 'styles.css?v=20260830-5' in html_source
     assert "replaceAllLiteral" in app_source
     assert "timeoutMs: 12000" in app_source
     assert 'button, input, select, textarea, summary' in styles
+    assert 'button.password-toggle:hover:not(:disabled), button.password-toggle:active:not(:disabled) { transform: none; }' in styles
+    assert '.password-input-shell input:focus-visible { transform: none; }' in styles
+    assert '.password-toggle[aria-pressed="true"] .eye-slash { opacity: 0; transform: scale(.45); }' in styles
+    assert '.password-toggle-icon .eye-pupil, .password-toggle-icon .eye-slash { transition: none !important; }' in styles
 
 
 def test_openai_compatible_url_normalization() -> None:
