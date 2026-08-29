@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260828-4" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260830-3" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=20260828" />
   </head>
   <body>
@@ -58,7 +58,8 @@
         <div class="sidebar-rule"></div>
         <div class="nav-caption">WORKBENCH</div>
         <nav class="main-nav" aria-label="主导航">
-          <button class="nav-item active" data-view="overview"><span class="nav-index">01</span><span>今日总览</span></button>
+          <span class="nav-glide" aria-hidden="true"></span>
+          <button class="nav-item active" data-view="overview" aria-current="page"><span class="nav-index">01</span><span>今日总览</span></button>
           <button class="nav-item" data-view="workbench"><span class="nav-index">02</span><span>学习工作台</span></button>
           <button class="nav-item" data-view="library"><span class="nav-index">03</span><span>真题库</span></button>
           <button class="nav-item" data-view="blocks"><span class="nav-index">04</span><span>分块训练</span></button>
@@ -79,7 +80,7 @@
 
       <main class="main-content">
         <header class="topbar">
-          <div>
+          <div class="view-heading" id="view-heading">
             <div class="topbar-kicker" id="view-kicker">STUDY DESK / OVERVIEW</div>
             <h1 id="view-title">今天，把薄弱处练成得分点</h1>
           </div>
@@ -392,6 +393,6 @@
 
     <div class="toast" id="toast" role="alert"></div>
     <script src="/static/vendor/katex/katex.min.js?v=20260828"></script>
-    <script src="/static/app.js?v=20260829-1"></script>
+    <script src="/static/app.js?v=20260830-3"></script>
   </body>
 </html>

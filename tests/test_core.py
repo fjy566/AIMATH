@@ -479,6 +479,22 @@ def test_block_stack_has_accessible_motion_and_tablet_layout_guards() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in styles
 
 
+def test_view_motion_preserves_navigation_state_and_ignores_stale_results() -> None:
+    source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="nav-glide"' in markup
+    assert 'aria-current="page"' in markup
+    assert "async function transitionToView" in source
+    assert 'event.animationName === "view-fold-out"' in source
+    assert 'button.setAttribute("aria-current", "page")' in source
+    assert "requestId !== state.libraryRequestId" in source
+    assert ".view.active.view-entering" in styles
+    assert ".view.view-leaving" in styles
+    assert ".nav-glide { transition: opacity .001ms linear !important; }" in styles
+
+
 def test_account_settings_and_admin_surface_use_shared_session_identity() -> None:
     source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
     markup = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")

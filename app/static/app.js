@@ -51,6 +51,7 @@ const state = {
   simulationCurrentIndex: 0,
   simulationCardFilter: "all",
   libraryLoaded: false,
+  libraryRequestId: 0,
 };
 
 const viewMeta = {
@@ -1600,9 +1601,15 @@ function resetUserScopedState() {
   state.simulationTimer = null;
   state.simulationDeadline = null;
   state.simulationCurrentIndex = 0;
+  state.libraryRequestId += 1;
   state.view = "overview";
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === "view-overview"));
-  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === "overview"));
+  $$(".nav-item").forEach((button) => {
+    const active = button.dataset.view === "overview";
+    button.classList.toggle("active", active);
+    button.toggleAttribute("aria-current", active);
+    if (active) button.setAttribute("aria-current", "page");
+  });
   if ($("view-kicker") && viewMeta.overview) $("view-kicker").textContent = viewMeta.overview[0];
   if ($("view-title") && viewMeta.overview) $("view-title").textContent = viewMeta.overview[1];
   document.body.classList.remove("theme-dark");
@@ -2090,16 +2097,104 @@ function handleSimulationBeforeUnload(event) {
   event.returnValue = "模拟考尚未交卷";
 }
 
-function navigate(view) {
+const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+let navigationRequestId = 0;
+let navigationCleanupTimer = 0;
+
+function syncNavGlide(activeButton = document.querySelector(".nav-item.active"), instant = false) {
+  const nav = document.querySelector(".main-nav");
+  const glide = nav?.querySelector(".nav-glide");
+  if (!nav || !glide || !activeButton || activeButton.hidden) return;
+  if (instant) glide.style.transition = "none";
+  nav.style.setProperty("--nav-glide-x", `${activeButton.offsetLeft}px`);
+  nav.style.setProperty("--nav-glide-y", `${activeButton.offsetTop}px`);
+  nav.style.setProperty("--nav-glide-width", `${activeButton.offsetWidth}px`);
+  nav.style.setProperty("--nav-glide-height", `${activeButton.offsetHeight}px`);
+  nav.style.setProperty("--nav-glide-opacity", "1");
+  if (nav.scrollWidth > nav.clientWidth) {
+    activeButton.scrollIntoView({ behavior: instant || reducedMotion?.matches ? "auto" : "smooth", block: "nearest", inline: "center" });
+  }
+  if (instant) window.requestAnimationFrame?.(() => { glide.style.transition = ""; });
+}
+
+function setActiveView(view) {
+  const nextView = $(`view-${view}`);
+  $$(".view").forEach((element) => element.classList.toggle("active", element === nextView));
+  let activeButton = null;
+  $$(".nav-item").forEach((button) => {
+    const active = button.dataset.view === view;
+    button.classList.toggle("active", active);
+    button.toggleAttribute("aria-current", active);
+    if (active) {
+      button.setAttribute("aria-current", "page");
+      activeButton = button;
+    }
+  });
+  syncNavGlide(activeButton);
+  $("view-kicker").textContent = viewMeta[view][0];
+  $("view-title").textContent = viewMeta[view][1];
+  return nextView;
+}
+
+function waitForViewExit(element, requestId) {
+  return new Promise((resolve) => {
+    let finished = false;
+    let timer = 0;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      element.removeEventListener("animationend", handleAnimationEnd);
+      resolve(requestId === navigationRequestId);
+    };
+    const handleAnimationEnd = (event) => {
+      if (event.target === element && event.animationName === "view-fold-out") finish();
+    };
+    element.addEventListener("animationend", handleAnimationEnd);
+    timer = window.setTimeout(finish, 180);
+  });
+}
+
+async function transitionToView(view) {
+  const currentView = document.querySelector(".view.active");
+  const nextView = $(`view-${view}`);
+  if (!currentView || !nextView || currentView === nextView || reducedMotion?.matches) {
+    setActiveView(view);
+    return true;
+  }
+  const requestId = ++navigationRequestId;
+  const main = document.querySelector(".main-content");
+  const heading = $("view-heading");
+  window.clearTimeout(navigationCleanupTimer);
+  main?.classList.add("is-view-switching");
+  currentView.classList.add("view-leaving");
+  heading?.classList.remove("heading-entering");
+  heading?.classList.add("heading-leaving");
+  const currentRequest = await waitForViewExit(currentView, requestId);
+  if (!currentRequest) return false;
+  currentView.classList.remove("view-leaving");
+  const activatedView = setActiveView(view);
+  heading?.classList.remove("heading-leaving");
+  void activatedView?.offsetWidth;
+  activatedView?.classList.add("view-entering");
+  heading?.classList.add("heading-entering");
+  navigationCleanupTimer = window.setTimeout(() => {
+    activatedView?.classList.remove("view-entering");
+    heading?.classList.remove("heading-entering");
+    main?.classList.remove("is-view-switching");
+  }, 460);
+  return true;
+}
+
+async function navigate(view) {
   if (!viewMeta[view]) return;
   if (!state.authenticated) { showAuthScreen(); return; }
   if (view === "admin" && state.user?.role !== "admin") { showToast("只有管理员可以打开管理后台。", true); return; }
   if (!canLeaveSimulation(view)) return;
+  const changed = view !== state.view;
+  if (changed && !(await transitionToView(view))) return;
   state.view = view;
-  $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
-  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("view-kicker").textContent = viewMeta[view][0];
-  $("view-title").textContent = viewMeta[view][1];
+  if (!changed) setActiveView(view);
   if (view === "overview") return loadOverview();
   if (view === "workbench") return loadWorkbench();
   if (view === "library") return loadLibrary();
@@ -3344,9 +3439,11 @@ function populateFilters() {
 }
 
 async function loadLibrary() {
+  const requestId = ++state.libraryRequestId;
   if (!state.concepts.length || !state.exams.length) {
     try { await loadBaseData(); } catch (error) { showNotice(error.message); return; }
   }
+  if (requestId !== state.libraryRequestId) return;
   const params = new URLSearchParams({ exam_type: $("filter-exam").value || "数学二", limit: "60" });
   if ($("filter-year").value) params.set("year", $("filter-year").value);
   if ($("filter-type").value) params.set("question_type", $("filter-type").value);
@@ -3357,12 +3454,14 @@ async function loadLibrary() {
   $("question-list").innerHTML = `<div class="loading-card">正在加载真题……</div>`;
   try {
     const payload = await fetchJSON(`/api/questions?${params}`);
+    if (requestId !== state.libraryRequestId) return;
     $("archive-count").textContent = `${payload.total} 道真题`;
     $("question-list").innerHTML = payload.items.length ? payload.items.map(renderQuestionRow).join("") : `<div class="loading-card">没有匹配的题目。</div>`;
     bindQuestionOpeners($("question-list"));
     bindClassificationControls($("question-list"));
     state.libraryLoaded = true;
   } catch (error) {
+    if (requestId !== state.libraryRequestId) return;
     $("question-list").innerHTML = `<div class="loading-card">读取失败：${escapeHtml(error.message)}</div>`;
   }
 }
@@ -4651,6 +4750,8 @@ async function init() {
   $("logout-button")?.addEventListener("click", logout);
   bindAccountSettingsControls();
   bindAdminControls();
+  syncNavGlide(document.querySelector(".nav-item.active"), true);
+  window.addEventListener("resize", () => syncNavGlide(document.querySelector(".nav-item.active"), true), { passive: true });
   $("model-select").addEventListener("change", () => { $("model-manual").value = $("model-select").value; });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeQuestion(); });
   document.addEventListener("keydown", (event) => {
