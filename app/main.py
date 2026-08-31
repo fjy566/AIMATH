@@ -1363,6 +1363,36 @@ def get_simulation_endpoint(simulation_id: str, user_id: str = "local-user", con
     return simulation_view(simulation, reveal=bool(simulation and simulation.get("status") == "finished"))
 
 
+@app.put("/api/simulations/{simulation_id}")
+def save_simulation_endpoint(simulation_id: str, payload: SimulationSubmitRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+    simulation = get_simulation(simulation_id)
+    owner_id = _user_id(context, payload.user_id)
+    if simulation is None or simulation.get("user_id") != owner_id:
+        raise HTTPException(status_code=404, detail="模拟考试不存在。")
+    if simulation.get("status") == "finished":
+        return simulation_view(simulation, reveal=True)
+    _validate_answer_maps(payload.answers, payload.self_grades, payload.attachment_ids, set(simulation["question_ids"]))
+    for question_id in set(payload.answers) | set(payload.attachment_ids):
+        _question_or_404(question_id)
+        upsert_simulation_answer(
+            {
+                "simulation_id": simulation_id,
+                "question_id": question_id,
+                "answer": payload.answers.get(question_id, ""),
+                "correct": None,
+                "status": "draft",
+                "score": 0,
+            }
+        )
+        link_attachments(
+            payload.attachment_ids.get(question_id, []),
+            user_id=owner_id,
+            question_id=question_id,
+            simulation_id=simulation_id,
+        )
+    return simulation_view(get_simulation(simulation_id), reveal=False)
+
+
 @app.delete("/api/simulations/{simulation_id}")
 def cancel_simulation_endpoint(simulation_id: str, user_id: str = "local-user", context: AuthContext = Depends(require_user)) -> dict[str, str]:
     simulation = get_simulation(simulation_id)

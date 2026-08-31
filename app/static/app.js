@@ -41,12 +41,12 @@ const state = {
   noteEditorMode: "rich",
   noteFavoriteOnly: false,
   noteSearchTimer: null,
-  noteSavedRange: null,
   currentQuestion: null,
   practiceSession: null,
   practiceQuestionIndex: 0,
   currentSimulation: null,
   simulationTimer: null,
+  simulationSaveTimer: null,
   simulationDeadline: null,
   simulationCurrentIndex: 0,
   simulationCardFilter: "all",
@@ -552,19 +552,6 @@ function formulaGroupsMarkup(editorId, groups) {
   return `<div class="formula-category-tabs" role="tablist" aria-label="公式分类">${tabs}</div><div class="formula-beginner-groups">${panels}</div>`;
 }
 
-function answerStructureMarkup(editorId, questionType) {
-  if (questionType !== "solution") return "";
-  return `<div class="answer-structure-panel" id="${escapeAttr(editorId)}-answer-structure" data-answer-structure-panel="${escapeAttr(editorId)}" hidden>
-    <div class="answer-structure-head"><strong>把解题过程排得更清楚</strong><span>按钮会在光标处插入编号</span></div>
-    <div class="answer-structure-actions">
-      <button type="button" class="structure-action" data-structure-action="point"><span>1.</span> 添加分点</button>
-      <button type="button" class="structure-action" data-structure-action="subquestion"><span>（1）</span> 添加小题</button>
-      <button type="button" class="structure-action" data-structure-action="newline"><span>↵</span> 换一行</button>
-    </div>
-    <p class="answer-structure-hint">先把光标放到要继续作答的位置，再点按钮。已有文字不会被覆盖。</p>
-  </div>`;
-}
-
 function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill", includeText = true) {
   if (readonly) return `<p class="formula-readonly-note">本题已提交。可查看公式，但不能修改。</p>`;
   return `<div class="answer-toolbox">
@@ -572,7 +559,6 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill",
       <span class="answer-tool-prompt">不懂 LaTeX 也没关系，直接点你想要的公式</span>
       <div class="answer-tool-actions">
         <button type="button" class="answer-tool-toggle" data-formula-toggle aria-expanded="false" aria-controls="${escapeAttr(editorId)}-formula-tools"><span>Σ</span> 公式工具</button>
-        ${questionType === "solution" ? `<button type="button" class="answer-tool-toggle" data-answer-structure-toggle aria-expanded="false" aria-controls="${escapeAttr(editorId)}-answer-structure"><span>☷</span> 作答结构</button>` : ""}
       </div>
     </div>
     ${includeText ? `<div class="answer-format-bar" role="toolbar" aria-label="文字作答工具">
@@ -583,10 +569,10 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill",
       <button type="button" data-editor-command="highlight" title="高亮重点">高亮</button>
       <button type="button" data-editor-command="link" title="插入链接 Ctrl+K">链接</button>
       <button type="button" data-editor-insert="quote" title="插入引用">引用</button>
-      <button type="button" data-editor-insert="point" title="插入分点">分点</button>
+      <button type="button" data-editor-insert="point" title="将当前段落或所选多行设为分点">分点</button>
       <button type="button" data-editor-insert="subquestion" title="插入小题">小题</button>
-      <button type="button" data-editor-insert="unordered" title="插入无序列表">列表</button>
-      <button type="button" data-editor-insert="ordered" title="插入有序列表">编号</button>
+      <button type="button" data-editor-insert="unordered" title="将当前段落或所选多行设为列表">列表</button>
+      <button type="button" data-editor-insert="ordered" title="将当前段落或所选多行设为编号">编号</button>
       <span class="answer-format-spacer"></span>
       <button type="button" data-editor-command="undo" title="撤销 Ctrl+Z">撤销</button>
       <button type="button" data-editor-command="redo" title="重做 Ctrl+Y">重做</button>
@@ -596,7 +582,6 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill",
       <div role="toolbar" aria-label="常用数学公式工具">${formulaGroupsMarkup(editorId, BEGINNER_FORMULA_GROUPS)}</div>
       <p class="formula-helper"><span>点击按钮插入模板，蓝色文字会自动选中，可直接替换</span><span><kbd>$</kbd> 行内 · <kbd>$$</kbd> 行间 · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 提交</span></p>
     </div>
-    ${answerStructureMarkup(editorId, questionType)}
   </div>`;
 }
 
@@ -604,6 +589,7 @@ function formulaToolbarMarkup(editorId, readonly = false, questionType = "fill",
 // vectors so a draft survives resizing and fullscreen editing without bitmap
 // quality loss.
 const HANDWRITING_STORAGE_PREFIX = "ai-math-handwriting-v1:";
+const ANSWER_DRAFT_STORAGE_PREFIX = "ai-math-answer-draft-v1:";
 const HANDWRITING_STATE = new WeakMap();
 const HANDWRITING_UPLOAD_CACHE = new Map();
 const HANDWRITING_MAX_STROKES = 320;
@@ -614,6 +600,74 @@ function answerHandwritingKey(mode, questionId, contextId = "") {
   const scope = String(mode || "modal");
   const context = contextId ? `${String(contextId)}:` : "";
   return `${owner}:${scope}:${context}${String(questionId || "unknown")}`;
+}
+
+function answerDraftStorageKey(mode, questionId, contextId = "") {
+  const owner = state.userId || "local-user";
+  const context = contextId ? `${String(contextId)}:` : "";
+  const key = `${owner}:${String(mode || "modal")}:${context}${String(questionId || "unknown")}`;
+  return `${ANSWER_DRAFT_STORAGE_PREFIX}${encodeURIComponent(key)}`;
+}
+
+function normalizeDraftAttachments(items) {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set();
+  return items.map((item) => {
+    const id = String(item?.id || item?.attachment_id || "").trim();
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    return {
+      id,
+      filename: String(item?.filename || "作答图片").slice(0, 120),
+      url: String(item?.url || `/api/attachments/${encodeURIComponent(id)}`),
+    };
+  }).filter(Boolean).slice(-8);
+}
+
+function readAnswerDraft(mode, questionId, contextId = "") {
+  try {
+    const raw = localStorage.getItem(answerDraftStorageKey(mode, questionId, contextId));
+    if (!raw) return { found: false, answer: "", selfGrade: "", attachments: [], updatedAt: "" };
+    const parsed = JSON.parse(raw);
+    return {
+      found: true,
+      answer: String(parsed?.answer || ""),
+      selfGrade: parsed?.selfGrade == null ? "" : String(parsed.selfGrade),
+      attachments: normalizeDraftAttachments(parsed?.attachments),
+      updatedAt: String(parsed?.updatedAt || ""),
+    };
+  } catch {
+    return { found: false, answer: "", selfGrade: "", attachments: [], updatedAt: "" };
+  }
+}
+
+function writeAnswerDraft(mode, questionId, contextId = "", changes = {}) {
+  if (!questionId) return readAnswerDraft(mode, questionId, contextId);
+  const current = readAnswerDraft(mode, questionId, contextId);
+  const next = {
+    answer: changes.answer == null ? current.answer : String(changes.answer),
+    selfGrade: changes.selfGrade == null ? current.selfGrade : String(changes.selfGrade),
+    attachments: normalizeDraftAttachments(changes.attachments == null ? current.attachments : changes.attachments),
+    updatedAt: new Date().toISOString(),
+  };
+  try { localStorage.setItem(answerDraftStorageKey(mode, questionId, contextId), JSON.stringify(next)); } catch { /* storage may be unavailable */ }
+  return { found: true, ...next };
+}
+
+function clearAnswerDraft(mode, questionId, contextId = "") {
+  try { localStorage.removeItem(answerDraftStorageKey(mode, questionId, contextId)); } catch { /* storage may be unavailable */ }
+}
+
+function answerWorkspaceDraft(workspace) {
+  if (!workspace) return readAnswerDraft("modal", "");
+  return readAnswerDraft(workspace.dataset.answerMode, workspace.dataset.answerQuestion, workspace.dataset.answerContext || "");
+}
+
+function persistAnswerWorkspaceText(workspace) {
+  if (!workspace || workspace.querySelector("[readonly]")) return;
+  const field = workspace.querySelector("[data-formula-input], [data-choice-input]");
+  if (!field) return;
+  writeAnswerDraft(workspace.dataset.answerMode, workspace.dataset.answerQuestion, workspace.dataset.answerContext || "", { answer: field.value });
 }
 
 function handwritingStorageKey(key) {
@@ -993,14 +1047,14 @@ function renderHandwritingPad({ key = "unknown", readonly = false, expanded = fa
   </section>`;
 }
 
-function renderFormulaEditor({ id, value = "", readonly = false, answerAttribute = "", label = "LaTeX 作答", placeholder = "先写文字，再用工具插入公式，例如：函数在区间上连续。", questionType = "fill" }) {
+function renderFormulaEditor({ id, inputId = "", value = "", readonly = false, answerAttribute = "", label = "LaTeX 作答", placeholder = "先写文字，再用工具插入公式，例如：函数在区间上连续。", questionType = "fill" }) {
   const editorId = domId(id);
-  const inputId = editorId === "modal-answer" ? "answer-input" : `${editorId}-input`;
+  const resolvedInputId = inputId || (editorId === "modal-answer" ? "answer-input" : `${editorId}-input`);
   return `<div class="formula-editor" data-formula-editor="${escapeAttr(editorId)}">
     <div class="formula-editor-layout">
       <div class="formula-source-pane">
-        <div class="formula-pane-head"><label for="${escapeAttr(inputId)}">${escapeHtml(label)}</label><span>文字和公式混合</span></div>
-        <textarea id="${escapeAttr(inputId)}" ${answerAttribute} data-formula-input="${escapeAttr(editorId)}" rows="5" spellcheck="false" ${readonly ? "readonly" : ""} placeholder="${escapeAttr(placeholder)}">${escapeHtml(value)}</textarea>
+        <div class="formula-pane-head"><label for="${escapeAttr(resolvedInputId)}">${escapeHtml(label)}</label><span>文字和公式混合</span></div>
+        <textarea id="${escapeAttr(resolvedInputId)}" ${answerAttribute} data-formula-input="${escapeAttr(editorId)}" rows="5" spellcheck="false" ${readonly ? "readonly" : ""} placeholder="${escapeAttr(placeholder)}">${escapeHtml(value)}</textarea>
         <div class="editor-meta-row"><span>Enter 自动延续分点 · Tab 缩进 · Ctrl/Cmd + B 加粗</span><span class="editor-count" data-editor-count aria-live="polite">${editorCharacterCount(value)} 字</span></div>
         ${formulaToolbarMarkup(editorId, readonly, questionType)}
       </div>
@@ -1048,15 +1102,17 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
 }
 
 function renderAnswerWorkspace(question, { mode = "modal", value = "", readonly = false, contextId = "", draftKey = "", includeUpload = !readonly, uploadStatus = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB" } = {}) {
+  const storedDraft = readonly ? { found: false, attachments: [] } : readAnswerDraft(mode, question.id, contextId);
+  const restoredValue = storedDraft.found ? storedDraft.answer : value;
   const workspaceHint = question.question_type === "choice"
     ? "选项、手写或图片"
     : question.question_type === "fill"
       ? "文字、公式、手写或图片"
       : "步骤、手写或图片";
   const workspaceState = readonly ? "已提交 · 只读查看" : "可随时暂存";
-  const editor = renderAnswerEditor(question, { mode, value, readonly, contextId, draftKey });
-  const upload = includeUpload ? renderAnswerImageUpload({ scope: mode, questionId: question.id, status: uploadStatus }) : "";
-  return `<section class="answer-workspace" data-answer-workspace data-answer-question="${escapeAttr(question.id)}" data-answer-mode="${escapeAttr(mode)}"><div class="answer-workspace-head"><div><strong>作答工作区</strong><span>${escapeHtml(workspaceState)}</span></div><span class="answer-workspace-hint">${escapeHtml(workspaceHint)}</span></div>${editor}${upload}</section>`;
+  const editor = renderAnswerEditor(question, { mode, value: restoredValue, readonly, contextId, draftKey });
+  const upload = includeUpload ? renderAnswerImageUpload({ scope: mode, questionId: question.id, status: uploadStatus, attachments: storedDraft.attachments }) : "";
+  return `<section class="answer-workspace" data-answer-workspace data-answer-question="${escapeAttr(question.id)}" data-answer-mode="${escapeAttr(mode)}" data-answer-context="${escapeAttr(contextId)}"><div class="answer-workspace-head"><div><strong>作答工作区</strong><span>${escapeHtml(workspaceState)}</span></div><span class="answer-workspace-hint">${escapeHtml(workspaceHint)}</span></div>${editor}${upload}</section>`;
 }
 
 function insertFormulaSnippet(field, button) {
@@ -1079,17 +1135,6 @@ function insertFormulaSnippet(field, button) {
   field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function insertFormulaIntoContentEditable(editor, button) {
-  if (!editor) return;
-  const tex = button.dataset.formulaTex || "";
-  const wrapper = button.dataset.formulaWrap === "display" ? "$$" : "$";
-  editor.focus();
-  restoreNoteSelection();
-  document.execCommand("insertText", false, `${wrapper}${tex}${wrapper}`);
-  state.noteSavedRange = null;
-  markNoteDirty();
-}
-
 function nextStructuredNumber(value, pattern) {
   const numbers = [...String(value || "").matchAll(pattern)].map((match) => Number(match[1])).filter(Number.isFinite);
   return numbers.length ? Math.max(...numbers) + 1 : 1;
@@ -1108,6 +1153,71 @@ function cursorAfterFormula(value, position) {
   return position;
 }
 
+function listLineParts(line) {
+  const match = String(line || "").match(/^(\s*)(?:(?:([-*+])\s+)|(\d+)([.、)])\s+)?([\s\S]*)$/);
+  const indent = match?.[1] || "";
+  const unordered = match?.[2] || "";
+  const orderedNumber = match?.[3] || "";
+  const orderedPunctuation = match?.[4] || "";
+  const content = match?.[5] || "";
+  const marker = unordered ? `${unordered} ` : orderedNumber ? `${orderedNumber}${orderedPunctuation} ` : "";
+  return { indent, marker, content, unordered: Boolean(unordered), ordered: Boolean(orderedNumber), prefixLength: indent.length + marker.length };
+}
+
+function selectedParagraphBounds(value, start, end) {
+  const blockStart = start > 0 ? value.lastIndexOf("\n", start - 1) + 1 : 0;
+  const effectiveEnd = end > start && value[end - 1] === "\n" ? end - 1 : end;
+  const nextBreak = value.indexOf("\n", effectiveEnd);
+  return { start: blockStart, end: nextBreak < 0 ? value.length : nextBreak };
+}
+
+function precedingOrderedNumber(value, blockStart) {
+  if (blockStart <= 0) return 0;
+  const previousEnd = blockStart - 1;
+  const previousStart = value.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
+  const previous = listLineParts(value.slice(previousStart, previousEnd));
+  return previous.ordered ? Number(previous.marker.match(/^\d+/)?.[0] || 0) : 0;
+}
+
+function formatListBlock(block, style, firstNumber = 1) {
+  const lines = String(block || "").split("\n");
+  const meaningful = lines.map((line, index) => ({ line, index, parts: listLineParts(line) })).filter((item) => item.line.trim());
+  const targetIsOrdered = style === "ordered";
+  const alreadyTarget = meaningful.length > 0 && meaningful.every((item) => targetIsOrdered ? item.parts.ordered : item.parts.unordered);
+  let number = Math.max(1, Number(firstNumber) || 1);
+  const formatted = lines.map((line) => {
+    if (!line.trim()) return line;
+    const parts = listLineParts(line);
+    if (alreadyTarget) return `${parts.indent}${parts.content}`;
+    const marker = targetIsOrdered ? `${number++}. ` : "- ";
+    return `${parts.indent}${marker}${parts.content}`;
+  });
+  return { text: formatted.join("\n"), removed: alreadyTarget };
+}
+
+function applyListFormatting(field, style = "unordered") {
+  if (!field || field.readOnly) return;
+  const value = String(field.value || "");
+  const selectionStart = field.selectionStart ?? value.length;
+  const selectionEnd = field.selectionEnd ?? selectionStart;
+  const bounds = selectedParagraphBounds(value, selectionStart, selectionEnd);
+  const block = value.slice(bounds.start, bounds.end);
+  const firstNumber = style === "ordered" ? precedingOrderedNumber(value, bounds.start) + 1 : 1;
+  const result = formatListBlock(block, style, firstNumber);
+  field.value = value.slice(0, bounds.start) + result.text + value.slice(bounds.end);
+  field.focus();
+  if (selectionStart !== selectionEnd) {
+    field.setSelectionRange(bounds.start, bounds.start + result.text.length);
+  } else {
+    const original = listLineParts(block);
+    const formatted = listLineParts(result.text);
+    const logicalOffset = Math.max(0, selectionStart - bounds.start - original.prefixLength);
+    const caret = bounds.start + formatted.prefixLength + Math.min(logicalOffset, formatted.content.length);
+    field.setSelectionRange(caret, caret);
+  }
+  dispatchEditorInput(field);
+}
+
 function insertAnswerStructure(field, action) {
   if (!field) return;
   const cursor = cursorAfterFormula(field.value, field.selectionEnd ?? field.value.length);
@@ -1116,9 +1226,7 @@ function insertAnswerStructure(field, action) {
   const trailingNewlines = before.match(/\n*$/)?.[0].length || 0;
   const requiredBreaks = action === "subquestion" ? 2 : 1;
   const lineBreak = "\n".repeat(Math.max(0, requiredBreaks - trailingNewlines));
-  const marker = action === "point"
-    ? `${nextStructuredNumber(field.value, /(?:^|\n)\s*(\d+)[.、)]\s/g)}. `
-    : action === "subquestion"
+  const marker = action === "subquestion"
       ? `（${nextStructuredNumber(field.value, /(?:^|\n)\s*[（(](\d+)[）)]\s/g)}） `
       : "";
   const insertion = `${lineBreak}${marker}`;
@@ -1379,31 +1487,27 @@ function bindAnswerEditors(root = document) {
     const editorId = editor.dataset.formulaEditor || "";
     const field = editor.querySelector("[data-formula-input]")
       || (editorId === "note-markdown" ? $("note-markdown-editor") : null);
-    const richNoteTarget = editorId === "note-rich" ? $("note-rich-editor") : null;
     const preview = editor.querySelector("[data-formula-preview]");
     ensureTextEditorHistory(field);
     const update = () => {
       if (field) rememberTextEditorChange(field);
       if (preview && field) preview.innerHTML = renderAnswerPreview(field.value);
-      if (richNoteTarget) {
-        renderNoteRichPreview();
-        updateNoteEditorStats();
-      }
-      updateEditorCount(editor, field?.value || richNoteTarget?.innerText || "");
+      updateEditorCount(editor, field?.value || "");
+      persistAnswerWorkspaceText(editor.closest("[data-answer-workspace]"));
+      if (editorId === "note-rich" || editorId === "note-markdown") markNoteDirty();
       if (state.practiceSession) updatePracticeSessionStatus();
     };
     field?.addEventListener("input", update);
     $$('[data-formula-tool]', editor).forEach((button) => button.addEventListener("click", () => {
       if (field) insertFormulaSnippet(field, button);
-      else if (richNoteTarget) insertFormulaIntoContentEditable(richNoteTarget, button);
     }));
     $$('[data-editor-command]', editor).forEach((button) => button.addEventListener("click", () => runTextEditorCommand(field, button.dataset.editorCommand)));
     $$('[data-editor-insert]', editor).forEach((button) => button.addEventListener("click", () => {
       const action = button.dataset.editorInsert;
-      if (action === "point" || action === "subquestion") insertAnswerStructure(field, action);
+      if (action === "point" || action === "ordered") applyListFormatting(field, "ordered");
+      else if (action === "unordered") applyListFormatting(field, "unordered");
+      else if (action === "subquestion") insertAnswerStructure(field, action);
       else if (action === "quote") insertTextAtSelection(field, "\n> ");
-      else if (action === "unordered") insertTextAtSelection(field, "\n- ");
-      else if (action === "ordered") insertTextAtSelection(field, "\n1. ");
     }));
     field?.addEventListener("keydown", (event) => {
       const handled = handleStructuredTextKeydown(field, event);
@@ -1419,15 +1523,12 @@ function bindAnswerEditors(root = document) {
     $$('[data-formula-category]', editor).forEach((button) => button.addEventListener("click", () => {
       selectFormulaCategory(editor, button.dataset.formulaCategory);
     }));
-    $$('[data-answer-structure-toggle]', editor).forEach((button) => button.addEventListener("click", () => {
-      setDisclosure(button, editor.querySelector("[data-answer-structure-panel]"), button.getAttribute("aria-expanded") !== "true");
-    }));
-    $$('[data-structure-action]', editor).forEach((button) => button.addEventListener("click", () => insertAnswerStructure(field, button.dataset.structureAction)));
   });
   $$('[data-choice-editor]', root).forEach((editor) => {
     if (editor.dataset.bound === "true") return;
     editor.dataset.bound = "true";
     $$('[data-choice-value]', editor).forEach((button) => button.addEventListener("click", () => selectChoice(editor, button.dataset.choiceValue)));
+    editor.querySelector("[data-choice-input]")?.addEventListener("input", () => persistAnswerWorkspaceText(editor.closest("[data-answer-workspace]")));
     editor.addEventListener("keydown", (event) => {
       const key = event.key.toUpperCase();
       const digitIndex = /^[1-4]$/.test(event.key) ? Number(event.key) - 1 : -1;
@@ -1604,6 +1705,8 @@ function resetUserScopedState() {
   state.practiceSession = null;
   state.currentSimulation = null;
   state.simulationTimer = null;
+  window.clearTimeout(state.simulationSaveTimer);
+  state.simulationSaveTimer = null;
   state.simulationDeadline = null;
   state.simulationCurrentIndex = 0;
   state.libraryRequestId += 1;
@@ -1902,6 +2005,15 @@ function simulationPointerKey() {
   return `ai-math-simulation-${state.userId || "local-user"}`;
 }
 
+function practicePointerKey() {
+  return `ai-math-practice-${state.userId || "local-user"}`;
+}
+
+function savePracticePointer(sessionId) {
+  if (sessionId) localStorage.setItem(practicePointerKey(), sessionId);
+  else localStorage.removeItem(practicePointerKey());
+}
+
 function readSavedSimulationId() {
   return localStorage.getItem(simulationPointerKey()) || localStorage.getItem("ai-math-simulation");
 }
@@ -1928,8 +2040,9 @@ function readSimulationDraft(simulation = state.currentSimulation) {
 }
 
 function simulationDraftForQuestion(simulation, question, draft = readSimulationDraft(simulation)) {
+  const unified = readAnswerDraft("simulation", question.id, simulation?.id || "");
   return {
-    answer: draft.answers[question.id] ?? question.attempt?.answer ?? "",
+    answer: unified.found ? unified.answer : draft.answers[question.id] ?? question.attempt?.answer ?? "",
     selfGrade: draft.selfGrades[question.id] ?? "",
   };
 }
@@ -1948,7 +2061,7 @@ function simulationQuestionHasDraft(simulation, question, draft = readSimulation
   const imageField = root ? simulationDataField(root, "data-sim-image", "simImage", question.id) : null;
   const answer = answerField ? answerField.value : draft.answers[question.id] ?? question.attempt?.answer ?? "";
   const selfGrade = gradeField ? gradeField.value : draft.selfGrades[question.id] ?? "";
-  const hasImage = Boolean(imageField?.files?.length || question.attempt?.attachments?.length);
+  const hasImage = Boolean(imageField?.files?.length || question.attempt?.attachments?.length || readAnswerDraft("simulation", question.id, simulation?.id || "").attachments.length);
   return Boolean(String(answer || "").trim() || String(selfGrade || "").trim() || hasImage || handwritingHasDraft(simulationHandwritingKey(simulation, question.id)));
 }
 
@@ -1969,6 +2082,28 @@ function saveSimulationDraft(root = document) {
   const hasHandwriting = (simulation.questions || []).some((question) => handwritingHasDraft(simulationHandwritingKey(simulation, question.id)));
   if (hasAnswer || hasGrade || hasHandwriting) localStorage.setItem(simulationDraftKey(simulation.id), JSON.stringify(draft));
   else localStorage.removeItem(simulationDraftKey(simulation.id));
+  window.clearTimeout(state.simulationSaveTimer);
+  state.simulationSaveTimer = window.setTimeout(() => persistSimulationDraft(root), 700);
+}
+
+async function persistSimulationDraft(root = document) {
+  const simulation = state.currentSimulation;
+  if (!simulation?.id || simulation.status === "finished") return;
+  const draft = collectSimulationDraft(root);
+  const attachmentIds = {};
+  (simulation.questions || []).forEach((question) => {
+    const existing = (question.attempt?.attachments || []).map((item) => item.id).filter(Boolean);
+    const selected = readAnswerDraft("simulation", question.id, simulation.id).attachments.map((item) => item.id);
+    if (existing.length || selected.length) attachmentIds[question.id] = [...new Set([...existing, ...selected])];
+  });
+  try {
+    await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}`, {
+      ...jsonOptions({ user_id: state.userId, answers: draft.answers, self_grades: {}, attachment_ids: attachmentIds }),
+      method: "PUT",
+    });
+  } catch (error) {
+    console.warn("simulation draft save failed", error);
+  }
 }
 
 function simulationQuestionAnswered(simulation, question, root = document, draft = readSimulationDraft(simulation)) {
@@ -2720,45 +2855,14 @@ function noteInlineMarkdownToHtml(value) {
 }
 
 function renderNoteRichPreview() {
-  const preview = $("note-rich-preview-body");
+  const preview = document.querySelector('[data-formula-editor="note-rich"] [data-formula-preview]');
   const editor = $("note-rich-editor");
   if (!preview || !editor) return;
-  const holder = document.createElement("div");
-  holder.innerHTML = editor.innerHTML || "";
-  $$("script, style, iframe, object, embed, form", holder).forEach((element) => element.remove());
-  $$("*", holder).forEach((element) => {
-    [...element.attributes].forEach((attribute) => {
-      const name = attribute.name.toLowerCase();
-      if (name.startsWith("on") || !["href", "src", "alt", "title"].includes(name)) element.removeAttribute(attribute.name);
-    });
-    if (element.hasAttribute("href")) {
-      const safe = safeNoteUrl(element.getAttribute("href"));
-      if (safe) element.setAttribute("href", safe);
-      else element.removeAttribute("href");
-    }
-    if (element.hasAttribute("src")) {
-      const safe = safeNoteUrl(element.getAttribute("src"));
-      if (safe) element.setAttribute("src", safe);
-      else element.removeAttribute("src");
-    }
-  });
-  const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
-  const textNodes = [];
-  let current;
-  while ((current = walker.nextNode())) {
-    const parent = current.parentElement;
-    if (parent && !["CODE", "PRE", "SCRIPT", "STYLE"].includes(parent.tagName)) textNodes.push(current);
-  }
-  textNodes.forEach((node) => {
-    const rendered = renderInlineFormulaText(node.nodeValue || "");
-    const fragment = document.createRange().createContextualFragment(rendered);
-    node.replaceWith(fragment);
-  });
-  preview.innerHTML = holder.innerHTML || '<p class="muted-copy">输入内容后，这里会显示预览。</p>';
+  preview.innerHTML = renderAnswerPreview(editor.value || "");
 }
 
 function updateNoteEditorStats() {
-  updateEditorCount($("note-rich-editor")?.parentElement, $("note-rich-editor")?.innerText || "");
+  updateEditorCount($("note-rich-editor")?.closest("[data-formula-editor]"), $("note-rich-editor")?.value || "");
   updateEditorCount($("note-markdown-editor")?.parentElement, $("note-markdown-editor")?.value || "");
 }
 
@@ -2777,10 +2881,13 @@ function setNoteMode(mode) {
   const rich = $("note-rich-editor");
   const markdown = $("note-markdown-editor");
   if (nextMode === "markdown" && rich && markdown) {
-    markdown.value = noteHtmlToMarkdown(rich.innerHTML);
+    markdown.value = rich.value;
     resetTextEditorHistory(markdown);
   }
-  if (nextMode === "rich" && rich && markdown) rich.innerHTML = noteMarkdownToHtml(markdown.value);
+  if (nextMode === "rich" && rich && markdown) {
+    rich.value = markdown.value;
+    resetTextEditorHistory(rich);
+  }
   state.noteEditorMode = nextMode;
   $("note-rich-pane").hidden = nextMode !== "rich";
   $("note-markdown-pane").hidden = nextMode !== "markdown";
@@ -2790,78 +2897,12 @@ function setNoteMode(mode) {
   updateNoteEditorStats();
 }
 
-function saveNoteSelection() {
-  const editor = $("note-rich-editor");
-  const selection = window.getSelection();
-  if (!editor || !selection?.rangeCount || !editor.contains(selection.anchorNode)) return;
-  state.noteSavedRange = selection.getRangeAt(0).cloneRange();
-}
-
-function restoreNoteSelection() {
-  if (!state.noteSavedRange) return;
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(state.noteSavedRange);
-}
-
 function markNoteDirty() {
   rememberTextEditorChange($("note-markdown-editor"));
   $("note-save-state").textContent = "有未保存修改";
   renderNoteRichPreview();
   renderNoteMarkdownPreview();
   updateNoteEditorStats();
-}
-
-function insertNoteText(value) {
-  const editor = $("note-rich-editor");
-  if (!editor) return;
-  editor.focus();
-  restoreNoteSelection();
-  document.execCommand("insertText", false, value);
-  state.noteSavedRange = null;
-  markNoteDirty();
-}
-
-function runNoteCommand(command, value = null) {
-  const editor = $("note-rich-editor");
-  if (!editor) return;
-  editor.focus();
-  const selection = window.getSelection();
-  if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) restoreNoteSelection();
-  if (command === "createLink") {
-    const input = window.prompt("输入链接地址", "https://");
-    if (!input) return;
-    const normalized = /^https?:\/\//i.test(input.trim()) ? input.trim() : "https://" + input.trim();
-    const safe = safeNoteUrl(normalized);
-    if (!safe) {
-      showToast("链接地址不可用。", true);
-      return;
-    }
-    document.execCommand("createLink", false, safe);
-  } else {
-    document.execCommand(command, false, value);
-  }
-  saveNoteSelection();
-  markNoteDirty();
-}
-
-function handleNoteRichKeydown(event) {
-  const editor = $("note-rich-editor");
-  if (!editor || event.isComposing) return;
-  const modifier = event.ctrlKey || event.metaKey;
-  if (modifier && !event.altKey) {
-    const key = event.key.toLowerCase();
-    const command = { b: "bold", i: "italic", u: "underline", k: "createLink" }[key];
-    if (command) {
-      event.preventDefault();
-      runNoteCommand(command);
-      return;
-    }
-  }
-  if (event.key === "Tab" && !modifier && !event.altKey) {
-    event.preventDefault();
-    runNoteCommand(event.shiftKey ? "outdent" : "indent");
-  }
 }
 
 function renderNoteEditor() {
@@ -2879,8 +2920,10 @@ function renderNoteEditor() {
   $("note-title").value = note.title || "";
   $("note-tags").value = (note.tags || []).join("，");
   populateNoteConcepts(note.concept_id || state.workbenchConceptId);
-  $("note-rich-editor").innerHTML = note.content_html || noteMarkdownToHtml(note.content_markdown || "");
-  $("note-markdown-editor").value = note.content_markdown || noteHtmlToMarkdown(note.content_html || "");
+  const noteSource = note.content_markdown || noteHtmlToMarkdown(note.content_html || "");
+  $("note-rich-editor").value = noteSource;
+  $("note-markdown-editor").value = noteSource;
+  resetTextEditorHistory($("note-rich-editor"));
   resetTextEditorHistory($("note-markdown-editor"));
   renderNoteMarkdownPreview();
   renderNoteRichPreview();
@@ -2915,8 +2958,8 @@ async function openWorkbenchNote(noteId) {
 function collectNotePayload() {
   const rich = $("note-rich-editor");
   const markdown = $("note-markdown-editor");
-  const contentHtml = state.noteEditorMode === "markdown" ? noteMarkdownToHtml(markdown.value) : rich.innerHTML;
-  const contentMarkdown = state.noteEditorMode === "markdown" ? markdown.value : (markdown.value.trim() || noteHtmlToMarkdown(rich.innerHTML));
+  const contentMarkdown = state.noteEditorMode === "markdown" ? markdown.value : rich.value;
+  const contentHtml = noteMarkdownToHtml(contentMarkdown);
   const tags = $("note-tags").value.split(/[，,]/).map((item) => item.trim()).filter(Boolean);
   return {
     user_id: state.userId,
@@ -3100,23 +3143,24 @@ async function uploadWorkbenchNoteImage(file) {
 }
 
 function bindNoteEditor() {
-  const richFormulaToolbar = $("note-rich-formula-toolbar");
+  const richPane = $("note-rich-pane");
   const markdownFormulaToolbar = $("note-markdown-formula-toolbar");
   const sharedFormulaEditor = (editorId) => `<div class="formula-editor note-formula-editor" data-formula-editor="${escapeAttr(editorId)}">${formulaToolbarMarkup(editorId, false, "fill", false)}</div>`;
-  if (richFormulaToolbar) richFormulaToolbar.innerHTML = sharedFormulaEditor("note-rich");
+  if (richPane) {
+    richPane.innerHTML = `${renderFormulaEditor({
+      id: "note-rich",
+      inputId: "note-rich-editor",
+      label: "笔记正文",
+      placeholder: "像答题一样记录理解、公式和复盘；分点、编号和小题都可以自动延续。",
+      questionType: "solution",
+    })}<div class="answer-support-strip note-image-support"><div class="answer-support-title"><strong>笔记图片</strong><span>上传后插入当前光标位置</span></div><div class="answer-upload-row"><label class="upload-button small-upload" for="note-image-input">＋ 插入图片</label><input id="note-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /><span>支持 PNG/JPG/WebP/GIF，单张不超过 8 MB</span></div></div>`;
+  }
   if (markdownFormulaToolbar) markdownFormulaToolbar.innerHTML = sharedFormulaEditor("note-markdown");
-  bindAnswerEditors(richFormulaToolbar || document);
+  bindAnswerEditors(richPane || document);
   bindAnswerEditors(markdownFormulaToolbar || document);
+  ensureTextEditorHistory($("note-rich-editor"));
   ensureTextEditorHistory($("note-markdown-editor"));
   $$('[data-note-mode]').forEach((button) => button.addEventListener("click", () => setNoteMode(button.dataset.noteMode)));
-  $$('[data-note-command]').forEach((button) => button.addEventListener("mousedown", (event) => event.preventDefault()));
-  $$('[data-note-command]').forEach((button) => button.addEventListener("click", () => runNoteCommand(button.dataset.noteCommand, button.dataset.noteValue || null)));
-  $$('[data-note-insert]').forEach((button) => button.addEventListener("click", () => insertNoteText(button.dataset.noteInsert === "subquestion" ? "（1） " : "1. ")));
-  $("note-rich-editor")?.addEventListener("keydown", handleNoteRichKeydown);
-  $("note-rich-editor")?.addEventListener("keyup", saveNoteSelection);
-  $("note-rich-editor")?.addEventListener("mouseup", saveNoteSelection);
-  $("note-rich-editor")?.addEventListener("input", markNoteDirty);
-  $("note-markdown-editor")?.addEventListener("keydown", (event) => handleStructuredTextKeydown($("note-markdown-editor"), event));
   $$('[data-markdown-insert]').forEach((button) => button.addEventListener("click", () => {
     const textarea = $("note-markdown-editor");
     const value = button.dataset.markdownInsert || "";
@@ -3126,8 +3170,6 @@ function bindNoteEditor() {
     textarea.selectionStart = textarea.selectionEnd = start + value.length;
     markNoteDirty();
   }));
-  $("note-markdown-editor")?.addEventListener("input", markNoteDirty);
-  $("note-image-button")?.addEventListener("click", () => { saveNoteSelection(); $("note-image-input").click(); });
   $("note-image-input")?.addEventListener("change", async () => {
     const input = $("note-image-input");
     const file = input.files?.[0];
@@ -3136,10 +3178,8 @@ function bindNoteEditor() {
       $("note-save-state").textContent = "图片上传中……";
       const uploaded = await uploadWorkbenchNoteImage(file);
       const editor = $("note-rich-editor");
-      editor.focus();
-      restoreNoteSelection();
-      document.execCommand("insertHTML", false, `<img src="${escapeAttr(uploaded.url)}" alt="${escapeAttr(uploaded.filename || "笔记图片")}" />`);
-      markNoteDirty();
+      const alt = String(uploaded.filename || "笔记图片").replace(/[\[\]]/g, "");
+      insertTextAtSelection(editor, `![${alt}](${uploaded.url})`);
     } catch (error) {
       showToast(`图片插入失败：${error.message}`, true);
     } finally {
@@ -3553,10 +3593,27 @@ function renderQuestionRow(question) {
   </article>`;
 }
 
-async function loadBlocks() {
+async function loadBlocks({ skipResume = false } = {}) {
   $("blocks-container").classList.remove("practice-active");
   $("blocks-container").innerHTML = `<div class="loading-card">正在分析作答记录……</div>`;
   try {
+    if (!skipResume) {
+      const savedId = state.practiceSession?.id || localStorage.getItem(practicePointerKey());
+      if (savedId) {
+        try {
+          state.practiceSession = state.practiceSession || await fetchJSON(`/api/practice/sessions/${encodeURIComponent(savedId)}`);
+          if (state.practiceSession?.status !== "finished") {
+            savePracticePointer(state.practiceSession.id);
+            renderPracticeSession();
+            return;
+          }
+          savePracticePointer("");
+        } catch {
+          savePracticePointer("");
+          state.practiceSession = null;
+        }
+      }
+    }
     const payload = await fetchJSON(`/api/study/blocks?user_id=${encodeURIComponent(state.userId)}&limit=12`);
     state.blocks = payload.blocks || [];
     $("blocks-container").innerHTML = state.blocks.length ? state.blocks.map(renderFullBlock).join("") : `<div class="empty-state"><div class="empty-mark">∑</div><h3>完成第一道题后开始分析</h3><p>系统会从真实作答中识别薄弱知识块，并生成短练习。</p></div>`;
@@ -3639,7 +3696,13 @@ function renderPracticeAttachments(items = []) {
     : "";
 }
 
-function renderAnswerImageUpload({ scope, questionId, status = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB" } = {}) {
+function renderDraftAttachments(items = []) {
+  const attachments = normalizeDraftAttachments(items);
+  if (!attachments.length) return '<div class="practice-existing-attachments" data-answer-draft-attachments hidden></div>';
+  return `<div class="practice-existing-attachments" data-answer-draft-attachments><span>已选图片：</span>${attachments.map((item) => `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.filename)}</a>`).join("、")}</div>`;
+}
+
+function renderAnswerImageUpload({ scope, questionId, status = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB", attachments = [] } = {}) {
   const safeQuestionId = escapeAttr(questionId);
   const prefix = scope === "simulation" ? "sim" : scope === "practice" ? "practice" : "answer";
   const rowClass = scope === "simulation" ? "sim-upload-row" : "practice-upload-row";
@@ -3648,14 +3711,14 @@ function renderAnswerImageUpload({ scope, questionId, status = "支持 PNG/JPG/W
   const legacyInputAttribute = scope === "simulation" ? ` data-sim-image="${safeQuestionId}"` : scope === "practice" ? ` data-practice-image="${safeQuestionId}"` : "";
   const legacyStatusAttribute = scope === "simulation" ? ` data-sim-image-status="${safeQuestionId}"` : scope === "practice" ? ` data-practice-image-status="${safeQuestionId}"` : "";
   const preview = scope === "modal" ? '<div class="image-preview" id="answer-image-preview" data-answer-image-preview hidden></div>' : "";
-  return `<div class="answer-support-strip"><div class="answer-support-title"><strong>图片作答</strong><span>与手写作答一样，会随提交保存</span></div><div class="${rowClass} answer-upload-row"><label class="upload-button small-upload" for="${escapeAttr(inputId)}">＋ 上传作答图片</label><input id="${escapeAttr(inputId)}" type="file" data-answer-image="${safeQuestionId}" data-answer-image-scope="${escapeAttr(scope)}" data-answer-image-default-status="${escapeAttr(status)}"${legacyInputAttribute} accept="image/png,image/jpeg,image/webp,image/gif" /><span${statusId} data-answer-image-status="${safeQuestionId}"${legacyStatusAttribute}>${escapeHtml(status)}</span></div></div>${preview}`;
+  return `<div class="answer-support-strip"><div class="answer-support-title"><strong>图片作答</strong><span>选择后立即暂存，提交行为不变</span></div><div class="${rowClass} answer-upload-row"><label class="upload-button small-upload" for="${escapeAttr(inputId)}">＋ 上传作答图片</label><input id="${escapeAttr(inputId)}" type="file" data-answer-image="${safeQuestionId}" data-answer-image-scope="${escapeAttr(scope)}" data-answer-image-default-status="${escapeAttr(status)}"${legacyInputAttribute} accept="image/png,image/jpeg,image/webp,image/gif" /><span${statusId} data-answer-image-status="${safeQuestionId}"${legacyStatusAttribute}>${escapeHtml(status)}</span></div>${renderDraftAttachments(attachments)}</div>${preview}`;
 }
 
 function bindAnswerImageUploads(root = document) {
   $$('[data-answer-image]', root).forEach((input) => {
     if (input.dataset.answerImageBound === "true") return;
     input.dataset.answerImageBound = "true";
-    input.addEventListener("change", () => {
+    input.addEventListener("change", async () => {
       const status = $$('[data-answer-image-status]', root).find((item) => item.dataset.answerImageStatus === input.dataset.answerImage);
       const preview = input.dataset.answerImageScope === "modal" ? root.querySelector("[data-answer-image-preview]") : null;
       const file = input.files?.[0];
@@ -3666,18 +3729,44 @@ function bindAnswerImageUploads(root = document) {
         if (preview) clearImagePreview(preview);
         return;
       }
-      if (preview) {
-        showImagePreview(file, preview, status);
+      if (!file) {
+        if (preview) clearImagePreview(preview);
+        if (status) status.textContent = input.dataset.answerImageDefaultStatus;
         return;
       }
-      if (status) status.textContent = file ? `已选择：${file.name}` : input.dataset.answerImageDefaultStatus;
+      if (preview) showImagePreview(file, preview, status);
+      if (status) status.textContent = "正在暂存图片……";
+      input.disabled = true;
+      try {
+        const uploaded = await uploadAnswerImage(file, input.dataset.answerImage);
+        const workspace = input.closest("[data-answer-workspace]");
+        const draft = answerWorkspaceDraft(workspace);
+        const attachments = normalizeDraftAttachments([...draft.attachments, {
+          id: uploaded.attachment_id,
+          filename: uploaded.filename || file.name,
+          url: `/api/attachments/${encodeURIComponent(uploaded.attachment_id)}`,
+        }]);
+        writeAnswerDraft(workspace?.dataset.answerMode || input.dataset.answerImageScope, input.dataset.answerImage, workspace?.dataset.answerContext || "", { attachments });
+        const attachmentBox = workspace?.querySelector("[data-answer-draft-attachments]");
+        if (attachmentBox) attachmentBox.outerHTML = renderDraftAttachments(attachments);
+        input.value = "";
+        if (status) status.textContent = `已暂存：${uploaded.filename || file.name}`;
+        if (preview) clearImagePreview(preview);
+        if (workspace?.dataset.answerMode === "simulation") saveSimulationDraft($("simulation-container") || document);
+        if (workspace?.dataset.answerMode === "practice") updatePracticeSessionStatus();
+      } catch (uploadError) {
+        if (status) status.textContent = `图片暂存失败：${uploadError.message}`;
+      } finally {
+        input.disabled = false;
+      }
     });
   });
 }
 
-function practiceQuestionIsAnswered(question) {
+function practiceQuestionIsAnswered(question, session = state.practiceSession) {
   const answerState = question?.answer_state || {};
-  return Boolean((answerState.answer || "").trim() || answerState.self_grade != null || (answerState.attachments || []).length || handwritingHasDraft(answerHandwritingKey("practice", question?.id)));
+  const draft = readAnswerDraft("practice", question?.id, session?.id || "");
+  return Boolean((draft.found ? draft.answer : answerState.answer || "").trim() || (draft.found ? draft.selfGrade !== "" : answerState.self_grade != null) || draft.attachments.length || (answerState.attachments || []).length || handwritingHasDraft(answerHandwritingKey("practice", question?.id, session?.id || "")));
 }
 
 function practiceCardHasDraft(card) {
@@ -3698,14 +3787,15 @@ function renderPracticeSession() {
   const sessionSubtypeName = session.subtype_id ? subtypeName(session.subtype_id) : (session.question_type ? `${typeLabel(session.question_type)}题` : "混合题型");
   const cards = questions.map((question, index) => {
     const answerState = question.answer_state || {};
-    const answer = answerState.answer || "";
+    const draft = finished ? { found: false, attachments: [] } : readAnswerDraft("practice", question.id, session.id);
+    const answer = draft.found ? draft.answer : answerState.answer || "";
     const result = answerState.result || {};
-    const selectedGrade = practiceGradeValue(answerState.self_grade);
+    const selectedGrade = draft.found ? draft.selfGrade : practiceGradeValue(answerState.self_grade);
     const gradeOptions = [
       ["", "暂不自评"], ["1", "完整正确（100%）"], ["0.7", "主要正确（70%）"], ["0.4", "部分得到（40%）"], ["0", "不会/错误（0%）"],
     ].map(([value, label]) => `<option value="${value}" ${selectedGrade === value ? "selected" : ""}>${label}</option>`).join("");
     const resultMarkup = finished ? `<div class="practice-answer-result ${escapeAttr(result.status || answerState.status || "manual")}"><span>${escapeHtml(resultLabel(result.status || answerState.status))}</span><b>${formatScore(answerState.score)} / ${formatScore(answerState.max_score || question.points)} 分</b>${question.answer_markdown ? `<h5>来源答案</h5><div class="markdown-body">${renderMarkdown(question.answer_markdown)}</div>` : ""}${question.solution_markdown ? `<h5>来源解析</h5><div class="markdown-body">${renderMarkdown(question.solution_markdown)}</div>` : ""}</div>` : "";
-    const answerArea = renderAnswerWorkspace(question, { mode: "practice", value: answer, readonly: finished });
+    const answerArea = renderAnswerWorkspace(question, { mode: "practice", value: answer, readonly: finished, contextId: session.id });
     const uploadArea = renderPracticeAttachments(answerState.attachments || []);
     const selfGrade = question.question_type === "solution" ? `<label class="practice-grade-label">解答题自评<select data-practice-grade="${escapeAttr(question.id)}" ${finished ? "disabled" : ""}>${gradeOptions}</select></label>` : "";
     const answerBoard = `<div class="practice-answer-grid">${answerArea}${uploadArea}${selfGrade}</div>`;
@@ -3713,7 +3803,7 @@ function renderPracticeSession() {
     const assistMarkup = `<div class="practice-assist-actions"><span class="practice-assist-label">卡住了？</span><button type="button" class="text-button" data-practice-hint="${escapeAttr(question.id)}">问问 AI</button><button type="button" class="text-button" data-practice-source="${escapeAttr(question.id)}">查看解析</button></div><div class="practice-assist-panel" data-practice-assist="${escapeAttr(question.id)}" hidden></div>`;
     return `<article class="practice-session-question" data-practice-question="${escapeAttr(question.id)}" data-practice-question-card="${index}" ${index === activeIndex ? "" : "hidden"}><div class="practice-question-head"><span>${String(index + 1).padStart(2, "0")} / <span data-practice-subtype-label="${escapeAttr(question.id)}">${escapeHtml(subtypeLine)}</span></span><span class="practice-question-history">${questionAttemptMarkup(question, true)}</span><b>${formatScore(question.points)} 分</b></div><div class="practice-question-body markdown-body">${renderMarkdown(question.question_markdown)}</div><div class="practice-question-tags">${questionConceptMarkup(question)}${questionSubtypeMarkup(question)}</div>${classificationEditorMarkup(question, "practice")}${answerBoard}${assistMarkup}${resultMarkup}</article>`;
   }).join("");
-  const answeredCount = questions.filter(practiceQuestionIsAnswered).length;
+  const answeredCount = questions.filter((question) => practiceQuestionIsAnswered(question, session)).length;
   const statusLabel = finished ? `已提交 · 得分 ${formatScore(session.score)} / ${formatScore(session.max_score)} 分` : `已填写 ${answeredCount} / ${questions.length} 题 · 可随时暂存`;
   const navigator = `<nav class="practice-question-navigator" aria-label="专项训练题目导航"><div><strong>题目导航</strong><span>一次专注一道，答案会在切题时保留</span></div><div class="practice-question-tabs" role="tablist">${questions.map((question, index) => `<button type="button" data-practice-question-index="${index}" class="practice-question-tab ${index === activeIndex ? "is-active" : ""} ${practiceQuestionIsAnswered(question) ? "is-complete" : ""}" aria-selected="${index === activeIndex ? "true" : "false"}" aria-label="第 ${index + 1} 题${practiceQuestionIsAnswered(question) ? "，已填写" : ""}">${index + 1}</button>`).join("")}</div></nav>`;
   const cardNavigation = `<nav class="practice-card-navigation" aria-label="上一题或下一题"><button type="button" class="quiet-button" id="practice-question-prev" ${activeIndex === 0 ? "disabled" : ""}>上一题</button><span id="practice-question-position">第 ${activeIndex + 1} / ${questions.length} 题</span><button type="button" class="secondary-button" id="practice-question-next" ${activeIndex >= questions.length - 1 ? "disabled" : ""}>下一题</button></nav>`;
@@ -3771,14 +3861,17 @@ function selectPracticeQuestion(index, focusAnswer = false) {
 function bindPracticeSession() {
   const root = $("blocks-container");
   $$('[data-practice-answer]', root).forEach((field) => field.addEventListener("input", updatePracticeSessionStatus));
-  $$('[data-practice-grade]', root).forEach((field) => field.addEventListener("change", updatePracticeSessionStatus));
+  $$('[data-practice-grade]', root).forEach((field) => field.addEventListener("change", () => {
+    writeAnswerDraft("practice", field.dataset.practiceGrade, state.practiceSession?.id || "", { selfGrade: field.value });
+    updatePracticeSessionStatus();
+  }));
   if (root.dataset.practiceHandwritingBound !== "true") {
     root.dataset.practiceHandwritingBound = "true";
     root.addEventListener("handwritingchange", updatePracticeSessionStatus);
   }
   bindAnswerImageUploads(root);
-  $("leave-practice-session")?.addEventListener("click", () => { state.practiceSession = null; loadBlocks(); });
-  $("back-after-practice")?.addEventListener("click", () => { state.practiceSession = null; loadBlocks(); });
+  $("leave-practice-session")?.addEventListener("click", () => loadBlocks({ skipResume: true }));
+  $("back-after-practice")?.addEventListener("click", () => { savePracticePointer(""); state.practiceSession = null; loadBlocks({ skipResume: true }); });
   $("refresh-practice-session")?.addEventListener("click", refreshPracticeSession);
   $("save-practice-session")?.addEventListener("click", savePracticeSession);
   $("submit-practice-session")?.addEventListener("click", () => submitPracticeSession(false));
@@ -3848,7 +3941,8 @@ async function collectPracticeSessionPayload({ includeHandwriting = false } = {}
   $$('[data-practice-grade]').forEach((field) => { if (field.value !== "") selfGrades[field.dataset.practiceGrade] = Number(field.value); });
   (state.practiceSession?.questions || []).forEach((question) => {
     const existing = (question.answer_state?.attachments || []).map((item) => item.id).filter(Boolean);
-    if (existing.length) attachmentIds[question.id] = existing;
+    const selected = readAnswerDraft("practice", question.id, state.practiceSession?.id || "").attachments.map((item) => item.id);
+    if (existing.length || selected.length) attachmentIds[question.id] = [...new Set([...existing, ...selected])];
   });
   for (const input of $$('[data-practice-image]')) {
     const file = input.files?.[0];
@@ -3879,6 +3973,7 @@ async function startPracticeSession(conceptId, questionType = "", subtypeId = ""
   if (button) button.disabled = true;
   try {
     state.practiceSession = await fetchJSON("/api/practice/sessions", jsonOptions({ user_id: state.userId, exam_type: "数学二", concept_id: conceptId, question_type: questionType, subtype_id: subtypeId, count: 15, exclude_question_ids: excludeQuestionIds }));
+    savePracticePointer(state.practiceSession.id);
     state.practiceQuestionIndex = 0;
     renderPracticeSession();
     if (excludeQuestionIds.length) showToast("已优先避开上一组题；题库较小时会保留少量旧题。", false);
@@ -3915,6 +4010,8 @@ async function submitPracticeSession(confirmSubmit = false) {
     const payload = await collectPracticeSessionPayload({ includeHandwriting: true });
     state.practiceSession = await fetchJSON(`/api/practice/sessions/${encodeURIComponent(session.id)}/submit`, jsonOptions(payload));
     clearHandwritingDrafts($("blocks-container"));
+    (state.practiceSession.questions || []).forEach((question) => clearAnswerDraft("practice", question.id, session.id));
+    savePracticePointer("");
     renderPracticeSession();
     await refreshLearningData();
     showToast(`训练已提交：${formatScore(state.practiceSession.score)} / ${formatScore(state.practiceSession.max_score)} 分。`);
@@ -3941,7 +4038,9 @@ async function openQuestion(questionId) {
     bindAnswerEditors($("modal-answer-editor"));
     bindAnswerImageUploads($("modal-answer-editor"));
     $("answer-duration").value = "0";
-    $("self-grade").value = "";
+    const modalDraft = readAnswerDraft("modal", question.id);
+    $("self-grade").value = modalDraft.selfGrade || "";
+    $("self-grade").onchange = () => writeAnswerDraft("modal", question.id, "", { selfGrade: $("self-grade").value });
     $("self-grade-wrap").style.display = question.question_type === "solution" ? "grid" : "none";
     $("question-result").hidden = true;
     $("tutor-box").hidden = true;
@@ -3956,6 +4055,9 @@ async function openQuestion(questionId) {
 }
 
 function closeQuestion() {
+  const workspace = $("modal-answer-editor")?.querySelector("[data-answer-workspace]");
+  persistAnswerWorkspaceText(workspace);
+  if (state.currentQuestion) writeAnswerDraft("modal", state.currentQuestion.id, "", { selfGrade: $("self-grade")?.value || "" });
   const fullscreenPad = $("modal-answer-editor")?.querySelector("[data-handwriting-pad]");
   if (fullscreenPad?.classList.contains("is-fullscreen-fallback")) setHandwritingFullscreen(fullscreenPad, false);
   if (document.fullscreenElement === fullscreenPad) document.exitFullscreen?.();
@@ -3998,7 +4100,7 @@ async function submitAnswer() {
   const selfGradeValue = $("self-grade").value;
   const imageInput = $("answer-image-input");
   try {
-    const attachmentIds = [];
+    const attachmentIds = readAnswerDraft("modal", question.id).attachments.map((item) => item.id);
     if (imageInput.files?.[0]) {
       $("answer-image-status").textContent = "正在上传图片……";
       const uploaded = await uploadAnswerImage(imageInput.files[0], question.id);
@@ -4014,6 +4116,7 @@ async function submitAnswer() {
       attachment_ids: attachmentIds,
     }));
     clearHandwritingDrafts($("modal-answer-editor"));
+    clearAnswerDraft("modal", question.id);
     renderQuestionResult(payload);
     showToast("作答已保存，掌握度会在总览中更新。");
     await refreshLearningData();
@@ -4129,11 +4232,16 @@ async function cancelSimulation() {
   const button = $("cancel-simulation");
   if (button) button.disabled = true;
   try {
+    window.clearTimeout(state.simulationSaveTimer);
     await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}?user_id=${encodeURIComponent(state.userId)}`, { method: "DELETE" });
     window.clearInterval(state.simulationTimer);
     localStorage.removeItem(simulationPointerKey());
     localStorage.removeItem("ai-math-simulation");
     localStorage.removeItem(simulationDraftKey(simulation.id));
+    (simulation.questions || []).forEach((question) => {
+      clearAnswerDraft("simulation", question.id, simulation.id);
+      forgetHandwritingDraft(simulationHandwritingKey(simulation, question.id));
+    });
     state.currentSimulation = null;
     state.simulationDeadline = null;
     state.simulationCurrentIndex = 0;
@@ -4230,9 +4338,15 @@ async function submitSimulation(autoSubmit = false) {
   const attachmentIds = {};
   $$('[data-sim-answer]').forEach((field) => { answers[field.dataset.simAnswer] = field.value; });
   $$('[data-sim-grade]').forEach((field) => { if (field.value !== "") selfGrades[field.dataset.simGrade] = Number(field.value); });
+  (simulation.questions || []).forEach((question) => {
+    const existing = (question.attempt?.attachments || []).map((item) => item.id).filter(Boolean);
+    const selected = readAnswerDraft("simulation", question.id, simulation.id).attachments.map((item) => item.id);
+    if (existing.length || selected.length) attachmentIds[question.id] = [...new Set([...existing, ...selected])];
+  });
   const button = $("submit-simulation");
   if (button) button.disabled = true;
   try {
+    window.clearTimeout(state.simulationSaveTimer);
     for (const input of $$('[data-sim-image]')) {
       const file = input.files?.[0];
       if (!file) continue;
@@ -4246,6 +4360,7 @@ async function submitSimulation(autoSubmit = false) {
     saveSimulationPointer(state.currentSimulation.id);
     localStorage.removeItem(simulationDraftKey(simulation.id));
     clearHandwritingDrafts($("simulation-container"));
+    (simulation.questions || []).forEach((question) => clearAnswerDraft("simulation", question.id, simulation.id));
     window.clearInterval(state.simulationTimer);
     renderSimulation();
     await refreshLearningData();
@@ -4744,7 +4859,6 @@ async function init() {
   $("submit-answer").addEventListener("click", submitAnswer);
   $("ask-tutor").addEventListener("click", askTutor);
   $("close-question-modal").addEventListener("click", closeQuestion);
-  $("question-modal").addEventListener("click", (event) => { if (event.target === $("question-modal")) closeQuestion(); });
   $("fetch-models").addEventListener("click", fetchModelsFromForm);
   $("model-settings-form").addEventListener("submit", saveModelSettings);
   $("server-settings-form").addEventListener("submit", saveServerSettings);

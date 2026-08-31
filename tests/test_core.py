@@ -175,6 +175,19 @@ def test_library_question_preview_keeps_mobile_formulas_inside_the_page() -> Non
     assert ".filter-bar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));" in styles
 
 
+def test_question_modal_only_closes_from_explicit_controls_and_keeps_close_button_visible() -> None:
+    app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    html_source = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert '$("close-question-modal").addEventListener("click", closeQuestion);' in app_source
+    assert 'if (event.target === $("question-modal")) closeQuestion()' not in app_source
+    assert 'if (event.key === "Escape") closeQuestion();' in app_source
+    assert 'id="close-question-modal" aria-label="关闭"' in html_source
+    assert ".modal-close { position: sticky; top: 12px; right: auto; z-index: 4;" in styles
+    assert ".modal-close { margin: -15px -3px -23px auto; }" in styles
+
+
 def test_learning_analytics_separates_observed_evidence_from_untrained_topics() -> None:
     questions = load_questions()
     first = next(question for question in questions if question["year"] == 2025 and question["question_type"] == "choice")
@@ -367,14 +380,24 @@ def test_frontend_formula_renderer_is_shared_by_rich_text_surfaces() -> None:
     assert "function renderInlineFormulaText" in source
     assert "function renderNoteMarkdownPreview" in source
     assert "function handleStructuredTextKeydown" in source
+    assert "function formatListBlock" in source
+    assert "function applyListFormatting" in source
+    assert 'applyListFormatting(field, "ordered")' in source
+    assert 'applyListFormatting(field, "unordered")' in source
+    assert "selectionStart !== selectionEnd" in source
+    assert "data-answer-structure-toggle" not in source
+    assert "data-answer-structure-panel" not in source
     assert "const sharedFormulaEditor" in source
     assert "MARKDOWNMEDIATOKEN" in source
     assert "<u>$1</u>" in source
     assert "data-editor-count" in source
     assert "function renderNoteRichPreview" in source
-    assert "note-rich-preview-body" in markup
-    assert "note-rich-count" in markup
-    assert "data-note-command=\"createLink\"" in markup
+    assert 'inputId: "note-rich-editor"' in source
+    assert "bindAnswerEditors(richPane || document)" in source
+    assert 'id="note-rich-pane"></div>' in markup
+    assert '>答题板编辑</button>' in markup
+    assert 'contenteditable="true"' not in markup
+    assert "data-note-command" not in markup
     assert "renderMarkdown(content)" in source
     assert 'raw.startsWith("\\\\begin")' in source
 
@@ -457,6 +480,13 @@ def test_answer_boards_share_touch_handwriting_drafts_and_fullscreen_controls() 
     assert "function bindHandwritingPads" in source
     assert "function answerHandwritingKey" in source
     assert "HANDWRITING_STORAGE_PREFIX" in source
+    assert "ANSWER_DRAFT_STORAGE_PREFIX" in source
+    assert "function answerDraftStorageKey" in source
+    assert "function readAnswerDraft" in source
+    assert "function writeAnswerDraft" in source
+    assert "function practicePointerKey" in source
+    assert "persistSimulationDraft" in source
+    assert 'method: "PUT"' in source
     assert "data-handwriting-canvas" in source
     assert "pointerdown" in source and "pointermove" in source
     assert "data-handwriting-fullscreen" in source
@@ -890,7 +920,7 @@ def test_auth_shell_has_a_no_blank_fallback_and_progressive_fields() -> None:
     assert 'id="auth-retry"' in html_source
     assert 'id="register-optional-fields"' in html_source
     assert 'data-password-toggle' in html_source
-    assert 'styles.css?v=20260830-5' in html_source
+    assert 'styles.css?v=20260831-1' in html_source
     assert "replaceAllLiteral" in app_source
     assert "timeoutMs: 12000" in app_source
     assert 'button, input, select, textarea, summary' in styles
@@ -1019,6 +1049,19 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
             data={"user_id": "local-user", "question_id": simulation_question["id"]},
             files={"file": ("simulation-answer.png", b"\x89PNG\r\n\x1a\nsimulation-test-image", "image/png")},
         )
+        simulation_draft = client.put(
+            f"/api/simulations/{simulation.json()['id']}",
+            json={
+                "answers": {simulation_question["id"]: "刷新后仍应恢复的答案"},
+                "attachment_ids": {simulation_question["id"]: [simulation_upload.json()["attachment_id"]]},
+            },
+        )
+        assert simulation_draft.status_code == 200
+        restored_simulation = client.get(f"/api/simulations/{simulation.json()['id']}")
+        restored_question = next(item for item in restored_simulation.json()["questions"] if item["id"] == simulation_question["id"])
+        assert restored_question["attempt"]["status"] == "draft"
+        assert restored_question["attempt"]["answer"] == "刷新后仍应恢复的答案"
+        assert len(restored_question["attempt"]["attachments"]) == 1
         simulation_submit = client.post(
             f"/api/simulations/{simulation.json()['id']}/submit",
             json={
@@ -1108,6 +1151,23 @@ def test_auth_sessions_rbac_and_per_user_data_isolation(tmp_path: Path) -> None:
                 files={"file": ("private.png", b"\x89PNG\r\n\x1a\nprivate", "image/png")},
             )
             assert upload.status_code == 200
+            admin_simulation = client.post(
+                "/api/simulations",
+                headers={"X-CSRF-Token": admin_csrf},
+                json={"exam_type": "数学二", "year": 2025, "duration_minutes": 180},
+            )
+            assert admin_simulation.status_code == 200
+            admin_simulation_id = admin_simulation.json()["id"]
+            admin_simulation_question = admin_simulation.json()["questions"][0]
+            saved_admin_draft = client.put(
+                f"/api/simulations/{admin_simulation_id}",
+                headers={"X-CSRF-Token": admin_csrf},
+                json={
+                    "answers": {admin_simulation_question["id"]: "管理员草稿"},
+                    "attachment_ids": {admin_simulation_question["id"]: [upload.json()["attachment_id"]]},
+                },
+            )
+            assert saved_admin_draft.status_code == 200
 
             # A second account receives an isolated workspace and cannot enter
             # admin APIs or spoof the first account through query/body fields.
@@ -1129,6 +1189,19 @@ def test_auth_sessions_rbac_and_per_user_data_isolation(tmp_path: Path) -> None:
                 assert client_two.get("/api/progress", params={"user_id": admin["id"]}).json()["attempts"] == 0
                 assert client_two.get("/api/workbench/notes", params={"user_id": admin["id"]}).json()["items"] == []
                 assert client_two.get(f"/api/attachments/{upload.json()['attachment_id']}", params={"user_id": learner["id"]}).status_code == 404
+                assert client_two.get(f"/api/simulations/{admin_simulation_id}", params={"user_id": admin["id"]}).status_code == 404
+                spoofed_draft_save = client_two.put(
+                    f"/api/simulations/{admin_simulation_id}",
+                    headers={"X-CSRF-Token": learner_csrf},
+                    json={"user_id": admin["id"], "answers": {admin_simulation_question["id"]: "越权草稿"}},
+                )
+                assert spoofed_draft_save.status_code == 404
+                restored_admin_draft = client.get(f"/api/simulations/{admin_simulation_id}")
+                restored_admin_question = next(
+                    item for item in restored_admin_draft.json()["questions"]
+                    if item["id"] == admin_simulation_question["id"]
+                )
+                assert restored_admin_question["attempt"]["answer"] == "管理员草稿"
 
                 learner_attempt = client_two.post(
                     f"/api/questions/{question['id']}/attempts",
@@ -1218,6 +1291,11 @@ def test_fine_grained_practice_session_can_save_and_submit(tmp_path: Path) -> No
             saved_first = next(item for item in saved.json()["questions"] if item["id"] == first_id)
             assert saved_first["answer_state"]["answer"] == "$x^2$"
             assert saved.json()["status"] == "active"
+            restored = client.get(f"/api/practice/sessions/{session_json['id']}")
+            assert restored.status_code == 200
+            restored_first = next(item for item in restored.json()["questions"] if item["id"] == first_id)
+            assert restored_first["answer_state"]["status"] == "draft"
+            assert restored_first["answer_state"]["answer"] == "$x^2$"
 
             submitted = client.post(
                 f"/api/practice/sessions/{session_json['id']}/submit",

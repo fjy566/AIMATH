@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260830-5" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260831-1" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=20260828" />
   </head>
   <body>
@@ -176,12 +176,8 @@
                 <div class="note-editor" id="workbench-note-editor" hidden>
                   <div class="note-editor-top"><input id="note-title" class="note-title-input" type="text" maxlength="200" placeholder="给这条笔记起个标题" /><div class="note-editor-actions"><button class="quiet-button" id="note-favorite" type="button" aria-pressed="false">收藏</button><button class="secondary-button" id="note-delete" type="button">删除</button><button class="primary-button" id="note-save" type="button">保存笔记</button></div></div>
                   <div class="note-meta-row"><label>自动归类<select id="note-concept"></select></label><label class="note-tags-field">标签<input id="note-tags" type="text" placeholder="用逗号分隔，例如：极限，易错" /></label><span class="note-id-label" id="note-version-label">新笔记</span></div>
-                  <div class="note-editor-mode-tabs" role="tablist" aria-label="笔记编辑模式"><button type="button" class="note-mode-tab is-active" data-note-mode="rich" role="tab" aria-selected="true">图文编辑</button><button type="button" class="note-mode-tab" data-note-mode="markdown" role="tab" aria-selected="false">Markdown</button></div>
-                  <div class="note-rich-pane" id="note-rich-pane">
-                    <div class="note-toolbar" role="toolbar" aria-label="笔记格式工具"><button type="button" data-note-command="bold" title="加粗 Ctrl+B">B</button><button type="button" data-note-command="italic" title="斜体 Ctrl+I"><i>I</i></button><button type="button" data-note-command="underline" title="下划线 Ctrl+U"><u>U</u></button><button type="button" data-note-command="formatBlock" data-note-value="h3" title="小标题">标题</button><button type="button" data-note-command="hiliteColor" data-note-value="#fff0a8" title="高亮">高亮</button><span></span><button type="button" data-note-command="insertUnorderedList" title="无序列表">列表</button><button type="button" data-note-command="insertOrderedList" title="有序列表">编号</button><button type="button" data-note-command="formatBlock" data-note-value="blockquote" title="引用">引用</button><button type="button" data-note-command="createLink" title="插入链接 Ctrl+K">链接</button><button type="button" data-note-insert="point" title="插入分点">分点</button><button type="button" data-note-insert="subquestion" title="插入小题">小题</button><button type="button" id="note-image-button" title="插入图片">图片</button><span></span><button type="button" data-note-command="undo" title="撤销 Ctrl+Z">撤销</button><button type="button" data-note-command="redo" title="重做 Ctrl+Y">重做</button><input id="note-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden /></div>
-                    <div id="note-rich-formula-toolbar" class="note-formula-toolbar" aria-label="笔记公式工具"></div>
-                    <div class="note-rich-layout"><div class="note-rich-edit-column"><div id="note-rich-editor" class="note-rich-editor" contenteditable="true" role="textbox" aria-label="图文笔记编辑器" data-placeholder="在这里写下你的理解、公式和复盘……"></div><div class="note-editor-meta"><span class="note-editor-hint">选中文字后格式化；Enter 延续列表，Tab 缩进，Ctrl/Cmd + K 插入链接。</span><span class="editor-count" id="note-rich-count" data-editor-count aria-live="polite">0 字</span></div></div><aside class="note-rich-preview" aria-live="polite"><div class="note-markdown-preview-head"><span>实时预览</span><small>保留格式、图片和公式</small></div><div class="note-rich-preview-body markdown-body" id="note-rich-preview-body"><p class="muted-copy">输入内容后，这里会显示预览。</p></div></aside></div>
-                  </div>
+                  <div class="note-editor-mode-tabs" role="tablist" aria-label="笔记编辑模式"><button type="button" class="note-mode-tab is-active" data-note-mode="rich" role="tab" aria-selected="true">答题板编辑</button><button type="button" class="note-mode-tab" data-note-mode="markdown" role="tab" aria-selected="false">Markdown</button></div>
+                  <div class="note-rich-pane" id="note-rich-pane"></div>
                   <div class="note-markdown-pane" id="note-markdown-pane" hidden><div class="markdown-shortcuts"><button type="button" data-markdown-insert="# ">标题</button><button type="button" data-markdown-insert="- ">列表</button><button type="button" data-markdown-insert="1. ">有序列表</button><button type="button" data-markdown-insert="**粗体**">粗体</button><button type="button" data-markdown-insert="> ">引用</button><button type="button" data-markdown-insert="$$\n\n$$">公式块</button><button type="button" data-markdown-insert="（1） ">小题</button></div><div id="note-markdown-formula-toolbar" class="note-formula-toolbar" aria-label="Markdown 公式工具"></div><textarea id="note-markdown-editor" rows="10" placeholder="用 Markdown 快速整理。Enter 会延续列表，Tab 缩进；公式使用 $...$ 或 $$...$$。"></textarea><div class="note-editor-meta"><span class="note-editor-hint">可直接粘贴 Markdown，Enter 会延续列表，Tab 缩进；公式工具会自动插入可替换模板。</span><span class="editor-count" id="note-markdown-count" data-editor-count aria-live="polite">0 字</span></div><div class="note-markdown-preview"><div class="note-markdown-preview-head"><span>实时预览</span><small>公式、分点和小题会按学习页面显示</small></div><div class="note-markdown-preview-body markdown-body" id="note-markdown-preview-body"><p class="muted-copy">输入 Markdown 后，这里会显示排版结果。</p></div></div></div>
                   <div class="note-history-row"><div><span class="template-section-label">版本历史</span><span id="note-history-summary">保存后可以回溯旧版本</span></div><div class="note-history-list" id="note-history-list"></div></div>
                 </div>
@@ -390,6 +386,6 @@
 
     <div class="toast" id="toast" role="alert"></div>
     <script src="/static/vendor/katex/katex.min.js?v=20260828"></script>
-    <script src="/static/app.js?v=20260830-4"></script>
+    <script src="/static/app.js?v=20260831-2"></script>
   </body>
 </html>
