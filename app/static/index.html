@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260831-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260831-2" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=20260828" />
   </head>
   <body>
@@ -360,7 +360,17 @@
         <section class="view" id="view-admin">
           <div class="view-contextbar"><p>集中管理账户、登录会话和安全事件。这里只展示身份与聚合统计，管理员不会直接读取用户的题目答案、笔记正文或模型密钥。</p><div class="connection-badge" id="admin-access-badge"><span></span>管理员权限</div></div>
           <div class="admin-metric-grid"><div class="metric-card"><span class="eyebrow">ACCOUNTS</span><strong id="admin-users-count">—</strong><small>注册账户</small></div><div class="metric-card"><span class="eyebrow">ACTIVE</span><strong id="admin-active-users-count">—</strong><small>启用用户</small></div><div class="metric-card"><span class="eyebrow">ADMINS</span><strong id="admin-admins-count">—</strong><small>启用管理员</small></div><div class="metric-card"><span class="eyebrow">SESSIONS</span><strong id="admin-sessions-count">—</strong><small>活跃会话</small></div><div class="metric-card"><span class="eyebrow">ANSWERS</span><strong id="admin-attempts-count">—</strong><small>累计作答</small></div><div class="metric-card"><span class="eyebrow">AUDIT</span><strong id="admin-audit-count">—</strong><small>安全事件</small></div></div>
-          <div class="admin-layout"><section class="settings-card paper-panel"><div class="settings-card-head"><div><span class="eyebrow">USER DIRECTORY</span><h3>账户管理</h3></div><span class="settings-lock">⌁ RBAC</span></div><div class="admin-toolbar" role="search" aria-label="筛选账户"><label class="admin-search-field"><span class="sr-only">搜索账户</span><input id="admin-user-search" type="search" autocomplete="off" placeholder="搜索用户名、邮箱或显示名称" /></label><label><span class="sr-only">账户角色</span><select id="admin-user-role-filter"><option value="">全部角色</option><option value="admin">管理员</option><option value="user">普通用户</option></select></label><label><span class="sr-only">账户状态</span><select id="admin-user-status-filter"><option value="">全部状态</option><option value="active">已启用</option><option value="inactive">已停用</option></select></label><span class="admin-result-count" id="admin-user-result-count" aria-live="polite">—</span></div><div class="admin-users-table" id="admin-users-table"><div class="loading-card">正在读取账户……</div></div></section><section class="settings-card paper-panel"><div class="settings-card-head"><div><span class="eyebrow">SECURITY LOG</span><h3>安全事件</h3></div><span class="settings-lock">⌁ AUDIT</span></div><div class="admin-toolbar admin-audit-toolbar" role="search" aria-label="筛选安全事件"><label><span class="sr-only">事件类型</span><select id="admin-audit-action"><option value="">全部事件</option></select></label><label class="admin-search-field"><span class="sr-only">搜索安全事件</span><input id="admin-audit-search" type="search" autocomplete="off" placeholder="搜索账户、IP 或操作详情" /></label><button type="button" class="secondary-button admin-export-button" id="admin-audit-export">导出日志</button><span class="admin-result-count" id="admin-audit-result-count" aria-live="polite">—</span></div><div class="admin-audit-list" id="admin-audit-list"><div class="loading-card">正在读取事件……</div></div></section></div>
+          <div class="admin-layout">
+            <section class="settings-card paper-panel admin-control-card" aria-labelledby="admin-control-title">
+              <div class="settings-card-head"><div><span class="eyebrow">SERVICE CONTROL</span><h3 id="admin-control-title">后台控制</h3></div><span class="settings-lock">⌁ ADMIN ONLY</span></div>
+              <p class="admin-control-copy">控制当前本地后台进程。重启会短暂断开连接并自动恢复；“关闭系统”只停止本地服务，不会关闭 Windows，之后需要重新运行启动脚本。</p>
+              <div class="admin-control-status" id="admin-control-status" role="status" aria-live="polite"><span>后台运行中</span></div>
+              <div class="admin-control-actions" id="admin-control-actions"><button type="button" class="secondary-button" id="admin-restart-backend">重启后台</button><button type="button" class="secondary-button admin-shutdown-button" id="admin-shutdown-system">关闭系统</button></div>
+              <div class="form-status" id="admin-control-message" aria-live="polite"></div>
+            </section>
+            <section class="settings-card paper-panel"><div class="settings-card-head"><div><span class="eyebrow">USER DIRECTORY</span><h3>账户管理</h3></div><span class="settings-lock">⌁ RBAC</span></div><div class="admin-toolbar" role="search" aria-label="筛选账户"><label class="admin-search-field"><span class="sr-only">搜索账户</span><input id="admin-user-search" type="search" autocomplete="off" placeholder="搜索用户名、邮箱或显示名称" /></label><label><span class="sr-only">账户角色</span><select id="admin-user-role-filter"><option value="">全部角色</option><option value="admin">管理员</option><option value="user">普通用户</option></select></label><label><span class="sr-only">账户状态</span><select id="admin-user-status-filter"><option value="">全部状态</option><option value="active">已启用</option><option value="inactive">已停用</option></select></label><span class="admin-result-count" id="admin-user-result-count" aria-live="polite">—</span></div><div class="admin-users-table" id="admin-users-table"><div class="loading-card">正在读取账户……</div></div></section>
+            <section class="settings-card paper-panel"><div class="settings-card-head"><div><span class="eyebrow">SECURITY LOG</span><h3>安全事件</h3></div><span class="settings-lock">⌁ AUDIT</span></div><div class="admin-toolbar admin-audit-toolbar" role="search" aria-label="筛选安全事件"><label><span class="sr-only">事件类型</span><select id="admin-audit-action"><option value="">全部事件</option></select></label><label class="admin-search-field"><span class="sr-only">搜索安全事件</span><input id="admin-audit-search" type="search" autocomplete="off" placeholder="搜索账户、IP 或操作详情" /></label><button type="button" class="secondary-button admin-export-button" id="admin-audit-export">导出日志</button><span class="admin-result-count" id="admin-audit-result-count" aria-live="polite">—</span></div><div class="admin-audit-list" id="admin-audit-list"><div class="loading-card">正在读取事件……</div></div></section>
+          </div>
         </section>
       </main>
     </div>
@@ -386,6 +396,6 @@
 
     <div class="toast" id="toast" role="alert"></div>
     <script src="/static/vendor/katex/katex.min.js?v=20260828"></script>
-    <script src="/static/app.js?v=20260831-2"></script>
+    <script src="/static/app.js?v=20260831-3"></script>
   </body>
 </html>

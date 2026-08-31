@@ -549,11 +549,16 @@ def test_account_settings_and_admin_surface_use_shared_session_identity() -> Non
     assert "function resetUserScopedState" in source
     assert "function simulationPointerKey" in source
     assert "/api/admin/users/" in source
+    assert "/api/admin/server/" in source
     assert "admin-user-search" in markup
     assert "admin-audit-export" in markup
+    assert 'id="admin-restart-backend"' in markup
+    assert 'id="admin-shutdown-system"' in markup
     assert "password-toggle-icon" in markup
     assert "admin-sessions-revoked" in source
+    assert "waitForBackend" in source
     assert ".auth-screen" in styles
+    assert ".admin-control-card" in styles
     assert ".admin-user-row" in styles
     assert ".admin-toolbar" in styles
 
@@ -910,6 +915,106 @@ def test_server_settings_validate_and_persist(tmp_path: Path) -> None:
         database.DB_PATH = original_db_path
 
 
+def test_admin_server_lifecycle_controls_require_admin_session_and_csrf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    import app.database as database
+    import app.main as main_module
+    import app.services.auth as auth_service
+    from app.main import app
+
+    original_db_path = database.DB_PATH
+    database.DB_PATH = tmp_path / "lifecycle.sqlite3"
+    auth_service._RATE_LIMIT_BUCKETS.clear()
+    scheduled_actions: list[str] = []
+    monkeypatch.setattr(main_module, "schedule_lifecycle_action", scheduled_actions.append)
+    try:
+        with TestClient(app) as admin_client:
+            assert admin_client.post("/api/admin/server/restart").status_code == 403
+            registered = admin_client.post(
+                "/api/auth/register",
+                json={
+                    "username": "lifecycle_admin",
+                    "email": "lifecycle-admin@example.test",
+                    "display_name": "生命周期管理员",
+                    "password": "correct-horse-battery",
+                },
+            )
+            assert registered.status_code == 200
+            csrf_token = registered.json()["csrf_token"]
+            missing_csrf = admin_client.post("/api/admin/server/restart")
+            assert missing_csrf.status_code == 403
+
+            restart = admin_client.post(
+                "/api/admin/server/restart",
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            assert restart.status_code == 200
+            assert restart.json()["status"] == "restarting"
+            assert restart.json()["browser_url"] == "http://127.0.0.1:8000"
+            assert scheduled_actions == ["restart"]
+            restart_audit = admin_client.get("/api/admin/audit", params={"action": "admin-server-restart-requested"})
+            assert restart_audit.status_code == 200
+            assert restart_audit.json()["items"][0]["action"] == "admin-server-restart-requested"
+
+            user_client = TestClient(app)
+            try:
+                user_registration = user_client.post(
+                    "/api/auth/register",
+                    json={
+                        "username": "lifecycle_user",
+                        "email": "lifecycle-user@example.test",
+                        "display_name": "普通用户",
+                        "password": "another-secure-pass",
+                    },
+                )
+                assert user_registration.status_code == 200
+                user_csrf = user_registration.json()["csrf_token"]
+                forbidden = user_client.post(
+                    "/api/admin/server/shutdown",
+                    headers={"X-CSRF-Token": user_csrf},
+                )
+                assert forbidden.status_code == 403
+                assert scheduled_actions == ["restart"]
+            finally:
+                user_client.close()
+
+            shutdown = admin_client.post(
+                "/api/admin/server/shutdown",
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            assert shutdown.status_code == 200
+            assert shutdown.json()["status"] == "shutting_down"
+            assert scheduled_actions == ["restart", "shutdown"]
+            shutdown_audit = admin_client.get("/api/admin/audit", params={"action": "admin-system-shutdown-requested"})
+            assert shutdown_audit.status_code == 200
+            assert shutdown_audit.json()["items"][0]["action"] == "admin-system-shutdown-requested"
+    finally:
+        database.DB_PATH = original_db_path
+
+
+def test_lifecycle_process_actions_target_the_project_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import lifecycle
+
+    popen_calls: list[tuple[list[str], dict[str, object]]] = []
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(lifecycle, "server_settings", lambda: {"host": "127.0.0.1", "port": 8123})
+    monkeypatch.setattr(lifecycle.sys, "executable", "python-test.exe")
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", lambda arguments, **kwargs: popen_calls.append((arguments, kwargs)))
+    monkeypatch.setattr(lifecycle.os, "getpid", lambda: 1234)
+    monkeypatch.setattr(lifecycle.os, "kill", lambda pid, signal_number: kill_calls.append((pid, signal_number)))
+    lifecycle._restart_process()
+    assert popen_calls[0][0] == ["python-test.exe", "-c", lifecycle.RESTART_CODE]
+    assert popen_calls[0][1]["cwd"] == str(lifecycle.ROOT_DIR)
+    restart_environment = popen_calls[0][1]["env"]
+    assert isinstance(restart_environment, dict)
+    assert restart_environment[lifecycle.RESTART_LAUNCHER_ENV] == str(lifecycle.LAUNCHER_PATH)
+    assert restart_environment["AI_MATH_RESTART_HOST"] == "127.0.0.1"
+    assert restart_environment["AI_MATH_RESTART_PORT"] == "8123"
+    assert popen_calls[0][1]["stdin"] is lifecycle.subprocess.DEVNULL
+    assert kill_calls == [(1234, lifecycle.signal.SIGTERM)]
+
+
 def test_auth_shell_has_a_no_blank_fallback_and_progressive_fields() -> None:
     html_source = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
     app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
@@ -920,7 +1025,8 @@ def test_auth_shell_has_a_no_blank_fallback_and_progressive_fields() -> None:
     assert 'id="auth-retry"' in html_source
     assert 'id="register-optional-fields"' in html_source
     assert 'data-password-toggle' in html_source
-    assert 'styles.css?v=20260831-1' in html_source
+    assert 'styles.css?v=20260831-2' in html_source
+    assert 'app.js?v=20260831-3' in html_source
     assert "replaceAllLiteral" in app_source
     assert "timeoutMs: 12000" in app_source
     assert 'button, input, select, textarea, summary' in styles

@@ -4629,6 +4629,8 @@ const authActionLabels = {
   "password-changed": "修改密码",
   "admin-user-updated": "管理员更新账户",
   "admin-sessions-revoked": "管理员撤销会话",
+  "admin-server-restart-requested": "管理员请求重启后台",
+  "admin-system-shutdown-requested": "管理员请求关闭系统",
   "legacy-data-migrated": "迁移旧数据",
 };
 
@@ -4713,6 +4715,77 @@ async function loadAdmin() {
   }
 }
 
+async function waitForBackend(restartUrl) {
+  const candidates = [...new Set([
+    window.location.origin,
+    String(restartUrl || "").replace(/\/+$/, ""),
+  ].filter(Boolean))];
+  await new Promise((resolve) => window.setTimeout(resolve, 750));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (const baseUrl of candidates) {
+      try {
+        const response = await fetch(baseUrl + "/api/health", { cache: "no-store" });
+        if (response.ok) {
+          if (baseUrl === window.location.origin) window.location.reload();
+          else window.location.assign(baseUrl);
+          return true;
+        }
+      } catch {
+        // The expected restart gap is reported by the status copy below.
+      }
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function runAdminLifecycleAction(action) {
+  if (state.user?.role !== "admin") return;
+  const isRestart = action === "restart";
+  const message = isRestart
+    ? "确定重启后台吗？当前页面会短暂断开，后台恢复后会自动刷新。"
+    : "确定关闭系统吗？这只会停止本地后台，不会关闭 Windows；之后需要重新运行启动脚本。";
+  if (!window.confirm(message)) return;
+
+  const controls = [...document.querySelectorAll("#admin-control-actions button")];
+  const indicator = $("admin-control-status");
+  const indicatorLabel = indicator?.querySelector("span");
+  const status = $("admin-control-message");
+  let keepDisabled = false;
+  controls.forEach((control) => { control.disabled = true; control.setAttribute("aria-busy", "true"); });
+  indicator?.classList.remove("is-offline");
+  indicator?.classList.add("is-pending");
+  if (indicatorLabel) indicatorLabel.textContent = isRestart ? "后台重启中" : "系统关闭中";
+  if (status) { status.textContent = isRestart ? "正在发送重启请求……" : "正在发送关闭请求……"; status.classList.remove("error"); }
+
+  try {
+    const result = await fetchJSON("/api/admin/server/" + action, { ...jsonOptions({}), method: "POST", timeoutMs: 12000 });
+    if (!isRestart) {
+      keepDisabled = true;
+      indicator?.classList.remove("is-pending");
+      indicator?.classList.add("is-offline");
+      if (indicatorLabel) indicatorLabel.textContent = "系统已关闭";
+      if (status) status.textContent = result.message || "系统已关闭。再次使用请重新运行启动脚本。";
+      showToast("后台已关闭。", false);
+      return;
+    }
+    if (status) status.textContent = "重启请求已发送，正在等待后台恢复……";
+    const recovered = await waitForBackend(result.browser_url);
+    if (!recovered) {
+      indicator?.classList.remove("is-pending");
+      if (indicatorLabel) indicatorLabel.textContent = "等待恢复";
+      if (status) { status.textContent = "后台已收到重启请求，但页面暂未检测到服务；请稍后刷新。"; status.classList.add("error"); }
+    }
+  } catch (error) {
+    indicator?.classList.remove("is-pending");
+    if (indicatorLabel) indicatorLabel.textContent = "后台运行中";
+    if (status) { status.textContent = "操作失败：" + error.message; status.classList.add("error"); }
+    showToast("后台操作失败：" + error.message, true);
+  } finally {
+    if (!keepDisabled) controls.forEach((control) => { control.disabled = false; control.removeAttribute("aria-busy"); });
+  }
+}
+
 async function updateAdminUser(row) {
   const target = row?.dataset.adminUser;
   if (!target) return;
@@ -4794,6 +4867,8 @@ function bindAdminControls() {
   $("admin-audit-search")?.addEventListener("input", (event) => { state.adminAuditFilters.search = event.target.value; applyAdminFilters(); });
   $("admin-audit-action")?.addEventListener("change", (event) => { state.adminAuditFilters.action = event.target.value; applyAdminFilters(); });
   $("admin-audit-export")?.addEventListener("click", exportAdminAudit);
+  $("admin-restart-backend")?.addEventListener("click", () => runAdminLifecycleAction("restart"));
+  $("admin-shutdown-system")?.addEventListener("click", () => runAdminLifecycleAction("shutdown"));
 }
 
 function bindAuthControls() {

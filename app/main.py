@@ -65,7 +65,9 @@ from app.services.auth import (
     list_audit_events,
     list_sessions,
     list_users,
+    record_admin_action,
     require_admin,
+    require_authenticated_admin,
     require_user,
     revoke_other_sessions,
     revoke_session,
@@ -79,6 +81,7 @@ from app.services.auth import (
 )
 from app.services.concepts import MATH2_CONCEPT_IDS, concept_descriptor
 from app.services.grading import grade_question
+from app.services.lifecycle import LifecycleError, schedule_lifecycle_action
 from app.services.learner import (
     CONCEPT_META,
     forecast_score,
@@ -634,6 +637,45 @@ def get_admin_audit(
     _: AuthContext = Depends(require_admin),
 ) -> dict[str, Any]:
     return {"items": list_audit_events(limit, action=action, search=search)}
+
+
+@app.post("/api/admin/server/restart")
+def admin_restart_server(request: Request, context: AuthContext = Depends(require_authenticated_admin)) -> dict[str, Any]:
+    settings = server_settings()
+    try:
+        record_admin_action(
+            "admin-server-restart-requested",
+            actor_user_id=context.user_id,
+            ip_address=_request_ip(request),
+            detail=f"host={settings['host']};port={settings['port']}",
+        )
+        schedule_lifecycle_action("restart")
+    except LifecycleError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "status": "restarting",
+        "message": "后台正在重启，请稍候。",
+        "browser_url": settings["browser_url"],
+    }
+
+
+@app.post("/api/admin/server/shutdown")
+def admin_shutdown_server(request: Request, context: AuthContext = Depends(require_authenticated_admin)) -> dict[str, Any]:
+    settings = server_settings()
+    try:
+        record_admin_action(
+            "admin-system-shutdown-requested",
+            actor_user_id=context.user_id,
+            ip_address=_request_ip(request),
+            detail=f"host={settings['host']};port={settings['port']}",
+        )
+        schedule_lifecycle_action("shutdown")
+    except LifecycleError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "status": "shutting_down",
+        "message": "系统正在关闭，本地后台即将停止。",
+    }
 
 
 @app.get("/api/health")

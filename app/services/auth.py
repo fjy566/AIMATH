@@ -224,6 +224,18 @@ def _audit(
     )
 
 
+def record_admin_action(action: str, *, actor_user_id: str, ip_address: str = "", detail: str = "") -> None:
+    with get_connection() as connection:
+        _audit(
+            connection,
+            action,
+            user_id=actor_user_id,
+            actor_user_id=actor_user_id,
+            ip_address=ip_address,
+            detail=detail,
+        )
+
+
 def create_user(
     username: str,
     password: str,
@@ -443,6 +455,13 @@ def require_user(request: Request) -> AuthContext:
 def require_admin(context: AuthContext = Depends(require_user)) -> AuthContext:
     if context.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有管理员可以执行此操作。")
+    return context
+
+
+def require_authenticated_admin(context: AuthContext = Depends(require_admin)) -> AuthContext:
+    """Require a registered administrator for destructive service controls."""
+    if context.legacy or not context.session_hash:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="请先注册并登录管理员账户。")
     return context
 
 
