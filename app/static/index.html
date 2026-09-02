@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#12343a" />
     <title>砺数 · 考研数学学练系统</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260831-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260902-1" />
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v=20260828" />
   </head>
   <body>
@@ -386,7 +386,7 @@
         <div class="question-body markdown-body" id="modal-question-body"></div>
          <div class="answer-box">
            <div id="modal-answer-editor" class="modal-answer-editor"></div>
-          <div class="answer-controls"><label id="self-grade-wrap">解答题自评<select id="self-grade"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></label><label>用时（分钟）<input id="answer-duration" type="number" min="0" max="1440" value="0" /></label><button class="primary-button" id="submit-answer">提交作答</button></div>
+          <div class="answer-controls"><label id="self-grade-wrap">解答题自评<select id="self-grade"><option value="">暂不自评</option><option value="1">完整正确（100%）</option><option value="0.7">主要正确（70%）</option><option value="0.4">部分得到（40%）</option><option value="0">不会/错误（0%）</option></select></label><label>用时（分钟）<input id="answer-duration" type="number" min="0" max="1440" value="0" /></label><button class="primary-button" id="submit-answer">提交作答</button><span class="submit-answer-status" id="submit-answer-status" role="status" aria-live="polite"></span></div>
         </div>
         <div class="result-box" id="question-result" hidden></div>
         <div class="tutor-box" id="tutor-box" hidden><div class="tutor-head"><span class="eyebrow">AI REVIEW</span><button class="text-button" id="ask-tutor">重新分析</button></div><div class="tutor-content" id="tutor-content"></div></div>
@@ -396,6 +396,6 @@
 
     <div class="toast" id="toast" role="alert"></div>
     <script src="/static/vendor/katex/katex.min.js?v=20260828"></script>
-    <script src="/static/app.js?v=20260831-3"></script>
+    <script src="/static/app.js?v=20260902-10"></script>
   </body>
 </html>

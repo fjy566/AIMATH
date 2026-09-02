@@ -91,6 +91,20 @@ def grade_question(question: dict[str, Any], answer: str, self_grade: float | No
     submitted = (answer or "").strip()
     max_score = float(question.get("points", 0))
 
+    # An empty text field is not proof of an incorrect answer: the user may
+    # have submitted a handwriting/image attachment for the multimodal review
+    # path. Keep the attempt pending until that path can inspect it.
+    if not submitted and self_grade is None:
+        return {
+            "correct": None,
+            "status": "manual",
+            "score": 0.0,
+            "max_score": max_score,
+            "confidence": 0.25,
+            "error_type": "待自评或AI复核",
+            "expected_answer": expected,
+        }
+
     if kind == "choice" and expected:
         expected_choice = extract_choice(expected)
         submitted_choice = extract_choice(submitted)

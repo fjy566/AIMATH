@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -8,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.database import (
     UPLOADS_DIR,
+    attachment_for_tutor,
     attachment_path,
     attachments_for_attempt,
     create_attachment,
@@ -93,7 +97,7 @@ from app.services.learner import (
     recommended_questions,
     study_blocks,
 )
-from app.services.llm import LLMError, fetch_models, hint_response, public_settings, save_settings, tutor_response
+from app.services.llm import LLMError, fetch_models, hint_response, public_settings, save_settings, tutor_response, tutor_response_stream, vision_grade_question
 from app.services.server import ServerSettingsError, save_server_settings, server_settings
 from app.services.workbench import (
     build_workbench_template,
@@ -108,6 +112,11 @@ from app.services.workbench import (
 ROOT_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = ROOT_DIR / "app" / "static"
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_TUTOR_IMAGE_BYTES = 12 * 1024 * 1024
+# Handwriting/objective-answer review is a small JSON judgement, not the long
+# tutor response. Bound this optional step so saving the user's submission can
+# never wait for a stalled multimodal gateway indefinitely.
+VISION_GRADING_TIMEOUT_SECONDS = 60.0
 IMAGE_SUFFIXES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -188,6 +197,66 @@ def _image_magic_matches(content_type: str, content: bytes) -> bool:
     return bool(signatures.get(content_type, False))
 
 
+def _tutor_image_data_urls(attachment_ids: list[str], user_id: str, question_id: str) -> list[str]:
+    images: list[str] = []
+    total_bytes = 0
+    for attachment_id in dict.fromkeys(attachment_ids):
+        record = attachment_for_tutor(attachment_id, user_id, question_id)
+        path = attachment_path(attachment_id, user_id) if record else None
+        if record is None or path is None or not path.exists():
+            raise LLMError("用于模型复核的手写作答图片不存在或不属于当前题目。")
+        content = path.read_bytes()
+        total_bytes += len(content)
+        if total_bytes > MAX_TUTOR_IMAGE_BYTES:
+            raise LLMError("用于模型复核的作答图片合计不能超过 12 MB。")
+        content_type = str(record.get("content_type") or "image/png")
+        images.append(f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}")
+    return images
+
+
+async def _grade_submitted_question(
+    question: dict[str, Any], answer: str, self_grade: float | None,
+    attachment_ids: list[str], user_id: str,
+) -> dict[str, Any]:
+    """Grade text deterministically, or inspect an objective handwriting answer."""
+    result = grade_question(question, answer, self_grade)
+    if answer.strip() or self_grade is not None or not attachment_ids or question.get("question_type") not in {"choice", "fill"}:
+        return result
+    try:
+        images = _tutor_image_data_urls(attachment_ids, user_id, question["id"])
+        async with asyncio.timeout(VISION_GRADING_TIMEOUT_SECONDS):
+            review = await vision_grade_question(question, images, user_id=user_id)
+    except TimeoutError:
+        timeout_seconds = int(VISION_GRADING_TIMEOUT_SECONDS)
+        result["vision_error"] = f"多模态复核超过 {timeout_seconds} 秒，答案和手写附件已保存，可稍后重新分析。"
+        return result
+    except LLMError as exc:
+        # The image is still linked to the attempt; an unavailable model must
+        # never turn a submitted handwriting answer into an automatic error.
+        result["vision_error"] = str(exc)
+        return result
+    review_result = review.get("result") or {}
+    verdict = review_result.get("verdict")
+    if verdict not in {"correct", "incorrect"}:
+        result["error_type"] = "手写答案暂时无法清晰识别"
+        result["grading_source"] = "multimodal"
+        result["recognized_answer"] = review_result.get("recognized_answer", "")
+        result["review_explanation"] = review_result.get("explanation", "")
+        return result
+    correct = verdict == "correct"
+    result.update(
+        correct=correct,
+        status="correct" if correct else "incorrect",
+        score=result["max_score"] if correct else 0.0,
+        confidence=max(0.6, min(0.95, float(review_result.get("confidence") or 0.6))),
+        error_type="" if correct else "答案错误（多模态复核）",
+        grading_source="multimodal",
+        recognized_answer=review_result.get("recognized_answer", ""),
+        review_explanation=review_result.get("explanation", ""),
+    )
+    return result
+
+
 class AttemptRequest(BaseModel):
     user_id: str = "local-user"
     answer: str = Field(default="", max_length=300000)
@@ -259,6 +328,7 @@ class TutorRequest(BaseModel):
     user_id: str = "local-user"
     answer: str = Field(default="", max_length=300000)
     request: str = Field(default="分析我的错误", max_length=500)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=3)
 
 
 class NoteRequest(BaseModel):
@@ -1073,11 +1143,11 @@ def correct_question_classification(question_id: str, payload: ClassificationCor
 
 
 @app.post("/api/questions/{question_id}/attempts")
-def create_attempt(question_id: str, payload: AttemptRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+async def create_attempt(question_id: str, payload: AttemptRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     question = _question_or_404(question_id)
     owner_id = _user_id(context, payload.user_id)
     effective_question = _effective_question(question, _question_override(question, owner_id))
-    result = grade_question(question, payload.answer, payload.self_grade)
+    result = await _grade_submitted_question(question, payload.answer, payload.self_grade, payload.attachment_ids, owner_id)
     error_type = payload.error_type.strip() or result.get("error_type", "")
     attempt_id = insert_attempt(
         {
@@ -1194,7 +1264,13 @@ def practice_session_view(session: dict[str, Any] | None, *, reveal: bool = Fals
                 "attachments": answer.get("attachments", []),
             }
         questions.append(item)
-    answered_count = sum(1 for answer in answer_map.values() if (answer.get("answer") or "").strip() or answer.get("self_grade") is not None)
+    answered_count = sum(
+        1
+        for answer in answer_map.values()
+        if (answer.get("answer") or "").strip()
+        or answer.get("self_grade") is not None
+        or bool(answer.get("attachments"))
+    )
     return {
         **{key: value for key, value in session.items() if key not in {"question_ids", "answers"}},
         "questions": questions,
@@ -1287,7 +1363,7 @@ def save_practice_session_endpoint(session_id: str, payload: PracticeSessionData
 
 
 @app.post("/api/practice/sessions/{session_id}/submit")
-def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDataRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+async def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDataRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     session = _practice_session_or_404(session_id, _user_id(context, payload.user_id))
     if session.get("status") == "finished":
         return practice_session_view(session, reveal=True)
@@ -1298,7 +1374,7 @@ def submit_practice_session_endpoint(session_id: str, payload: PracticeSessionDa
         effective_question = _effective_question(question, _question_override(question, session["user_id"]))
         answer = payload.answers.get(question_id, "")
         self_grade = payload.self_grades.get(question_id)
-        result = grade_question(question, answer, self_grade)
+        result = await _grade_submitted_question(question, answer, self_grade, payload.attachment_ids.get(question_id, []), session["user_id"])
         total += float(result["score"])
         attempt_id = insert_attempt(
             {
@@ -1455,7 +1531,7 @@ def cancel_simulation_endpoint(simulation_id: str, user_id: str = "local-user", 
 
 
 @app.post("/api/simulations/{simulation_id}/submit")
-def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
+async def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     simulation = get_simulation(simulation_id)
     if simulation is None:
         raise HTTPException(status_code=404, detail="模拟考试不存在。")
@@ -1471,7 +1547,7 @@ def submit_simulation(simulation_id: str, payload: SimulationSubmitRequest, cont
         effective_question = _effective_question(question, _question_override(question, owner_id))
         answer = payload.answers.get(question_id, "")
         self_grade = payload.self_grades.get(question_id)
-        result = grade_question(question, answer, self_grade)
+        result = await _grade_submitted_question(question, answer, self_grade, payload.attachment_ids.get(question_id, []), owner_id)
         total += float(result["score"])
         upsert_simulation_answer(
             {
@@ -1549,10 +1625,31 @@ def update_server_settings(payload: ServerSettingsRequest, _: AuthContext = Depe
 @app.post("/api/questions/{question_id}/tutor")
 async def tutor(question_id: str, payload: TutorRequest, context: AuthContext = Depends(require_user)) -> dict[str, Any]:
     question = _question_or_404(question_id)
+    user_id = _user_id(context, payload.user_id)
     try:
-        return await tutor_response(question, payload.answer, payload.request, user_id=_user_id(context, payload.user_id))
+        images = _tutor_image_data_urls(payload.attachment_ids, user_id, question_id)
+        return await tutor_response(question, payload.answer, payload.request, user_id=user_id, image_data_urls=images)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/questions/{question_id}/tutor/stream")
+async def tutor_stream(question_id: str, payload: TutorRequest, context: AuthContext = Depends(require_user)) -> StreamingResponse:
+    question = _question_or_404(question_id)
+    user_id = _user_id(context, payload.user_id)
+    try:
+        images = _tutor_image_data_urls(payload.attachment_ids, user_id, question_id)
+    except LLMError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def generate():
+        try:
+            async for event in tutor_response_stream(question, payload.answer, payload.request, user_id=user_id, image_data_urls=images):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except LLMError as exc:
+            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/questions/{question_id}/hint")

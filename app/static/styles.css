@@ -479,6 +479,8 @@ select:focus, input:focus, textarea:focus { border-color: var(--blue); box-shado
 .answer-controls label:first-child { flex: 1; }
 .answer-controls select, .answer-controls input { height: 35px; min-width: 120px; font-size: 11px; }
 .answer-controls .primary-button { height: 35px; white-space: nowrap; }
+.submit-answer-status { min-width: 0; color: var(--accent-strong); font: 10px var(--mono); line-height: 1.4; }
+.submit-answer-status:empty { display: none; }
 .result-box, .tutor-box { margin-top: 16px; padding: 17px; border: 1px solid #b4c9c0; background: #eaf1eb; }
 .result-box.incorrect { border-color: #dfb9aa; background: #f8e8e2; }
 .result-box.manual { border-color: #d8c7a8; background: #f8f1e0; }
@@ -490,6 +492,9 @@ select:focus, input:focus, textarea:focus { border-color: var(--blue); box-shado
 .result-detail { margin-top: 13px; padding-top: 13px; border-top: 1px solid rgba(77,105,86,.18); }
 .result-detail h4 { margin: 0 0 7px; color: var(--ink-soft); font: 500 15px var(--serif); }
 .result-detail .markdown-body { color: var(--ink-soft); font-size: 12px; }
+.vision-review-note { margin: 11px 0 2px; padding: 9px 11px; border-left: 2px solid var(--blue); background: rgba(31, 107, 122, .07); color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
+.vision-review-explanation .markdown-body, .vision-review-explanation p { margin: 3px 0 0; }
+.vision-review-note.is-pending { border-left-color: var(--amber); background: rgba(181, 119, 35, .08); }
 .result-attachments { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(77,105,86,.18); }
 .result-attachments h4 { margin: 0 0 8px; color: var(--ink-soft); font: 500 13px var(--serif); }
 .result-attachments a { display: inline-block; margin: 0 8px 8px 0; vertical-align: top; }
@@ -497,7 +502,23 @@ select:focus, input:focus, textarea:focus { border-color: var(--blue); box-shado
 .result-attachments a span { display: block; margin-top: 4px; color: var(--muted); font: 9px var(--mono); }
 .tutor-box { border-color: #b1c7d0; background: #e8f0f1; }
 .tutor-head { display: flex; align-items: center; justify-content: space-between; }
-.tutor-content { margin-top: 12px; color: var(--ink-soft); font-size: 12px; white-space: pre-wrap; }
+.tutor-content { min-width: 0; margin-top: 12px; color: var(--ink-soft); font-size: 12px; white-space: pre-wrap; }
+.tutor-thinking { display: inline-flex; align-items: center; gap: 8px; min-height: 24px; color: var(--ink); font-weight: 700; }
+.tutor-thinking-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 0 rgba(31, 107, 122, .28); animation: tutor-thinking-pulse 1.35s ease-out infinite; }
+.tutor-json { display: grid; gap: 1px; min-width: 0; margin: 0; overflow: hidden; white-space: normal; background: rgba(23, 63, 69, .12); border-radius: 10px; }
+.tutor-json.is-nested { margin-top: 4px; }
+.tutor-json-row { display: grid; grid-template-columns: minmax(88px, .3fr) minmax(0, 1fr); gap: 14px; min-width: 0; padding: 11px 13px; background: #edf4f4; }
+.tutor-json-row dt { min-width: 0; color: var(--ink); font-weight: 700; overflow-wrap: anywhere; word-break: break-word; }
+.tutor-json-row dd { min-width: 0; margin: 0; overflow-wrap: anywhere; word-break: break-word; }
+.tutor-json-row .markdown-body { font-size: inherit; line-height: 1.65; }
+.tutor-json-row .markdown-body > :first-child { margin-top: 0; }
+.tutor-json-row .markdown-body > :last-child { margin-bottom: 0; }
+.tutor-json-list { min-width: 0; margin: 0; padding-inline-start: 20px; overflow-wrap: anywhere; word-break: break-word; }
+.tutor-json-list li + li { margin-top: 6px; }
+.tutor-json-scalar { font-variant-numeric: tabular-nums; }
+@keyframes tutor-thinking-pulse { 60%, 100% { box-shadow: 0 0 0 8px rgba(31, 107, 122, 0); } }
+@media (max-width: 560px) { .tutor-json-row { grid-template-columns: 1fr; gap: 5px; } }
+@media (prefers-reduced-motion: reduce) { .tutor-thinking-dot { animation: none; box-shadow: 0 0 0 4px rgba(31, 107, 122, .12); } }
 .modal-source { margin-top: 18px; color: #9b9d93; font: 10px var(--mono); }
 
 .markdown-body { color: var(--ink-soft); font-family: var(--serif); font-size: 15px; line-height: 1.8; }
@@ -1509,8 +1530,10 @@ body.theme-dark .attempt-status-unseen { color: #e9d5a4; border-color: #7e6c4a; 
 .handwriting-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-strong); background: #fff; box-shadow: 0 4px 10px rgba(13,112,106,.10); transform: translateY(-1px); }
 .handwriting-action:active:not(:disabled) { transform: scale(.97); }
 .handwriting-action:disabled { cursor: not-allowed; opacity: .42; }
+.handwriting-tool-icon { display: block; flex: 0 0 auto; width: 15px; height: 15px; }
 .handwriting-tool.is-active { color: #f8fffd; border-color: var(--accent); background: var(--accent); box-shadow: 0 4px 10px rgba(13,112,106,.14); }
 .handwriting-size-control { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 4px 8px; border: 1px solid #b3cec8; border-radius: 8px; color: var(--muted); background: rgba(251,254,252,.84); font: 9px var(--mono); }
+.handwriting-size-control output { min-width: 38px; color: var(--accent-strong); font-variant-numeric: tabular-nums; text-align: right; }
 .handwriting-size-control input { width: 72px; height: 24px; padding: 0; accent-color: var(--accent); }
 .handwriting-action.icon-action { width: 34px; padding: 5px; font-size: 17px; line-height: 1; }
 .handwriting-fullscreen-button { color: #835e3f; border-color: #d6c2a6; background: #fbf3e7; }
@@ -1518,6 +1541,7 @@ body.theme-dark .attempt-status-unseen { color: #e9d5a4; border-color: #7e6c4a; 
 .handwriting-canvas-wrap { position: relative; min-height: 190px; margin-top: 10px; overflow: hidden; border: 1px solid #c4d9d3; border-radius: 10px; background-color: #fbfefc; background-image: repeating-linear-gradient(0deg, transparent 0 31px, rgba(13,112,106,.10) 32px), linear-gradient(90deg, rgba(181,91,76,.13) 0 1px, transparent 1px 100%); background-size: 100% 32px, 100% 100%; box-shadow: inset 0 1px 3px rgba(24,55,59,.05); transition: border-color .2s ease, background-color .2s ease, opacity .2s ease; }
 .handwriting-canvas-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(13,112,106,.11), inset 0 1px 3px rgba(24,55,59,.05); }
 .handwriting-canvas { display: block; width: 100%; height: 260px; cursor: crosshair; touch-action: none; -ms-touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.handwriting-canvas[data-handwriting-tool="eraser"] { cursor: cell; }
 .handwriting-canvas:focus-visible { outline: 3px solid rgba(13,112,106,.24); outline-offset: -4px; }
 .handwriting-empty { position: absolute; inset: 50% 16px auto; color: #91a19f; font-size: 11px; text-align: center; transform: translateY(-50%); pointer-events: none; transition: opacity .18s ease, transform .2s ease; }
 .handwriting-pad.has-content .handwriting-empty { opacity: 0; transform: translateY(-44%); }
@@ -1525,13 +1549,35 @@ body.theme-dark .attempt-status-unseen { color: #e9d5a4; border-color: #7e6c4a; 
 .handwriting-pad-foot span:last-child { text-align: right; }
 .handwriting-pad.is-collapsed .handwriting-canvas-wrap, .handwriting-pad.is-collapsed .handwriting-pad-foot { display: none; }
 .handwriting-pad.is-collapsed { background: rgba(239,248,244,.62); }
-.handwriting-pad:fullscreen, .handwriting-pad.is-fullscreen-fallback { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; width: 100vw; height: 100vh; height: 100dvh; min-height: 100vh; min-height: 100dvh; padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); border: 0; border-radius: 0; background: #eef4f1; box-shadow: 0 0 0 100vmax rgba(15,45,50,.72); transform: none; }
-.handwriting-pad:fullscreen .handwriting-canvas-wrap, .handwriting-pad.is-fullscreen-fallback .handwriting-canvas-wrap { display: block; flex: 1; min-height: 0; margin-top: 14px; }
-.handwriting-pad:fullscreen .handwriting-canvas, .handwriting-pad.is-fullscreen-fallback .handwriting-canvas { height: 100%; }
-.handwriting-pad:fullscreen .handwriting-pad-foot, .handwriting-pad.is-fullscreen-fallback .handwriting-pad-foot { display: flex; }
-.handwriting-pad:fullscreen .handwriting-pad-foot, .handwriting-pad.is-fullscreen-fallback .handwriting-pad-foot { padding-bottom: max(2px, env(safe-area-inset-bottom)); }
+.handwriting-focus-shell { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-columns: clamp(220px, 22vw, 360px) minmax(0, 1fr); gap: clamp(10px, 1.2vw, 18px); width: 100vw; height: 100vh; height: 100dvh; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); color: var(--ink); background: #e9f0ed; }
+.handwriting-focus-shell.is-fullscreen-fallback { box-shadow: 0 0 0 100vmax rgba(15,45,50,.72); }
+.handwriting-focus-reference { min-width: 0; overflow: auto; padding: clamp(14px, 1.5vw, 20px); border: 1px solid #c4d7d1; border-radius: 14px; background: #fffdf8; box-shadow: 0 14px 36px rgba(28,81,78,.10); scrollbar-color: #8db8af transparent; scrollbar-width: thin; }
+.handwriting-focus-reference-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid #d6e2de; }
+.handwriting-focus-reference-head > div { display: grid; gap: 3px; }
+.handwriting-focus-reference-head strong { color: var(--ink); font: 600 clamp(17px, 1.5vw, 21px)/1.2 var(--serif); }
+.handwriting-focus-reference-head span { color: var(--muted); font: 10px var(--mono); }
+.handwriting-focus-reference-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
+.handwriting-focus-close, .handwriting-focus-toggle { min-height: 36px; padding: 7px 11px; border: 1px solid #b3cec8; border-radius: 8px; color: var(--accent-strong); background: #f5faf7; font-size: 10px; white-space: nowrap; transition: transform .18s cubic-bezier(.16,1,.3,1), border-color .18s ease, background-color .18s ease, box-shadow .18s ease; }
+.handwriting-focus-close:hover, .handwriting-focus-toggle:hover { border-color: var(--accent); background: #fff; box-shadow: 0 5px 13px rgba(13,112,106,.10); transform: translateY(-1px); }
+.handwriting-focus-close:focus-visible, .handwriting-focus-toggle:focus-visible { outline: 3px solid rgba(13,112,106,.22); outline-offset: 2px; }
+.handwriting-focus-question-meta { margin: 18px 0 12px; color: #647873; font: 10px var(--mono); }
+.handwriting-focus-question { max-width: 72ch; color: var(--ink); font-size: clamp(14px, 1vw, 16px); line-height: 1.72; }
+.handwriting-focus-question-empty { margin-top: 20px; color: var(--muted); font-size: 13px; }
+.handwriting-focus-writing { min-width: 0; min-height: 0; }
+.handwriting-focus-writing .handwriting-pad { display: flex; flex-direction: column; width: 100%; height: 100%; padding: clamp(12px, 1.4vw, 18px); border: 1px solid #b9d4ce; border-radius: 16px; background: #eef6f2; box-shadow: 0 14px 36px rgba(28,81,78,.11); transform: none; }
+.handwriting-focus-writing .handwriting-pad:hover { transform: none; }
+.handwriting-focus-writing .handwriting-canvas-wrap { display: block; flex: 1; min-height: 0; margin-top: 14px; }
+.handwriting-focus-writing .handwriting-canvas { height: 100%; }
+.handwriting-focus-writing .handwriting-pad-foot { display: flex; padding-bottom: max(2px, env(safe-area-inset-bottom)); }
+.handwriting-focus-shell.is-reference-collapsed { grid-template-columns: 52px minmax(0, 1fr); }
+.handwriting-focus-shell.is-reference-collapsed .handwriting-focus-reference { display: flex; align-items: flex-start; justify-content: center; padding: 8px; overflow: hidden; }
+.handwriting-focus-shell.is-reference-collapsed .handwriting-focus-reference-head { padding: 0; border: 0; }
+.handwriting-focus-shell.is-reference-collapsed .handwriting-focus-reference-head > div:first-child, .handwriting-focus-shell.is-reference-collapsed .handwriting-focus-close, .handwriting-focus-shell.is-reference-collapsed .handwriting-focus-question-meta, .handwriting-focus-shell.is-reference-collapsed .handwriting-focus-question, .handwriting-focus-shell.is-reference-collapsed .handwriting-focus-question-empty { display: none; }
+.handwriting-focus-shell.is-reference-collapsed .handwriting-focus-reference-actions { display: block; }
+.handwriting-focus-shell.is-reference-collapsed .handwriting-focus-toggle { width: 36px; min-width: 36px; height: auto; padding: 10px 7px; line-height: 1.3; white-space: normal; writing-mode: vertical-rl; }
 body.handwriting-fullscreen-open { overflow: hidden; }
 body.theme-dark .handwriting-pad { border-color: var(--line); background: #173b3e; }
+body.theme-dark .tutor-json-row { background: #173b3e; }
 body.theme-dark .answer-workspace { border-color: var(--line); background: #153236; }
 body.theme-dark .answer-support-strip, body.theme-dark .sim-submitted-answer { border-color: var(--line); background: #173b3e; }
 body.theme-dark .handwriting-pad.is-readonly, body.theme-dark .handwriting-pad.is-collapsed { background: #153236; }
@@ -1541,7 +1587,13 @@ body.theme-dark .handwriting-size-control { border-color: #4b837d; background: #
 body.theme-dark .handwriting-fullscreen-button { color: #e6c899; border-color: #806c4d; background: #40392a; }
 body.theme-dark .handwriting-canvas-wrap { border-color: #4b837d; background-color: #112a2e; background-image: repeating-linear-gradient(0deg, transparent 0 31px, rgba(103,195,182,.12) 32px), linear-gradient(90deg, rgba(225,135,113,.20) 0 1px, transparent 1px 100%); }
 body.theme-dark .handwriting-empty { color: #77908c; }
-body.theme-dark .handwriting-pad:fullscreen, body.theme-dark .handwriting-pad.is-fullscreen-fallback { background: #10282c; }
+body.theme-dark .handwriting-focus-shell { color: #e4eee8; background: #10282c; }
+body.theme-dark .handwriting-focus-reference { border-color: #416f6a; background: #153236; box-shadow: 0 14px 36px rgba(0,0,0,.24); }
+body.theme-dark .handwriting-focus-reference-head { border-color: #315b57; }
+body.theme-dark .handwriting-focus-reference-head strong, body.theme-dark .handwriting-focus-question { color: #e4eee8; }
+body.theme-dark .handwriting-focus-question-meta { color: #a9c4bd; }
+body.theme-dark .handwriting-focus-close, body.theme-dark .handwriting-focus-toggle { color: #bde5db; border-color: #4b837d; background: #1a4547; }
+body.theme-dark .handwriting-focus-writing .handwriting-pad { border-color: #416f6a; background: #153236; box-shadow: 0 14px 36px rgba(0,0,0,.24); }
 
 .sim-submitted-answer { display: grid; gap: 9px; margin-top: 15px; padding: 13px; border: 1px solid #c8ddd7; border-radius: 12px; background: rgba(239,248,244,.68); }
 .sim-submitted-answer-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
@@ -1621,6 +1673,20 @@ body.theme-dark .handwriting-pad:fullscreen, body.theme-dark .handwriting-pad.is
   .handwriting-fullscreen-button { flex: 1 1 auto; }
   .handwriting-pad-foot { align-items: flex-start; flex-direction: column; }
   .handwriting-pad-foot span:last-child { text-align: left; }
+  .handwriting-focus-shell { grid-template-columns: 1fr; grid-template-rows: clamp(132px, 24dvh, 220px) minmax(0, 1fr); gap: 8px; padding: max(7px, env(safe-area-inset-top)) max(7px, env(safe-area-inset-right)) max(7px, env(safe-area-inset-bottom)) max(7px, env(safe-area-inset-left)); }
+  .handwriting-focus-reference { padding: 13px 14px; border-radius: 12px; }
+  .handwriting-focus-reference-head { align-items: center; padding-bottom: 9px; }
+  .handwriting-focus-reference-head strong { font-size: 17px; }
+  .handwriting-focus-reference-head span { display: none; }
+  .handwriting-focus-close { min-height: 34px; padding: 6px 9px; }
+  .handwriting-focus-toggle { min-height: 34px; padding: 6px 9px; }
+  .handwriting-focus-question-meta { margin: 10px 0 6px; }
+  .handwriting-focus-question { font-size: 14px; line-height: 1.65; }
+  .handwriting-focus-writing .handwriting-pad { padding: 9px; border-radius: 12px; }
+  .handwriting-focus-writing .handwriting-pad-head { max-height: 150px; overflow: auto; }
+  .handwriting-focus-shell.is-reference-collapsed { grid-template-columns: 1fr; grid-template-rows: 44px minmax(0, 1fr); }
+  .handwriting-focus-shell.is-reference-collapsed .handwriting-focus-reference { align-items: center; justify-content: flex-start; padding: 4px 8px; }
+  .handwriting-focus-shell.is-reference-collapsed .handwriting-focus-toggle { width: auto; min-width: 88px; height: 34px; padding: 6px 10px; white-space: nowrap; writing-mode: horizontal-tb; }
   .block-stack-summary { padding-right: 39px; }
   .block-stack-summary::after { right: 13px; }
   .blocks-layout:not(.practice-active) { gap: 10px; }
@@ -1628,7 +1694,7 @@ body.theme-dark .handwriting-pad:fullscreen, body.theme-dark .handwriting-pad.is
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .handwriting-pad, .handwriting-action, .handwriting-canvas-wrap, .handwriting-empty, .block-stack-card, .block-stack-summary, .block-stack-summary::after, .block-stack-card > .block-stack-content { transition: none !important; animation: none !important; }
+  .handwriting-pad, .handwriting-action, .handwriting-canvas-wrap, .handwriting-empty, .handwriting-focus-close, .handwriting-focus-toggle, .block-stack-card, .block-stack-summary, .block-stack-summary::after, .block-stack-card > .block-stack-content { transition: none !important; animation: none !important; }
 }
 
 /* Account and administration surfaces share the paper / ink vocabulary of

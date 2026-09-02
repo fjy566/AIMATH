@@ -42,6 +42,8 @@ const state = {
   noteFavoriteOnly: false,
   noteSearchTimer: null,
   currentQuestion: null,
+  tutorAttachmentIds: [],
+  tutorRecognizedAnswer: "",
   practiceSession: null,
   practiceQuestionIndex: 0,
   currentSimulation: null,
@@ -79,6 +81,16 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
+}
+
+let tutorHtmlEntityDecoder;
+
+function decodeHtmlEntities(value) {
+  const source = String(value ?? "");
+  if (!source.includes("&") || typeof document === "undefined") return source;
+  tutorHtmlEntityDecoder ??= document.createElement("textarea");
+  tutorHtmlEntityDecoder.innerHTML = source;
+  return tutorHtmlEntityDecoder.value;
 }
 
 function replaceAllLiteral(value, search, replacement) {
@@ -312,6 +324,166 @@ function renderMarkdown(source) {
   closeParagraph();
   closeList();
   return output.join("") || `<p class="muted-copy">暂无内容</p>`;
+}
+
+const TUTOR_FIELD_LABELS = {
+  diagnosis: "诊断",
+  error_type: "错误类型",
+  hint: "提示",
+  explanation: "分析",
+  next_step: "下一步训练",
+};
+
+function repairJsonEscapeSequences(source) {
+  const value = String(source || "");
+  const validEscapes = new Set(["\"", "\\", "/", "b", "f", "n", "r", "t", "u"]);
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (!inString) {
+      result += character;
+      if (character === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      result += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      const next = value[index + 1] || "";
+      if (validEscapes.has(next)) {
+        result += character;
+        escaped = true;
+      } else {
+        // Models occasionally emit Markdown escapes such as \_ or \partial
+        // inside an otherwise valid JSON string. Preserve the slash as data so
+        // the final value can still be rendered as Markdown/TeX.
+        result += "\\\\";
+      }
+      continue;
+    }
+    if (character === "\r" || character === "\n") {
+      // A copied/rendered answer may contain a literal line break inside a
+      // quoted JSON value. Turn it into JSON's escaped newline without
+      // changing line breaks that delimit fields outside the string.
+      result += "\\n";
+      if (character === "\r" && value[index + 1] === "\n") index += 1;
+      continue;
+    }
+    if (character === "\t") {
+      result += "\\t";
+      continue;
+    }
+    result += character;
+    if (character === '"') inString = false;
+  }
+  return result;
+}
+
+function extractJsonCandidates(source) {
+  const text = String(source || "");
+  const candidates = [];
+  const firstObject = text.indexOf("{");
+  const firstArray = text.indexOf("[");
+  const firstStart = Math.min(
+    firstObject < 0 ? Number.POSITIVE_INFINITY : firstObject,
+    firstArray < 0 ? Number.POSITIVE_INFINITY : firstArray,
+  );
+  const scanFrom = Number.isFinite(firstStart) ? firstStart : 0;
+  let scannedStarts = 0;
+  for (let start = scanFrom; start < text.length; start += 1) {
+    if (text[start] !== "{" && text[start] !== "[") continue;
+    scannedStarts += 1;
+    if (scannedStarts > 32) break;
+    const stack = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+        continue;
+      }
+      if (character === "{" || character === "[") stack.push(character);
+      else if (character === "}" || character === "]") {
+        const opening = stack[stack.length - 1];
+        if ((character === "}" && opening !== "{") || (character === "]" && opening !== "[")) break;
+        stack.pop();
+        if (!stack.length) {
+          candidates.push(text.slice(start, index + 1).trim());
+          break;
+        }
+      }
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+function parseModelStructuredContent(source) {
+  let text = decodeHtmlEntities(String(source || "")).replace(/^\uFEFF/, "").trim();
+  const fenced = text.match(/```(?:json|jsonc)?\s*([\s\S]*?)\s*```/i);
+  if (fenced) text = fenced[1].trim();
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!text) return null;
+    const candidates = [text, ...extractJsonCandidates(text)];
+    let parsedString = null;
+    for (const candidate of [...new Set(candidates)]) {
+      let parsed;
+      try {
+        parsed = JSON.parse(candidate);
+      } catch {
+        try {
+          parsed = JSON.parse(repairJsonEscapeSequences(candidate));
+        } catch {
+          continue;
+        }
+      }
+      if (typeof parsed === "string") {
+        parsedString = decodeHtmlEntities(parsed).trim();
+        break;
+      }
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+    if (parsedString != null) {
+      text = parsedString;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+function renderTutorStructuredValue(value, depth = 0) {
+  if (value == null) return `<span class="muted-copy">未提供</span>`;
+  if (Array.isArray(value)) {
+    if (!value.length) return `<span class="muted-copy">未提供</span>`;
+    return `<ol class="tutor-json-list">${value.map((item) => `<li>${renderTutorStructuredValue(item, depth + 1)}</li>`).join("")}</ol>`;
+  }
+  if (typeof value === "object") {
+    return `<dl class="tutor-json ${depth ? "is-nested" : ""}">${Object.entries(value).map(([key, item]) => {
+      const normalizedKey = String(key).replaceAll("\\_", "_");
+      const label = TUTOR_FIELD_LABELS[normalizedKey] || normalizedKey.replaceAll("_", " ");
+      return `<div class="tutor-json-row"><dt>${escapeHtml(label)}</dt><dd>${renderTutorStructuredValue(item, depth + 1)}</dd></div>`;
+    }).join("")}</dl>`;
+  }
+  if (typeof value === "string") return `<div class="markdown-body">${renderMarkdown(value)}</div>`;
+  return `<span class="tutor-json-scalar">${escapeHtml(String(value))}</span>`;
+}
+
+function renderTutorResult(source) {
+  const content = decodeHtmlEntities(String(source || "")).trim();
+  if (!content) return `<p class="muted-copy">模型没有返回可显示的内容。</p>`;
+  const structured = parseModelStructuredContent(content);
+  return structured ? renderTutorStructuredValue(structured) : `<div class="markdown-body">${renderMarkdown(content)}</div>`;
 }
 
 function renderFormula(tex, display) {
@@ -592,8 +764,10 @@ const HANDWRITING_STORAGE_PREFIX = "ai-math-handwriting-v1:";
 const ANSWER_DRAFT_STORAGE_PREFIX = "ai-math-answer-draft-v1:";
 const HANDWRITING_STATE = new WeakMap();
 const HANDWRITING_UPLOAD_CACHE = new Map();
+const ANSWER_WORKSPACE_QUESTION_CACHE = new Map();
 const HANDWRITING_MAX_STROKES = 320;
 const HANDWRITING_MAX_POINTS = 6000;
+let activeHandwritingFocus = null;
 
 function answerHandwritingKey(mode, questionId, contextId = "") {
   const owner = state.userId || "local-user";
@@ -797,6 +971,35 @@ function drawHandwritingStroke(context, stroke, width, height, color = "#173f45"
   context.restore();
 }
 
+function handwritingToolIconMarkup(tool) {
+  if (tool === "eraser") {
+    return `<svg class="handwriting-tool-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false"><path d="m4.7 15.8 8.9-8.9a2.2 2.2 0 0 1 3.1 0l2.4 2.4a2.2 2.2 0 0 1 0 3.1l-5.5 5.5H8.2a2.2 2.2 0 0 1-1.6-.7l-1.9-1.9a2.2 2.2 0 0 1 0-3.1Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m12.2 18 5.6-5.6M9 18h10.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  return `<svg class="handwriting-tool-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false"><path d="m4.2 16.8-.9 3.9 3.9-.9L18.5 7.5a2.2 2.2 0 0 0 0-3.1l-.9-.9a2.2 2.2 0 0 0-3.1 0L4.2 16.8Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m13.4 4.8 5.8 5.8M3.7 20.7l3.5-.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+}
+
+function handwritingCursorFor(stateForPad) {
+  if (!stateForPad || stateForPad.readonly) return "default";
+  const width = Math.max(1, Math.min(8, Number(stateForPad.strokeWidth) || 2.4));
+  const isEraser = stateForPad.tool === "eraser";
+  const fallback = isEraser ? "cell" : "crosshair";
+  const svg = isEraser
+    ? `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><g transform="rotate(-45 16 16)"><rect x="${10 - width * .28}" y="7" width="${12 + width * .56}" height="17" rx="2.5" fill="#173f45" stroke="#fbfefc" stroke-width="1.5"/><path d="M10 19.5h12" stroke="#9fd0c4" stroke-width="${Math.max(1.1, width * .55)}" stroke-linecap="round"/></g></svg>`
+    : `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M5 27.2 7.5 20 22 5.5l4.5 4.5L12 24.5Z" fill="#173f45" stroke="#fbfefc" stroke-width="1.5" stroke-linejoin="round"/><path d="m7.5 20 4.5 4.5" stroke="#9fd0c4" stroke-width="${Math.max(1.25, width * .7)}" stroke-linecap="round"/></svg>`;
+  const encoded = encodeURIComponent(svg).replace(/'/g, "%27").replace(/\(/g, "%28").replace(/\)/g, "%29");
+  return `url("data:image/svg+xml,${encoded}") 4 27, ${fallback}`;
+}
+
+function updateHandwritingCursor(pad) {
+  const stateForPad = handwritingStateFor(pad);
+  const canvas = pad?.querySelector("[data-handwriting-canvas]");
+  if (!stateForPad || !canvas) return;
+  canvas.dataset.handwritingTool = stateForPad.tool;
+  canvas.dataset.handwritingStrokeWidth = String(stateForPad.strokeWidth);
+  canvas.style.setProperty("--handwriting-stroke-width", `${stateForPad.strokeWidth}px`);
+  canvas.style.cursor = handwritingCursorFor(stateForPad);
+}
+
 function drawHandwritingPad(pad) {
   const stateForPad = handwritingStateFor(pad);
   const canvas = pad?.querySelector("[data-handwriting-canvas]");
@@ -822,6 +1025,7 @@ function drawHandwritingPad(pad) {
   const pen = pad.querySelector('[data-handwriting-tool="pen"]');
   const eraser = pad.querySelector('[data-handwriting-tool="eraser"]');
   const size = pad.querySelector("[data-handwriting-size]");
+  const sizeLabel = pad.querySelector("[data-handwriting-size-label]");
   const toolLabel = pad.querySelector("[data-handwriting-tool-label]");
   if (undo) undo.disabled = stateForPad.readonly || !stateForPad.strokes.length;
   if (redo) redo.disabled = stateForPad.readonly || !stateForPad.redo.length;
@@ -830,7 +1034,9 @@ function drawHandwritingPad(pad) {
   if (pen) { pen.disabled = stateForPad.readonly; pen.classList.toggle("is-active", stateForPad.tool === "pen"); pen.setAttribute("aria-pressed", String(stateForPad.tool === "pen")); }
   if (eraser) { eraser.disabled = stateForPad.readonly; eraser.classList.toggle("is-active", stateForPad.tool === "eraser"); eraser.setAttribute("aria-pressed", String(stateForPad.tool === "eraser")); }
   if (size) { size.disabled = stateForPad.readonly; size.value = String(stateForPad.strokeWidth); }
+  if (sizeLabel) sizeLabel.textContent = `${Number(stateForPad.strokeWidth).toFixed(1)} px`;
   if (toolLabel) toolLabel.textContent = stateForPad.tool === "eraser" ? "橡皮" : "画笔";
+  updateHandwritingCursor(pad);
 }
 
 function resizeHandwritingPad(pad) {
@@ -868,6 +1074,8 @@ function updateHandwritingStatus(pad, message = "") {
 function saveHandwritingPad(pad, source = "save") {
   const stateForPad = handwritingStateFor(pad);
   if (!stateForPad || stateForPad.readonly) return;
+  HANDWRITING_UPLOAD_CACHE.delete(stateForPad.key);
+  delete pad.dataset.handwritingAttachmentId;
   writeHandwritingDraft(stateForPad);
   updateHandwritingStatus(pad);
   drawHandwritingPad(pad);
@@ -883,44 +1091,110 @@ function setHandwritingTool(pad, tool = "pen") {
 }
 
 function handwritingToolButtonMarkup(tool, label, readonly) {
-  return `<button type="button" class="handwriting-action handwriting-tool" data-handwriting-tool="${tool}" aria-label="${label}工具" title="${label}工具" aria-pressed="${tool === "pen" ? "true" : "false"}" ${readonly ? "disabled" : ""}>${label}</button>`;
+  return `<button type="button" class="handwriting-action handwriting-tool" data-handwriting-tool="${tool}" aria-label="${label}工具" title="${label}工具" aria-pressed="${tool === "pen" ? "true" : "false"}" ${readonly ? "disabled" : ""}>${handwritingToolIconMarkup(tool)}<span>${label}</span></button>`;
+}
+
+function answerWorkspaceQuestionKey(mode, questionId, contextId = "") {
+  return `${String(mode || "modal")}:${String(contextId || "")}:${String(questionId || "unknown")}`;
+}
+
+function renderHandwritingFocusReference(question) {
+  const controls = `<div class="handwriting-focus-reference-actions"><button type="button" class="handwriting-focus-toggle" data-handwriting-focus-toggle aria-expanded="true">收起题板</button><button type="button" class="handwriting-focus-close" data-handwriting-focus-close>退出专注书写</button></div>`;
+  if (!question) return `<aside class="handwriting-focus-reference" aria-label="题目参考"><div class="handwriting-focus-reference-head"><div><strong>题目参考</strong><span>作答时保持可见</span></div>${controls}</div><div class="handwriting-focus-question-empty">暂时无法读取题面，请退出后重试。</div></aside>`;
+  const identity = [question.year ? `${question.year} 年` : "", question.number ? `第 ${question.number} 题` : "", `${typeLabel(question.question_type)}题`, question.points != null ? `${formatScore(question.points)} 分` : ""].filter(Boolean).join(" · ");
+  return `<aside class="handwriting-focus-reference" aria-label="题目参考"><div class="handwriting-focus-reference-head"><div><strong>题目参考</strong><span>作答时保持可见</span></div>${controls}</div><div class="handwriting-focus-question-meta">${escapeHtml(identity || "当前题目")}</div><div class="handwriting-focus-question markdown-body">${renderMarkdown(question.question_markdown || "")}</div></aside>`;
+}
+
+function toggleHandwritingFocusReference(shell) {
+  if (!shell) return;
+  const collapsed = shell.classList.toggle("is-reference-collapsed");
+  const button = shell.querySelector("[data-handwriting-focus-toggle]");
+  if (button) {
+    button.textContent = collapsed ? "展开题板" : "收起题板";
+    button.setAttribute("aria-expanded", String(!collapsed));
+  }
+  window.requestAnimationFrame?.(() => resizeHandwritingPad(activeHandwritingFocus?.pad));
 }
 
 function setHandwritingFullscreen(pad, active) {
   if (!pad) return;
-  pad.classList.toggle("is-fullscreen-fallback", active);
-  pad.classList.toggle("is-fullscreen-active", active || document.fullscreenElement === pad);
-  document.body.classList.toggle("handwriting-fullscreen-open", Boolean(active || document.fullscreenElement));
+  pad.classList.toggle("is-fullscreen-active", active);
+  document.body.classList.toggle("handwriting-fullscreen-open", Boolean(activeHandwritingFocus));
   const button = pad.querySelector("[data-handwriting-fullscreen]");
-  if (button) button.textContent = active || document.fullscreenElement === pad ? "退出全屏" : (pad.classList.contains("is-readonly") ? "全屏查看" : "全屏书写");
+  if (button) {
+    button.textContent = active ? "退出专注书写" : (pad.classList.contains("is-readonly") ? "全屏查看" : "全屏书写");
+    button.setAttribute("aria-pressed", String(active));
+  }
   window.requestAnimationFrame?.(() => resizeHandwritingPad(pad));
 }
 
-async function toggleHandwritingFullscreen(pad) {
-  if (document.fullscreenElement === pad) {
-    await document.exitFullscreen?.();
-    return;
-  }
-  if (pad.classList.contains("is-fullscreen-fallback")) {
-    setHandwritingFullscreen(pad, false);
-    return;
-  }
+function closeHandwritingFocus(pad = activeHandwritingFocus?.pad) {
+  const focus = activeHandwritingFocus;
+  if (!focus || focus.pad !== pad) return;
+  activeHandwritingFocus = null;
+  if (document.fullscreenElement === focus.shell) document.exitFullscreen?.().catch?.(() => {});
+  focus.placeholder.replaceWith(focus.pad);
+  focus.pad.classList.toggle("is-collapsed", focus.wasCollapsed);
+  focus.shell.remove();
+  setHandwritingFullscreen(focus.pad, false);
+  focus.pad.querySelector("[data-handwriting-fullscreen]")?.focus({ preventScroll: true });
+}
+
+async function openHandwritingFocus(pad) {
+  const workspace = pad?.closest("[data-answer-workspace]");
+  if (!pad || !workspace) return;
+  if (activeHandwritingFocus) closeHandwritingFocus();
+  const questionKey = answerWorkspaceQuestionKey(workspace.dataset.answerMode, workspace.dataset.answerQuestion, workspace.dataset.answerContext);
+  const question = ANSWER_WORKSPACE_QUESTION_CACHE.get(questionKey);
+  const placeholder = document.createElement("span");
+  placeholder.hidden = true;
+  placeholder.dataset.handwritingFocusPlaceholder = "";
+  pad.before(placeholder);
+  const shell = document.createElement("section");
+  shell.className = "handwriting-focus-shell is-fullscreen-fallback";
+  shell.dataset.handwritingFocus = "";
+  shell.setAttribute("role", "dialog");
+  shell.setAttribute("aria-modal", "true");
+  shell.setAttribute("aria-label", "题目与手写作答专注模式");
+  shell.innerHTML = `${renderHandwritingFocusReference(question)}<div class="handwriting-focus-writing" data-handwriting-focus-writing></div>`;
+  document.body.appendChild(shell);
+  shell.querySelector("[data-handwriting-focus-writing]")?.appendChild(pad);
+  const wasCollapsed = pad.classList.contains("is-collapsed");
+  pad.classList.remove("is-collapsed");
+  activeHandwritingFocus = { pad, workspace, placeholder, shell, wasCollapsed };
+  shell.querySelector("[data-handwriting-focus-close]")?.addEventListener("click", () => closeHandwritingFocus(pad));
+  shell.querySelector("[data-handwriting-focus-toggle]")?.addEventListener("click", () => toggleHandwritingFocusReference(shell));
+  setHandwritingFullscreen(pad, true);
+  typeset(shell.querySelector(".handwriting-focus-question"));
   try {
-    if (pad.requestFullscreen) {
-      await pad.requestFullscreen();
-      setHandwritingFullscreen(pad, true);
-      return;
+    if (shell.requestFullscreen) {
+      await shell.requestFullscreen();
+      shell.classList.remove("is-fullscreen-fallback");
     }
   } catch {
-    // Embedded browsers may refuse the API; use the fixed-position fallback.
+    // The fixed focus shell remains usable when an embedded browser refuses fullscreen.
   }
-  setHandwritingFullscreen(pad, true);
+  window.requestAnimationFrame?.(() => resizeHandwritingPad(pad));
+}
+
+function toggleHandwritingFullscreen(pad) {
+  if (activeHandwritingFocus?.pad === pad) closeHandwritingFocus(pad);
+  else openHandwritingFocus(pad);
 }
 
 function bindHandwritingDocumentEvents() {
   if (document.documentElement.dataset.handwritingEventsBound === "true") return;
   document.documentElement.dataset.handwritingEventsBound = "true";
-  document.addEventListener("fullscreenchange", () => $$('[data-handwriting-pad]').forEach((pad) => setHandwritingFullscreen(pad, document.fullscreenElement === pad || pad.classList.contains("is-fullscreen-fallback"))));
+  document.addEventListener("fullscreenchange", () => {
+    const focus = activeHandwritingFocus;
+    if (focus && document.fullscreenElement !== focus.shell && !focus.shell.classList.contains("is-fullscreen-fallback")) closeHandwritingFocus(focus.pad);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && activeHandwritingFocus?.shell.classList.contains("is-fullscreen-fallback")) {
+      event.preventDefault();
+      closeHandwritingFocus();
+    }
+  });
   window.addEventListener("resize", () => $$('[data-handwriting-pad]').forEach(resizeHandwritingPad), { passive: true });
 }
 
@@ -969,7 +1243,6 @@ function bindHandwritingPads(root = document) {
     });
     ["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => canvas?.addEventListener(name, finishStroke));
     canvas?.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && pad.classList.contains("is-fullscreen-fallback")) { event.preventDefault(); setHandwritingFullscreen(pad, false); }
       if (stateForPad.readonly) return;
       const modifier = event.ctrlKey || event.metaKey;
       if (modifier && event.key.toLowerCase() === "z") {
@@ -998,6 +1271,7 @@ function bindHandwritingPads(root = document) {
       if (stateForPad.readonly) return;
       stateForPad.strokeWidth = Math.max(1, Math.min(8, Number(event.target.value) || 2.4));
       updateHandwritingStatus(pad, `笔画 ${stateForPad.strokeWidth.toFixed(1)} px`);
+      drawHandwritingPad(pad);
     });
     pad.querySelector("[data-handwriting-save]")?.addEventListener("click", () => {
       if (stateForPad.readonly || !stateForPad.strokes.length) return;
@@ -1034,7 +1308,7 @@ function renderHandwritingPad({ key = "unknown", readonly = false, expanded = fa
     <div class="handwriting-pad-head"><div><strong>手写作答</strong><span data-handwriting-status aria-live="polite">${readonly ? "已提交 · 只读查看" : "未开始"}</span></div><div class="handwriting-actions" role="toolbar" aria-label="手写作答工具">
       ${handwritingToolButtonMarkup("pen", "笔", readonly)}
       ${handwritingToolButtonMarkup("eraser", "橡皮", readonly)}
-      <label class="handwriting-size-control"><span>粗细</span><input type="range" data-handwriting-size min="1" max="8" step="0.5" value="2.4" aria-label="笔画粗细" ${readonly ? "disabled" : ""} /></label>
+      <label class="handwriting-size-control"><span>粗细</span><output data-handwriting-size-label>2.4 px</output><input type="range" data-handwriting-size min="1" max="8" step="0.5" value="2.4" aria-label="笔画粗细" ${readonly ? "disabled" : ""} /></label>
       <button type="button" class="handwriting-action" data-handwriting-toggle aria-expanded="${expanded ? "true" : "false"}"><span data-handwriting-toggle-label>${expanded ? "收起" : "展开"}</span></button>
       <button type="button" class="handwriting-action handwriting-fullscreen-button" data-handwriting-fullscreen>${readonly ? "全屏查看" : "全屏书写"}</button>
       <button type="button" class="handwriting-action icon-action" data-handwriting-undo aria-label="撤销手写" title="撤销（Ctrl/Cmd + Z）" ${readonly ? "disabled" : ""}>↶</button>
@@ -1102,6 +1376,7 @@ function renderAnswerEditor(question, { mode = "modal", value = "", readonly = f
 }
 
 function renderAnswerWorkspace(question, { mode = "modal", value = "", readonly = false, contextId = "", draftKey = "", includeUpload = !readonly, uploadStatus = "支持 PNG/JPG/WebP/GIF，单张不超过 8 MB" } = {}) {
+  ANSWER_WORKSPACE_QUESTION_CACHE.set(answerWorkspaceQuestionKey(mode, question.id, contextId), question);
   const storedDraft = readonly ? { found: false, attachments: [] } : readAnswerDraft(mode, question.id, contextId);
   const restoredValue = storedDraft.found ? storedDraft.answer : value;
   const workspaceHint = question.question_type === "choice"
@@ -1876,6 +2151,20 @@ async function fetchJSON(url, options = {}) {
   let response;
   try {
     response = await fetch(url, requestOptions);
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      // An aborted response body is the request timeout signal. Do not turn it
+      // into an empty payload, otherwise a stalled submit can wait forever.
+      if (error?.name === "AbortError") throw error;
+      payload = {};
+    }
+    if (!response.ok) {
+      if (response.status === 401 && state.authenticated) showAuthScreen("登录已失效，请重新登录。");
+      throw new Error(payload.detail || `请求失败（HTTP ${response.status}）`);
+    }
+    return payload;
   } catch (error) {
     if (error?.name === "AbortError" && controller) {
       const timeoutError = new Error("本地服务响应超时，请确认服务已启动。");
@@ -1886,17 +2175,6 @@ async function fetchJSON(url, options = {}) {
   } finally {
     if (timeoutId) window.clearTimeout(timeoutId);
   }
-  let payload;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = {};
-  }
-  if (!response.ok) {
-    if (response.status === 401 && state.authenticated) showAuthScreen("登录已失效，请重新登录。");
-    throw new Error(payload.detail || `请求失败（HTTP ${response.status}）`);
-  }
-  return payload;
 }
 
 function jsonOptions(payload) {
@@ -1952,7 +2230,18 @@ async function uploadAnswerImage(file, questionId) {
 function handwritingPadToBlob(pad) {
   const canvas = pad?.querySelector("[data-handwriting-canvas]");
   if (!canvas || typeof canvas.toBlob !== "function" || !handwritingPadHasContent(pad)) return Promise.resolve(null);
-  return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  const exportCanvas = document.createElement("canvas");
+  exportCanvas.width = canvas.width;
+  exportCanvas.height = canvas.height;
+  const context = exportCanvas.getContext("2d");
+  if (!context) return Promise.resolve(null);
+  // The editing canvas is transparent over a paper-colored CSS surface.
+  // Flatten it onto paper before upload so dark ink stays visible to image
+  // viewers and multimodal models that composite transparency as black.
+  context.fillStyle = "#fffdf8";
+  context.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+  context.drawImage(canvas, 0, 0);
+  return new Promise((resolve) => exportCanvas.toBlob(resolve, "image/png"));
 }
 
 async function uploadHandwritingPad(pad, questionId) {
@@ -4008,7 +4297,10 @@ async function submitPracticeSession(confirmSubmit = false) {
   buttons.forEach((button) => { button.disabled = true; });
   try {
     const payload = await collectPracticeSessionPayload({ includeHandwriting: true });
-    state.practiceSession = await fetchJSON(`/api/practice/sessions/${encodeURIComponent(session.id)}/submit`, jsonOptions(payload));
+    state.practiceSession = await fetchJSON(`/api/practice/sessions/${encodeURIComponent(session.id)}/submit`, {
+      ...jsonOptions(payload),
+      timeoutMs: 300000,
+    });
     clearHandwritingDrafts($("blocks-container"));
     (state.practiceSession.questions || []).forEach((question) => clearAnswerDraft("practice", question.id, session.id));
     savePracticePointer("");
@@ -4025,6 +4317,8 @@ async function openQuestion(questionId) {
   try {
     const question = await fetchJSON(`/api/questions/${encodeURIComponent(questionId)}?user_id=${encodeURIComponent(state.userId)}`);
     state.currentQuestion = question;
+    state.tutorAttachmentIds = [];
+    state.tutorRecognizedAnswer = "";
     $("modal-question-ref").textContent = `${question.exam_type} · ${question.year} 年 · 第 ${question.number} 题`;
     $("modal-question-type").textContent = `${typeLabel(question.question_type)}题 · ${formatScore(question.points)} 分`;
     $("question-modal-title").textContent = `${question.year} 年真题 / Q${question.number}`;
@@ -4058,12 +4352,12 @@ function closeQuestion() {
   const workspace = $("modal-answer-editor")?.querySelector("[data-answer-workspace]");
   persistAnswerWorkspaceText(workspace);
   if (state.currentQuestion) writeAnswerDraft("modal", state.currentQuestion.id, "", { selfGrade: $("self-grade")?.value || "" });
-  const fullscreenPad = $("modal-answer-editor")?.querySelector("[data-handwriting-pad]");
-  if (fullscreenPad?.classList.contains("is-fullscreen-fallback")) setHandwritingFullscreen(fullscreenPad, false);
-  if (document.fullscreenElement === fullscreenPad) document.exitFullscreen?.();
+  if (activeHandwritingFocus?.workspace === workspace) closeHandwritingFocus(activeHandwritingFocus.pad);
   $("question-modal").classList.remove("open");
   $("question-modal").setAttribute("aria-hidden", "true");
   state.currentQuestion = null;
+  state.tutorAttachmentIds = [];
+  state.tutorRecognizedAnswer = "";
 }
 
 function resultLabel(status) {
@@ -4084,9 +4378,16 @@ function renderQuestionResult(payload) {
   const expected = result.expected_answer || payload.answer_markdown || "";
   const solution = payload.solution_markdown || "";
   const attachments = payload.attachments || [];
+  state.tutorAttachmentIds = attachments.map((item) => String(item.id || "")).filter(Boolean).slice(0, 3);
+  state.tutorRecognizedAnswer = String(result.recognized_answer || "").trim();
   const attachmentMarkup = renderAnswerAttachmentGallery(attachments, "已提交的作答附件");
+  const visionMarkup = result.grading_source === "multimodal"
+    ? `<div class="vision-review-note"><strong>手写识别：</strong>${escapeHtml(result.recognized_answer || "未能识别")}。${result.review_explanation ? `<div class="vision-review-explanation">${renderMarkdown(result.review_explanation)}</div>` : ""}</div>`
+    : result.vision_error
+      ? `<div class="vision-review-note is-pending"><strong>手写复核：</strong>附件已保存，但模型暂时没有完成识别。可以点击下方“重新分析”再次尝试。</div>`
+      : "";
   box.innerHTML = `<div class="result-head"><span class="result-status">${resultLabel(result.status)}</span><span class="result-score">${formatScore(result.score)} / ${formatScore(result.max_score)} 分</span></div>
-    <div class="result-detail"><h4>${result.error_type ? `记录：${escapeHtml(result.error_type)}` : "本次判定"}</h4><p class="muted-copy">${result.status === "manual" ? "来源没有可自动比对的完整标准答案，请根据步骤选择自评分数，或使用下方 AI 复核。" : result.status === "correct" ? "这次作答已计入掌握度。继续做一题同知识块的变式题。" : "这次作答已计入薄弱项分析，建议查看来源解析后再做一题相近题。"}</p>${attachmentMarkup}${expected ? `<h4>来源答案</h4><div class="markdown-body">${renderMarkdown(expected)}</div>` : ""}${solution ? `<h4>来源解析</h4><div class="markdown-body">${renderMarkdown(solution)}</div>` : `<h4>来源解析</h4><p class="muted-copy">当前来源文件没有提供该题解析。</p>`}</div>`;
+    <div class="result-detail"><h4>${result.error_type ? `记录：${escapeHtml(result.error_type)}` : "本次判定"}</h4><p class="muted-copy">${result.status === "manual" ? "来源没有可自动比对的完整标准答案，请根据步骤选择自评分数，或使用下方 AI 复核。" : result.status === "correct" ? "这次作答已计入掌握度。继续做一题同知识块的变式题。" : "这次作答已计入薄弱项分析，建议查看来源解析后再做一题相近题。"}</p>${visionMarkup}${attachmentMarkup}${expected ? `<h4>来源答案</h4><div class="markdown-body">${renderMarkdown(expected)}</div>` : ""}${solution ? `<h4>来源解析</h4><div class="markdown-body">${renderMarkdown(solution)}</div>` : `<h4>来源解析</h4><p class="muted-copy">当前来源文件没有提供该题解析。</p>`}</div>`;
   typeset(box);
   $("tutor-box").hidden = false;
   $("tutor-content").textContent = "提交后可让已配置的模型根据题面、作答和来源解析进行复核。";
@@ -4096,59 +4397,90 @@ async function submitAnswer() {
   const question = state.currentQuestion;
   if (!question) return;
   const button = $("submit-answer");
+  const status = $("submit-answer-status");
+  const buttonLabel = button.textContent;
   button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "正在提交…";
+  if (status) status.textContent = "正在提交…";
   const selfGradeValue = $("self-grade").value;
   const imageInput = $("answer-image-input");
   try {
     const attachmentIds = readAnswerDraft("modal", question.id).attachments.map((item) => item.id);
     if (imageInput.files?.[0]) {
       $("answer-image-status").textContent = "正在上传图片……";
+      if (status) status.textContent = "正在上传作答图片……";
       const uploaded = await uploadAnswerImage(imageInput.files[0], question.id);
       attachmentIds.push(uploaded.attachment_id);
     }
-    await collectHandwritingAttachments($("modal-answer-editor"), attachmentIds, { questionId: question.id });
-    const payload = await fetchJSON(`/api/questions/${encodeURIComponent(question.id)}/attempts`, jsonOptions({
+    const modalEditor = $("modal-answer-editor");
+    const handwritingRoot = activeHandwritingFocus?.workspace === modalEditor ? activeHandwritingFocus.shell : modalEditor;
+    await collectHandwritingAttachments(handwritingRoot, attachmentIds, { questionId: question.id });
+    if (attachmentIds.length && !$("answer-input").value.trim()) {
+      button.textContent = "正在思考";
+      if (status) status.textContent = "正在思考";
+    }
+    const payload = await fetchJSON(`/api/questions/${encodeURIComponent(question.id)}/attempts`, {
+      ...jsonOptions({
       user_id: state.userId,
       answer: $("answer-input").value,
       self_grade: selfGradeValue === "" ? null : Number(selfGradeValue),
       duration_seconds: Math.max(0, Number($("answer-duration").value || 0) * 60),
       mode: "practice",
       attachment_ids: attachmentIds,
-    }));
+      }),
+      timeoutMs: 300000,
+    });
     clearHandwritingDrafts($("modal-answer-editor"));
     clearAnswerDraft("modal", question.id);
     renderQuestionResult(payload);
     showToast("作答已保存，掌握度会在总览中更新。");
-    await refreshLearningData();
+    // The result is already rendered. Refresh aggregate learning metrics in
+    // the background so a slow secondary read cannot make a saved answer look
+    // stuck or keep the submit control disabled.
+    void refreshLearningData();
   } catch (error) {
     showToast(`提交失败：${error.message}`, true);
+    if (status) status.textContent = `提交失败：${error.message}`;
   } finally {
     button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = buttonLabel;
+    if (status && !status.textContent.startsWith("提交失败：")) status.textContent = "";
   }
 }
 
 async function askTutor() {
   if (!state.currentQuestion) return;
   const button = $("ask-tutor");
+  const buttonLabel = button.textContent;
   button.disabled = true;
-  $("tutor-content").textContent = "模型正在分析，请稍候……";
+  button.textContent = "正在思考";
+  const output = $("tutor-content");
+  output.setAttribute("aria-busy", "true");
+  output.innerHTML = `<div class="tutor-thinking" role="status"><span class="tutor-thinking-dot" aria-hidden="true"></span><span>正在思考</span></div>`;
   try {
-    const payload = await fetchJSON(`/api/questions/${encodeURIComponent(state.currentQuestion.id)}/tutor`, jsonOptions({
+    const typedAnswer = $("answer-input").value.trim();
+    const recognizedAnswer = state.tutorRecognizedAnswer;
+    const tutorAnswer = typedAnswer || (recognizedAnswer ? `手写识别答案：${recognizedAnswer}` : "");
+    const tutorAttachments = typedAnswer || !recognizedAnswer ? state.tutorAttachmentIds : [];
+    const payload = await fetchJSON(`/api/questions/${encodeURIComponent(state.currentQuestion.id)}/tutor`, {
+      ...jsonOptions({
       user_id: state.userId,
-      answer: $("answer-input").value,
+      answer: tutorAnswer,
       request: "分析我的错误，指出最关键的思路断点，并给出下一步训练建议",
-    }));
-    const content = String(payload.content || "");
-    let html = renderMarkdown(content);
-    try {
-      const parsed = JSON.parse(content);
-      html = Object.entries(parsed).map(([key, value]) => `<p><strong>${escapeHtml(key)}：</strong>${renderMarkdown(String(value))}</p>`).join("");
-    } catch { /* model may return ordinary text; it is still shown safely */ }
-    $("tutor-content").innerHTML = html || "模型没有返回可显示的内容。";
+      attachment_ids: tutorAttachments,
+      }),
+      timeoutMs: 300000,
+    });
+    output.innerHTML = renderTutorResult(payload.content || "");
+    typeset(output);
   } catch (error) {
-    $("tutor-content").textContent = `模型复核失败：${error.message}`;
+    output.textContent = `模型复核失败：${error.message}`;
   } finally {
+    output.removeAttribute("aria-busy");
     button.disabled = false;
+    button.textContent = buttonLabel;
   }
 }
 
@@ -4356,7 +4688,10 @@ async function submitSimulation(autoSubmit = false) {
       attachmentIds[input.dataset.simImage] = [uploaded.attachment_id];
     }
     await collectHandwritingAttachments($("simulation-container"), attachmentIds);
-    state.currentSimulation = await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}/submit`, jsonOptions({ user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds }));
+    state.currentSimulation = await fetchJSON(`/api/simulations/${encodeURIComponent(simulation.id)}/submit`, {
+      ...jsonOptions({ user_id: state.userId, answers, self_grades: selfGrades, attachment_ids: attachmentIds }),
+      timeoutMs: 300000,
+    });
     saveSimulationPointer(state.currentSimulation.id);
     localStorage.removeItem(simulationDraftKey(simulation.id));
     clearHandwritingDrafts($("simulation-container"));

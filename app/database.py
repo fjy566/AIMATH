@@ -648,6 +648,15 @@ def attachments_for_attempt(attempt_id: int) -> list[dict[str, Any]]:
     return [_attachment_public(row) for row in rows]
 
 
+def attachment_for_tutor(attachment_id: str, user_id: str, question_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM answer_attachments WHERE id = ? AND user_id = ? AND question_id = ?",
+            (attachment_id, user_id, question_id),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def attachments_for_simulation(simulation_id: str, question_id: str) -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(

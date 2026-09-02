@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -77,6 +78,8 @@ def test_objective_and_manual_grading_are_honest() -> None:
     manual_result = grade_question(solution, "")
     assert manual_result["status"] == "manual"
     assert manual_result["correct"] is None
+    fill = next(question for question in load_questions() if question["question_type"] == "fill" and question["has_answer"])
+    assert grade_question(fill, "")["status"] == "manual"
 
     self_grade_result = grade_question(solution, "我的步骤", self_grade=0.7)
     assert self_grade_result["status"] == "partial"
@@ -494,13 +497,26 @@ def test_answer_boards_share_touch_handwriting_drafts_and_fullscreen_controls() 
     assert "globalCompositeOperation" in source
     assert "collectHandwritingAttachments" in source
     assert "handwritingPadToBlob" in source and "toBlob" in source
+    assert 'context.fillStyle = "#fffdf8"' in source
+    assert "delete pad.dataset.handwritingAttachmentId" in source
     assert "handwritingchange" in source
     assert "renderHandwritingPad({ key: handwritingKey, readonly, expanded: mode === \"modal\" })" in source
     assert "data-answer-workspace" in source
     assert "contextId: simulation.id" in source
     assert ".handwriting-canvas {" in styles
     assert "touch-action: none" in styles
-    assert ".handwriting-pad:fullscreen" in styles
+    assert "function renderHandwritingFocusReference" in source
+    assert "function openHandwritingFocus" in source
+    assert "function closeHandwritingFocus" in source
+    assert "function toggleHandwritingFocusReference" in source
+    assert "ANSWER_WORKSPACE_QUESTION_CACHE.set" in source
+    assert "data-handwriting-focus" in source
+    assert ".handwriting-focus-shell" in styles
+    assert ".handwriting-focus-reference" in styles
+    assert ".handwriting-focus-shell.is-reference-collapsed" in styles
+    assert "grid-template-columns: clamp(220px, 22vw, 360px) minmax(0, 1fr)" in styles
+    assert "grid-template-rows: clamp(132px, 24dvh, 220px) minmax(0, 1fr)" in styles
+    assert ".handwriting-pad:fullscreen" not in styles
     assert ".answer-workspace" in styles
     assert "@media (pointer: coarse)" in styles
 
@@ -1025,8 +1041,11 @@ def test_auth_shell_has_a_no_blank_fallback_and_progressive_fields() -> None:
     assert 'id="auth-retry"' in html_source
     assert 'id="register-optional-fields"' in html_source
     assert 'data-password-toggle' in html_source
-    assert 'styles.css?v=20260831-2' in html_source
-    assert 'app.js?v=20260831-3' in html_source
+    assert 'styles.css?v=20260902-1' in html_source
+    assert 'app.js?v=20260902-10' in html_source
+    assert 'vision-review-note' in app_source
+    assert 'grading_source' in app_source
+    assert 'recognized_answer' in app_source
     assert "replaceAllLiteral" in app_source
     assert "timeoutMs: 12000" in app_source
     assert 'button, input, select, textarea, summary' in styles
@@ -1051,6 +1070,274 @@ def test_llm_target_validation_blocks_metadata_and_credential_urls() -> None:
         _valid_base_url("http://user:secret@example.test/v1")
 
 
+def test_llm_does_not_promote_reasoning_to_final_content() -> None:
+    from app.services.llm import _content_text, _message_text, _stream_chunk_text, _tutor_messages, parse_vision_grade
+
+    assert _message_text({"content": "最终答案", "reasoning_content": "生成过程"}) == "最终答案"
+    assert _message_text({"content": "", "reasoning_content": "生成过程"}) == ""
+    assert _message_text({"content": "<think>生成过程</think>最终答案"}) == "最终答案"
+    assert _message_text({"content": "<think>只有思考，没有答案"}) == ""
+    assert _content_text([{"type": "text", "text": "多模态"}, {"type": "text", "text": {"value": "文本"}}]) == "多模态文本"
+    assert _stream_chunk_text({"choices": [], "usage": {"total_tokens": 12}}) == ("", "")
+    assert _stream_chunk_text({"choices": [{"delta": {"content": [{"type": "text", "text": "结论"}]}}]}) == ("", "结论")
+    messages = _tutor_messages(
+        {"question_markdown": "题目", "answer_markdown": "答案", "solution_markdown": "解析"},
+        "",
+        "分析",
+        ["data:image/png;base64,AAAA"],
+    )
+    assert isinstance(messages[-1]["content"], list)
+    assert messages[-1]["content"][-1]["image_url"]["url"] == "data:image/png;base64,AAAA"
+    assert "内部思考" in messages[-1]["content"][0]["text"]
+    assert "/no_think" not in messages[-1]["content"][0]["text"]
+    assert parse_vision_grade('```json\n{"recognized_answer":"2","verdict":"correct","confidence":0.92,"explanation":"一致"}\n```') == {
+        "recognized_answer": "2", "verdict": "correct", "confidence": 0.92, "explanation": "一致"
+    }
+
+
+def test_chat_completion_rejects_reasoning_only_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import llm
+
+    class FakeResponse:
+        content = '{"choices":[{"message":{"content":"","reasoning_content":"内部思考"}}]}'.encode("utf-8")
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "", "reasoning_content": "内部思考"}}]}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(llm, "_chat_target", lambda _model, _user_id: ("http://127.0.0.1:1234/v1/chat/completions", "", "local-model"))
+    monkeypatch.setattr(llm.httpx, "AsyncClient", FakeClient)
+
+    with pytest.raises(llm.LLMError, match="只返回了思考过程"):
+        asyncio.run(llm.chat_completion([{"role": "user", "content": "题目"}]))
+
+
+def test_chat_completion_keeps_final_content_separate_from_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import llm
+
+    class FakeResponse:
+        content = '{"choices":[{"message":{"content":"最终 JSON","reasoning_content":"内部思考"}}]}'.encode("utf-8")
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "最终 JSON", "reasoning_content": "内部思考"}}]}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, **kwargs):
+            assert "max_tokens" not in kwargs["json"]
+            return FakeResponse()
+
+    monkeypatch.setattr(llm, "_chat_target", lambda _model, _user_id: ("http://127.0.0.1:1234/v1/chat/completions", "", "local-model"))
+    monkeypatch.setattr(llm.httpx, "AsyncClient", FakeClient)
+    assert asyncio.run(llm.chat_completion([{"role": "user", "content": "题目"}])) == "最终 JSON"
+
+
+def test_llm_stream_forwards_reasoning_and_content_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import llm
+
+    lines = [
+        'data: {"choices":[{"delta":{"reasoning_content":"先判断"}}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":10}}',
+        'data: {"choices":[{"delta":{"content":"结论"}}]}',
+        "data: [DONE]",
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            assert method == "POST"
+            assert url == "http://127.0.0.1:1234/v1/chat/completions"
+            assert kwargs["json"]["stream"] is True
+            return FakeStream()
+
+    monkeypatch.setattr(llm, "_chat_target", lambda _model, _user_id: ("http://127.0.0.1:1234/v1/chat/completions", "", "local-model"))
+    monkeypatch.setattr(llm.httpx, "AsyncClient", FakeClient)
+
+    async def collect():
+        return [event async for event in llm.chat_completion_stream([{"role": "user", "content": "题目"}])]
+
+    assert asyncio.run(collect()) == [
+        {"type": "start", "model": "local-model"},
+        {"type": "reasoning", "delta": ""},
+        {"type": "content", "delta": "结论"},
+        {"type": "done"},
+    ]
+
+
+def test_llm_stream_falls_back_when_gateway_only_streams_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import llm
+
+    lines = [
+        'data: {"choices":[{"delta":{"reasoning_content":"先判断"}}]}',
+        'data: {"choices":[]}',
+        "data: [DONE]",
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            assert "max_tokens" not in kwargs["json"]
+            return FakeStream()
+
+    monkeypatch.setattr(llm, "_chat_target", lambda _model, _user_id: ("http://127.0.0.1:1234/v1/chat/completions", "", "local-model"))
+    monkeypatch.setattr(llm.httpx, "AsyncClient", FakeClient)
+
+    async def fallback(_messages, *, model=None, temperature=0.2, user_id="local-user"):
+        assert model == "local-model"
+        assert temperature == 0.2
+        return "最终答案"
+
+    monkeypatch.setattr(llm, "chat_completion", fallback)
+
+    async def collect():
+        return [event async for event in llm.chat_completion_stream([{"role": "user", "content": "题目"}])]
+
+    assert asyncio.run(collect()) == [
+        {"type": "start", "model": "local-model"},
+        {"type": "reasoning", "delta": ""},
+        {"type": "content", "delta": "最终答案"},
+        {"type": "done"},
+    ]
+
+
+def test_handwriting_submission_returns_when_vision_gateway_stalls(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.main as main_module
+
+    question = {
+        "id": "vision-timeout-fill",
+        "question_type": "fill",
+        "points": 5,
+        "answer_markdown": "2",
+    }
+
+    async def stalled_vision(*_args, **_kwargs):
+        await asyncio.sleep(0.05)
+        return {"result": {"recognized_answer": "", "verdict": "unclear"}}
+
+    monkeypatch.setattr(main_module, "VISION_GRADING_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(main_module, "_tutor_image_data_urls", lambda *_args, **_kwargs: ["data:image/png;base64,AAAA"])
+    monkeypatch.setattr(main_module, "vision_grade_question", stalled_vision)
+
+    result = asyncio.run(main_module._grade_submitted_question(question, "", None, ["attachment"], "local-user"))
+
+    assert result["status"] == "manual"
+    assert result["score"] == 0.0
+    assert "vision_error" in result
+    assert "答案和手写附件已保存" in result["vision_error"]
+
+
+def test_tutor_frontend_shows_thinking_and_uses_compatible_completion() -> None:
+    app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "/tutor`," in app_source
+    assert "正在思考" in app_source
+    assert "renderTutorResult" in app_source
+    assert "parseModelStructuredContent" in app_source
+    assert "text.indexOf(\"{\")" in app_source
+    assert "decodeHtmlEntities" in app_source
+    assert "repairJsonEscapeSequences" in app_source
+    assert "TUTOR_FIELD_LABELS" in app_source
+    assert "attachment_ids: tutorAttachments" in app_source
+    assert "tutorRecognizedAnswer" in app_source
+    assert "手写识别答案：${recognizedAnswer}" in app_source
+    assert 'id="submit-answer-status"' in (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'button.setAttribute("aria-busy", "true")' in app_source
+    assert 'if (error?.name === "AbortError") throw error;' in app_source
+    assert "void refreshLearningData()" in app_source
+    assert "timeoutMs: 300000" in app_source
+    assert "practice/sessions/${encodeURIComponent(session.id)}/submit" in app_source
+    assert "simulations/${encodeURIComponent(simulation.id)}/submit" in app_source
+    assert "response.body.getReader()" not in app_source
+    assert "模型生成过程（实时）" not in app_source
+
+
+def test_handwriting_tools_render_icons_and_size_aware_cursors() -> None:
+    app_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function handwritingToolIconMarkup" in app_source
+    assert "function handwritingCursorFor" in app_source
+    assert "function updateHandwritingCursor" in app_source
+    assert "data-handwriting-size-label" in app_source
+    assert "data:image/svg+xml" in app_source
+    assert "canvas.style.cursor = handwritingCursorFor(stateForPad)" in app_source
+    assert "canvas.dataset.handwritingTool = stateForPad.tool" in app_source
+    assert ".handwriting-tool-icon" in styles
+    assert '.handwriting-canvas[data-handwriting-tool="eraser"]' in styles
+
+
 def test_model_settings_preserve_and_mask_local_key(tmp_path: Path) -> None:
     import app.database as database
     from app.services.llm import public_settings, save_settings
@@ -1070,7 +1357,7 @@ def test_model_settings_preserve_and_mask_local_key(tmp_path: Path) -> None:
         database.DB_PATH = original_db_path
 
 
-def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
+def test_http_api_health_question_and_full_simulation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi.testclient import TestClient
 
     import app.database as database
@@ -1102,6 +1389,21 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
                 f"/api/questions/{choice['id']}/attempts",
                 json={"answer": choice["answer_markdown"], "mode": "practice", "attachment_ids": [upload.json()["attachment_id"]]},
             )
+            fill = next(question for question in load_questions() if question["question_type"] == "fill" and question["has_answer"])
+            fill_upload = client.post(
+                "/api/uploads/answer-image",
+                data={"user_id": "local-user", "question_id": fill["id"]},
+                files={"file": ("handwriting-answer.png", b"\x89PNG\r\n\x1a\nreal-handwriting", "image/png")},
+            )
+
+            async def fake_vision_grade(_question, _images, user_id="local-user"):
+                return {"model": "test-multimodal", "result": {"recognized_answer": "2", "verdict": "correct", "confidence": 0.94, "explanation": "与标准答案一致"}}
+
+            monkeypatch.setattr(main_module, "vision_grade_question", fake_vision_grade)
+            handwriting_attempt = client.post(
+                f"/api/questions/{fill['id']}/attempts",
+                json={"answer": "", "mode": "practice", "attachment_ids": [fill_upload.json()["attachment_id"]]},
+            )
             progress = client.get("/api/progress")
             analytics = client.get("/api/analytics", params={"user_id": "local-user", "exam_type": "数学二"})
             forecast = client.get("/api/forecast", params={"user_id": "local-user", "exam_type": "数学二"})
@@ -1122,9 +1424,18 @@ def test_http_api_health_question_and_full_simulation(tmp_path: Path) -> None:
         assert attempt.status_code == 200
         assert attempt.json()["result"]["status"] == "correct"
         assert len(attempt.json()["attachments"]) == 1
+        assert handwriting_attempt.status_code == 200
+        assert handwriting_attempt.json()["result"]["status"] == "correct"
+        assert handwriting_attempt.json()["result"]["grading_source"] == "multimodal"
+        assert handwriting_attempt.json()["result"]["recognized_answer"] == "2"
+        tutor_images = main_module._tutor_image_data_urls(
+            [upload.json()["attachment_id"]], "local-user", choice["id"]
+        )
+        assert len(tutor_images) == 1
+        assert tutor_images[0].startswith("data:image/png;base64,")
         assert client.get(attempt.json()["attachments"][0]["url"]).status_code == 200
         assert progress.status_code == 200
-        assert progress.json()["attempts"] == 1
+        assert progress.json()["attempts"] == 2
         assert analytics.status_code == 200
         assert analytics.json()["questions_available"] == 792
         assert len(analytics.json()["question_types"]) == 3
